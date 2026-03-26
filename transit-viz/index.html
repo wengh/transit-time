@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Transit Isochrone</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+    #map { position: absolute; top: 0; left: 0; right: 0; bottom: 0; z-index: 0; }
+    #controls {
+      position: absolute; top: 10px; right: 10px; z-index: 1000;
+      background: white; padding: 16px; border-radius: 8px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.2); min-width: 280px;
+      max-height: calc(100vh - 20px); overflow-y: auto;
+    }
+    #controls h3 { margin-bottom: 12px; }
+    .control-group { margin-bottom: 12px; }
+    .control-group label { display: block; font-size: 13px; margin-bottom: 4px; color: #555; }
+    .control-group select, .control-group input { width: 100%; padding: 6px; }
+    #status { font-size: 12px; color: #888; margin-top: 8px; }
+    #legend {
+      position: absolute; bottom: 20px; left: 10px; z-index: 1000;
+      background: white; padding: 12px; border-radius: 8px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+    }
+    #legend-gradient {
+      width: 200px; height: 20px; border-radius: 4px;
+      background: linear-gradient(to right, #00ff00, #ffff00, #ff8800, #ff0000, #880000);
+    }
+    #legend-labels { display: flex; justify-content: space-between; font-size: 11px; margin-top: 4px; }
+    #hover-info {
+      position: absolute; bottom: 20px; right: 10px; z-index: 1000;
+      background: white; padding: 12px; border-radius: 8px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.2); display: none; min-width: 200px;
+    }
+    canvas#overlay {
+      position: absolute; top: 0; left: 0; z-index: 500;
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <canvas id="overlay"></canvas>
+
+  <div id="controls">
+    <h3>Transit Isochrone</h3>
+    <div class="control-group">
+      <label>Mode</label>
+      <select id="mode">
+        <option value="single">Single Departure Time</option>
+        <option value="sampled">Hour-Window Average</option>
+      </select>
+    </div>
+    <div class="control-group">
+      <label>Service Pattern</label>
+      <select id="pattern"></select>
+    </div>
+    <div class="control-group">
+      <label>Departure Time: <span id="time-display">08:00</span></label>
+      <input type="range" id="time-slider" min="0" max="86400" value="28800" step="300" />
+    </div>
+    <div class="control-group" id="samples-group" style="display:none">
+      <label>Samples: <span id="samples-display">10</span></label>
+      <input type="range" id="samples-slider" min="3" max="30" value="10" />
+    </div>
+    <div id="status">Click on the map to set origin</div>
+  </div>
+
+  <div id="legend">
+    <div id="legend-gradient"></div>
+    <div id="legend-labels">
+      <span>0 min</span><span>30</span><span>60</span><span>90</span><span>120</span>
+    </div>
+  </div>
+
+  <div id="hover-info">
+    <div id="hover-time"></div>
+    <div id="hover-stop" style="font-size:12px;color:#666;margin-top:4px;"></div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
