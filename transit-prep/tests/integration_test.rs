@@ -86,7 +86,9 @@ fn test_build_cached_osm_graph() {
         }
     };
 
-    let graph = transit_prep::graph::build_graph(&osm_path).expect("Failed to build graph");
+    // bbox not used for XML parsing, but required by signature
+    let bbox = (-79.10, 35.87, -79.00, 35.97);
+    let graph = transit_prep::graph::build_graph(&osm_path, bbox).expect("Failed to build graph");
 
     assert!(!graph.nodes.is_empty(), "Should have nodes");
     assert!(!graph.edges.is_empty(), "Should have edges");

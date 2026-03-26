@@ -71,7 +71,7 @@ pub fn run_prep(
 
     // Step 2: Download OSM data
     eprintln!("\n--- Fetching OSM pedestrian data ---");
-    let osm_path = osm::fetch_osm(bbox, cache_dir)?;
+    let osm_path = osm::fetch_osm(bbox, cache_dir, city)?;
     eprintln!("OSM data cached at: {:?}", osm_path);
 
     // Step 3: Parse GTFS
@@ -88,7 +88,7 @@ pub fn run_prep(
 
     // Step 4: Build OSM graph
     eprintln!("\n--- Building OSM graph ---");
-    let osm_graph = graph::build_graph(&osm_path)?;
+    let osm_graph = graph::build_graph(&osm_path, bbox)?;
     eprintln!(
         "Graph: {} nodes, {} edges",
         osm_graph.nodes.len(),

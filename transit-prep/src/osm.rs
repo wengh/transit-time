@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Result};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -8,22 +8,97 @@ const OVERPASS_URLS: &[&str] = &[
     "https://overpass.kumi.systems/api/interpreter",
 ];
 
-/// Fetch pedestrian-walkable OSM data for a bounding box, caching the result.
-pub fn fetch_osm(bbox: (f64, f64, f64, f64), cache_dir: &Path) -> Result<PathBuf> {
-    let (min_lon, min_lat, max_lon, max_lat) = bbox;
-    let cache_name = format!(
-        "osm_{:.4}_{:.4}_{:.4}_{:.4}.xml",
-        min_lon, min_lat, max_lon, max_lat
-    );
-    let cache_path = cache_dir.join(cache_name);
+// Known city PBF extract URLs (BBBike)
+const BBBIKE_BASE: &str = "https://download.bbbike.org/osm/bbbike";
 
-    if cache_path.exists() {
-        eprintln!("Using cached OSM data: {:?}", cache_path);
-        return Ok(cache_path);
+/// Fetch pedestrian-walkable OSM data for a bounding box, caching the result.
+/// For large areas, downloads a PBF extract from BBBike if a matching city is available.
+/// Falls back to Overpass API for smaller/custom areas.
+pub fn fetch_osm(
+    bbox: (f64, f64, f64, f64),
+    cache_dir: &Path,
+    city: &str,
+) -> Result<PathBuf> {
+    let (min_lon, min_lat, max_lon, max_lat) = bbox;
+
+    // Check if a PBF cache already exists
+    let pbf_cache = cache_dir.join(format!("{}.osm.pbf", sanitize(city)));
+    if pbf_cache.exists() {
+        eprintln!("Using cached PBF: {:?}", pbf_cache);
+        return Ok(pbf_cache);
     }
 
-    // Overpass query for pedestrian-walkable ways + station entrances/corridors
-    // bbox format for Overpass: (south,west,north,east) = (min_lat,min_lon,max_lat,max_lon)
+    // Check if an XML cache already exists
+    let xml_cache = cache_dir.join(format!(
+        "osm_{:.4}_{:.4}_{:.4}_{:.4}.xml",
+        min_lon, min_lat, max_lon, max_lat
+    ));
+    if xml_cache.exists() {
+        eprintln!("Using cached OSM XML: {:?}", xml_cache);
+        return Ok(xml_cache);
+    }
+
+    // Estimate area size (degrees)
+    let area_deg = (max_lat - min_lat) * (max_lon - min_lon);
+
+    // For large areas, try BBBike PBF extract first
+    if area_deg > 0.02 {
+        if let Ok(path) = try_bbbike_download(city, &pbf_cache) {
+            return Ok(path);
+        }
+        eprintln!("No BBBike extract available, falling back to Overpass...");
+    }
+
+    // Overpass for smaller areas
+    fetch_overpass(bbox, &xml_cache)
+}
+
+/// Try to download a city PBF extract from BBBike.
+fn try_bbbike_download(city: &str, cache_path: &Path) -> Result<PathBuf> {
+    // BBBike uses CamelCase city names
+    let bbbike_city = to_bbbike_name(city);
+    let url = format!("{}/{}/{}.osm.pbf", BBBIKE_BASE, bbbike_city, bbbike_city);
+
+    eprintln!("Trying BBBike extract: {} ...", url);
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(600))
+        .build()?;
+
+    let resp = client
+        .get(&url)
+        .send()?;
+
+    if !resp.status().is_success() {
+        bail!("BBBike returned {}", resp.status());
+    }
+
+    let bytes = resp.bytes()?;
+    eprintln!("Downloaded PBF: {:.1} MB", bytes.len() as f64 / 1_048_576.0);
+
+    let mut file = std::fs::File::create(cache_path)?;
+    file.write_all(&bytes)?;
+
+    Ok(cache_path.to_path_buf())
+}
+
+/// Convert city name to BBBike naming convention.
+fn to_bbbike_name(city: &str) -> String {
+    // BBBike uses names like "Chicago", "NewYork", "LosAngeles"
+    city.split_whitespace()
+        .map(|w| {
+            let mut chars = w.chars();
+            match chars.next() {
+                None => String::new(),
+                Some(c) => c.to_uppercase().to_string() + &chars.as_str().to_lowercase(),
+            }
+        })
+        .collect()
+}
+
+fn fetch_overpass(bbox: (f64, f64, f64, f64), cache_path: &Path) -> Result<PathBuf> {
+    let (min_lon, min_lat, max_lon, max_lat) = bbox;
+
     let query = format!(
         r#"[out:xml][timeout:300];
 (
@@ -52,10 +127,10 @@ out body;"#,
             Ok(resp) => {
                 if resp.status().is_success() {
                     let text = resp.text()?;
-                    let mut file = std::fs::File::create(&cache_path)?;
+                    let mut file = std::fs::File::create(cache_path)?;
                     file.write_all(text.as_bytes())?;
                     eprintln!("OSM data: {} bytes", text.len());
-                    return Ok(cache_path);
+                    return Ok(cache_path.to_path_buf());
                 }
                 eprintln!("Server {} returned {}", url, resp.status());
             }
@@ -69,6 +144,12 @@ out body;"#,
     }
 
     bail!("All Overpass servers failed")
+}
+
+fn sanitize(s: &str) -> String {
+    s.chars()
+        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .collect()
 }
 
 fn urlencoded(s: &str) -> String {

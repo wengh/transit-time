@@ -6,6 +6,12 @@ use std::path::Path;
 
 use crate::gtfs::Stop;
 
+const PEDESTRIAN_HIGHWAYS: &[&str] = &[
+    "footway", "pedestrian", "path", "steps", "residential", "living_street",
+    "tertiary", "secondary", "primary", "trunk", "service", "unclassified",
+    "crossing", "cycleway", "track", "corridor",
+];
+
 #[derive(Debug, Clone)]
 pub struct OsmNode {
     pub id: u64,
@@ -30,7 +36,7 @@ pub struct OsmGraph {
 
 /// Haversine distance in meters
 pub fn haversine(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
-    let r = 6_371_000.0; // Earth radius in meters
+    let r = 6_371_000.0;
     let dlat = (lat2 - lat1).to_radians();
     let dlon = (lon2 - lon1).to_radians();
     let a = (dlat / 2.0).sin().powi(2)
@@ -39,12 +45,27 @@ pub fn haversine(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
     r * c
 }
 
-pub fn build_graph(osm_path: &Path) -> Result<OsmGraph> {
-    let xml = std::fs::read_to_string(osm_path)?;
+/// Raw parsed data before graph construction
+struct RawOsmData {
+    all_nodes: HashMap<u64, (f64, f64)>,
+    entrance_node_ids: HashSet<u64>,
+    ways: Vec<Vec<u64>>,
+}
 
-    // Two-pass parsing: first collect everything, then build graph.
-    // We need to identify entrance nodes which are <node> elements with
-    // child <tag> elements (railway=subway_entrance, entrance=yes/main/secondary).
+pub fn build_graph(osm_path: &Path, bbox: (f64, f64, f64, f64)) -> Result<OsmGraph> {
+    let ext = osm_path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    let raw = if ext == "pbf" {
+        parse_pbf(osm_path, bbox)?
+    } else {
+        parse_xml(osm_path)?
+    };
+
+    build_graph_from_raw(raw)
+}
+
+fn parse_xml(osm_path: &Path) -> Result<RawOsmData> {
+    let xml = std::fs::read_to_string(osm_path)?;
+    let mut reader = Reader::from_str(&xml);
 
     let mut all_nodes: HashMap<u64, (f64, f64)> = HashMap::new();
     let mut entrance_node_ids: HashSet<u64> = HashSet::new();
@@ -55,8 +76,6 @@ pub fn build_graph(osm_path: &Path) -> Result<OsmGraph> {
     let mut current_node_id: u64 = 0;
     let mut in_node = false;
     let mut node_has_entrance_tag = false;
-
-    let mut reader = Reader::from_str(&xml);
 
     loop {
         match reader.read_event() {
@@ -105,7 +124,6 @@ pub fn build_graph(osm_path: &Path) -> Result<OsmGraph> {
                         if id != 0 {
                             all_nodes.insert(id, (lat, lon));
                         }
-                        // Self-closing node can't have child tags
                     }
                     b"nd" if in_way => {
                         for attr in e.attributes().flatten() {
@@ -158,29 +176,160 @@ pub fn build_graph(osm_path: &Path) -> Result<OsmGraph> {
         }
     }
 
+    Ok(RawOsmData { all_nodes, entrance_node_ids, ways })
+}
+
+fn parse_pbf(osm_path: &Path, bbox: (f64, f64, f64, f64)) -> Result<RawOsmData> {
+    use osmpbf::{ElementReader, Element};
+
+    let (min_lon, min_lat, max_lon, max_lat) = bbox;
+    let reader = ElementReader::from_path(osm_path)?;
+
+    let mut all_nodes: HashMap<u64, (f64, f64)> = HashMap::new();
+    let mut entrance_node_ids: HashSet<u64> = HashSet::new();
+    let mut ways: Vec<Vec<u64>> = Vec::new();
+
+    // Collect all way node references to know which nodes to keep
+    let mut way_node_refs: HashSet<i64> = HashSet::new();
+
+    // First pass: collect ways within bbox and their node references
+    eprintln!("PBF pass 1: collecting ways...");
+    let reader1 = ElementReader::from_path(osm_path)?;
+    reader1.for_each(|element| {
+        if let Element::Way(way) = element {
+            // Check if this way has a pedestrian highway tag
+            let mut is_pedestrian = false;
+            for (key, value) in way.tags() {
+                if key == "highway" && PEDESTRIAN_HIGHWAYS.contains(&value) {
+                    is_pedestrian = true;
+                    break;
+                }
+            }
+            if !is_pedestrian {
+                return;
+            }
+            let refs: Vec<i64> = way.refs().collect();
+            for &r in &refs {
+                way_node_refs.insert(r);
+            }
+        }
+    })?;
+
+    eprintln!("PBF pass 1: {} way node refs", way_node_refs.len());
+
+    // Second pass: collect nodes and entrance nodes, and re-collect ways
+    eprintln!("PBF pass 2: collecting nodes and building ways...");
+    reader.for_each(|element| {
+        match element {
+            Element::Node(node) => {
+                let id = node.id();
+                let lat = node.lat();
+                let lon = node.lon();
+
+                // Keep node if: referenced by a way, or is within bbox
+                let in_bbox = lat >= min_lat && lat <= max_lat
+                    && lon >= min_lon && lon <= max_lon;
+                let needed = way_node_refs.contains(&id) || in_bbox;
+
+                if needed {
+                    all_nodes.insert(id as u64, (lat, lon));
+                }
+
+                // Check for subway entrance tag (only within bbox)
+                if in_bbox {
+                    for (key, value) in node.tags() {
+                        if key == "railway" && value == "subway_entrance" {
+                            all_nodes.insert(id as u64, (lat, lon));
+                            entrance_node_ids.insert(id as u64);
+                            break;
+                        }
+                    }
+                }
+            }
+            Element::DenseNode(node) => {
+                let id = node.id();
+                let lat = node.lat();
+                let lon = node.lon();
+
+                let in_bbox = lat >= min_lat && lat <= max_lat
+                    && lon >= min_lon && lon <= max_lon;
+                let needed = way_node_refs.contains(&id) || in_bbox;
+
+                if needed {
+                    all_nodes.insert(id as u64, (lat, lon));
+                }
+
+                if in_bbox {
+                    for (key, value) in node.tags() {
+                        if key == "railway" && value == "subway_entrance" {
+                            all_nodes.insert(id as u64, (lat, lon));
+                            entrance_node_ids.insert(id as u64);
+                            break;
+                        }
+                    }
+                }
+            }
+            Element::Way(way) => {
+                let mut is_pedestrian = false;
+                for (key, value) in way.tags() {
+                    if key == "highway" && PEDESTRIAN_HIGHWAYS.contains(&value) {
+                        is_pedestrian = true;
+                        break;
+                    }
+                }
+                if !is_pedestrian {
+                    return;
+                }
+
+                let refs: Vec<u64> = way.refs().map(|r| r as u64).collect();
+
+                // Only include ways that have at least one node in bbox
+                let has_bbox_node = refs.iter().any(|&r| {
+                    all_nodes.get(&r).is_some_and(|&(lat, lon)| {
+                        lat >= min_lat && lat <= max_lat
+                            && lon >= min_lon && lon <= max_lon
+                    })
+                });
+
+                if has_bbox_node && refs.len() >= 2 {
+                    ways.push(refs);
+                }
+            }
+            _ => {}
+        }
+    })?;
+
+    eprintln!("PBF: {} nodes, {} entrance nodes, {} ways",
+        all_nodes.len(), entrance_node_ids.len(), ways.len());
+
+    Ok(RawOsmData { all_nodes, entrance_node_ids, ways })
+}
+
+fn build_graph_from_raw(raw: RawOsmData) -> Result<OsmGraph> {
+    let RawOsmData { all_nodes, entrance_node_ids, ways } = raw;
+
     eprintln!("Found {} station entrance nodes", entrance_node_ids.len());
 
-    // Find intersection/endpoint nodes (appear in multiple ways or are endpoints)
+    // Find intersection/endpoint nodes
     let mut node_usage_count: HashMap<u64, u32> = HashMap::new();
     for way in &ways {
         for (i, &node_id) in way.iter().enumerate() {
             let count = node_usage_count.entry(node_id).or_insert(0);
             if i == 0 || i == way.len() - 1 {
-                *count += 2; // endpoints always become graph nodes
+                *count += 2;
             } else {
                 *count += 1;
             }
         }
     }
 
-    // Graph nodes: intersections (count >= 2), endpoints, AND entrance nodes
+    // Graph nodes: intersections + endpoints + entrance nodes
     let mut graph_node_ids: HashSet<u64> = node_usage_count
         .iter()
         .filter(|(_, &count)| count >= 2)
         .map(|(&id, _)| id)
         .collect();
 
-    // Add entrance nodes even if they're not part of any way
     for &entrance_id in &entrance_node_ids {
         graph_node_ids.insert(entrance_id);
     }
@@ -242,7 +391,7 @@ pub fn build_graph(osm_path: &Path) -> Result<OsmGraph> {
         }
     }
 
-    // Connect entrance nodes that aren't part of any way to their nearest street node
+    // Connect entrance nodes that aren't part of any way to nearest street node
     let entrance_only: Vec<u32> = nodes
         .iter()
         .filter(|n| n.is_entrance && !node_usage_count.contains_key(&n.id))
@@ -258,7 +407,6 @@ pub fn build_graph(osm_path: &Path) -> Result<OsmGraph> {
             if node.index == ent_idx || node.is_entrance {
                 continue;
             }
-            // Only connect to nodes that are part of the street network
             if !node_usage_count.contains_key(&node.id) {
                 continue;
             }
@@ -295,12 +443,12 @@ pub fn build_graph(osm_path: &Path) -> Result<OsmGraph> {
     Ok(OsmGraph { nodes, edges })
 }
 
-/// Snap each transit stop to its nearest OSM node. Returns stop_index -> node_index mapping.
-/// Prefers entrance nodes over regular street nodes when within reasonable distance.
-/// Only snaps stops within MAX_SNAP_DISTANCE_METERS of an OSM node.
+/// Snap each transit stop to its nearest OSM node.
+/// Prefers entrance nodes when within ENTRANCE_PREFERENCE_METERS.
+/// Only snaps stops within MAX_SNAP_DISTANCE_METERS.
 pub fn snap_stops_to_nodes(stops: &[Stop], graph: &OsmGraph) -> Vec<(u32, u32)> {
-    const MAX_SNAP_DISTANCE_METERS: f64 = 400.0; // ~5 min walk
-    const ENTRANCE_PREFERENCE_METERS: f64 = 150.0; // prefer entrance if within this distance
+    const MAX_SNAP_DISTANCE_METERS: f64 = 400.0;
+    const ENTRANCE_PREFERENCE_METERS: f64 = 150.0;
     let mut mapping = Vec::new();
     let mut skipped = 0;
     let mut snapped_to_entrance = 0;
@@ -323,7 +471,6 @@ pub fn snap_stops_to_nodes(stops: &[Stop], graph: &OsmGraph) -> Vec<(u32, u32)> 
             }
         }
 
-        // Prefer entrance node if one is nearby
         let (chosen_node, chosen_dist) =
             if let Some(ent_node) = best_entrance_node {
                 if best_entrance_dist <= ENTRANCE_PREFERENCE_METERS {

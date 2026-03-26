@@ -21,6 +21,7 @@ csv = "1"
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 quick-xml = "0.36"
+osmpbf = "0.3"
 flate2 = "1"
 sha2 = "0.10"
 hex = "0.4"
