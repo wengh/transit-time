@@ -179,8 +179,11 @@ pub fn build_graph(osm_path: &Path) -> Result<OsmGraph> {
 }
 
 /// Snap each transit stop to its nearest OSM node. Returns stop_index -> node_index mapping.
+/// Only snaps stops within MAX_SNAP_DISTANCE_METERS of an OSM node.
 pub fn snap_stops_to_nodes(stops: &[Stop], graph: &OsmGraph) -> Vec<(u32, u32)> {
+    const MAX_SNAP_DISTANCE_METERS: f64 = 400.0; // ~5 min walk
     let mut mapping = Vec::new();
+    let mut skipped = 0;
 
     for stop in stops {
         let mut best_dist = f64::MAX;
@@ -194,7 +197,15 @@ pub fn snap_stops_to_nodes(stops: &[Stop], graph: &OsmGraph) -> Vec<(u32, u32)> 
             }
         }
 
-        mapping.push((stop.index, best_node));
+        if best_dist <= MAX_SNAP_DISTANCE_METERS {
+            mapping.push((stop.index, best_node));
+        } else {
+            skipped += 1;
+        }
+    }
+
+    if skipped > 0 {
+        eprintln!("Skipped {} stops (too far from OSM graph, >{:.0}m)", skipped, MAX_SNAP_DISTANCE_METERS);
     }
 
     mapping
