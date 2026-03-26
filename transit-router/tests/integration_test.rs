@@ -40,7 +40,7 @@ fn test_load_and_route_chapel_hill() {
 
     // Run TDD at 8:00 AM (28800 seconds) on the first pattern
     let departure_time = 28800u32;
-    let result = transit_router::router::run_tdd(&prepared, source, departure_time, 0);
+    let result = transit_router::router::run_tdd(&prepared, source, departure_time, 0, 60);
 
     // Count reachable nodes
     let reachable = result.iter().filter(|r| r[0] != u32::MAX).count();
@@ -82,18 +82,18 @@ fn test_router_edge_cases() {
 
     // Test with invalid pattern index (should not panic)
     let source = transit_router::router::snap_to_node(&prepared, 35.91, -79.05);
-    let result = transit_router::router::run_tdd(&prepared, source, 28800, 999);
+    let result = transit_router::router::run_tdd(&prepared, source, 28800, 999, 60);
     // Should still reach walking nodes
     let reachable = result.iter().filter(|r| r[0] != u32::MAX).count();
     assert!(reachable > 0, "Should still reach walking nodes with invalid pattern");
 
     // Test at midnight (0 seconds)
-    let result_midnight = transit_router::router::run_tdd(&prepared, source, 0, 0);
+    let result_midnight = transit_router::router::run_tdd(&prepared, source, 0, 0, 60);
     let reachable_midnight = result_midnight.iter().filter(|r| r[0] != u32::MAX).count();
     assert!(reachable_midnight > 0, "Should reach nodes even at midnight");
 
     // Test at late time (23:59)
-    let result_late = transit_router::router::run_tdd(&prepared, source, 86340, 0);
+    let result_late = transit_router::router::run_tdd(&prepared, source, 86340, 0, 60);
     let reachable_late = result_late.iter().filter(|r| r[0] != u32::MAX).count();
     assert!(reachable_late > 0, "Should reach nodes even at late hour");
 

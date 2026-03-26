@@ -39,22 +39,18 @@ impl TransitRouter {
         Ok(TransitRouter { data })
     }
 
-    /// Get number of nodes
     pub fn num_nodes(&self) -> u32 {
         self.data.num_nodes as u32
     }
 
-    /// Get number of edges
     pub fn num_edges(&self) -> u32 {
         self.data.num_edges as u32
     }
 
-    /// Get number of stops
     pub fn num_stops(&self) -> u32 {
         self.data.num_stops as u32
     }
 
-    /// Get node lat/lon as [lat, lon]
     pub fn node_lat(&self, idx: u32) -> f64 {
         self.data.nodes[idx as usize].lat
     }
@@ -63,17 +59,14 @@ impl TransitRouter {
         self.data.nodes[idx as usize].lon
     }
 
-    /// Get stop name
     pub fn stop_name(&self, idx: u32) -> String {
         self.data.stops[idx as usize].name.clone()
     }
 
-    /// Get stop node index (the OSM node this stop is snapped to)
     pub fn stop_node(&self, idx: u32) -> u32 {
         self.data.stop_node_map[idx as usize]
     }
 
-    /// Get route name
     pub fn route_name(&self, idx: u32) -> String {
         if (idx as usize) < self.data.route_names.len() {
             self.data.route_names[idx as usize].clone()
@@ -82,17 +75,14 @@ impl TransitRouter {
         }
     }
 
-    /// Get number of service patterns
     pub fn num_patterns(&self) -> u32 {
         self.data.patterns.len() as u32
     }
 
-    /// Get pattern day mask
     pub fn pattern_day_mask(&self, idx: u32) -> u8 {
         self.data.patterns[idx as usize].day_mask
     }
 
-    /// Find the pattern index matching a given day of week (0=Mon, 6=Sun).
     pub fn find_pattern_for_day(&self, day_of_week: u32) -> i32 {
         let bit = 1u8 << day_of_week;
         for (i, p) in self.data.patterns.iter().enumerate() {
@@ -103,22 +93,24 @@ impl TransitRouter {
         -1
     }
 
-    /// Snap a lat/lon to the nearest OSM node. Returns node index.
     pub fn snap_to_node(&self, lat: f64, lon: f64) -> u32 {
         router::snap_to_node(&self.data, lat, lon)
     }
 
-    /// Run single-departure TDD. Returns arrival times as Float64Array.
-    /// pattern_index: which service pattern to use
-    /// departure_time: seconds since midnight
+    /// Run single-departure TDD.
+    /// `transfer_slack`: minimum seconds when switching routes (default 60).
+    /// Returns travel times as Float64Array (NaN for unreached).
     pub fn run_tdd(
         &self,
         source_node: u32,
         departure_time: u32,
         pattern_index: u32,
+        transfer_slack: u32,
     ) -> Vec<f64> {
-        let result = router::run_tdd(&self.data, source_node, departure_time, pattern_index as usize);
-        // Return arrival times as f64 (NaN for unreached)
+        let result = router::run_tdd(
+            &self.data, source_node, departure_time,
+            pattern_index as usize, transfer_slack,
+        );
         result
             .iter()
             .map(|r| {
@@ -137,8 +129,12 @@ impl TransitRouter {
         source_node: u32,
         departure_time: u32,
         pattern_index: u32,
+        transfer_slack: u32,
     ) -> SsspResult {
-        let results = router::run_tdd(&self.data, source_node, departure_time, pattern_index as usize);
+        let results = router::run_tdd(
+            &self.data, source_node, departure_time,
+            pattern_index as usize, transfer_slack,
+        );
         SsspResult { results }
     }
 
@@ -150,6 +146,7 @@ impl TransitRouter {
         window_end: u32,
         n_samples: u32,
         pattern_index: u32,
+        transfer_slack: u32,
     ) -> Vec<f64> {
         let num_nodes = self.data.num_nodes;
         let mut sum_times = vec![0.0f64; num_nodes];
@@ -163,7 +160,10 @@ impl TransitRouter {
 
         for i in 0..n_samples {
             let dep_time = window_start + i * step;
-            let result = router::run_tdd(&self.data, source_node, dep_time, pattern_index as usize);
+            let result = router::run_tdd(
+                &self.data, source_node, dep_time,
+                pattern_index as usize, transfer_slack,
+            );
             for (j, r) in result.iter().enumerate() {
                 if r[0] != u32::MAX {
                     sum_times[j] += (r[0] - dep_time) as f64;
@@ -193,6 +193,7 @@ impl TransitRouter {
         window_end: u32,
         n_samples: u32,
         pattern_index: u32,
+        transfer_slack: u32,
     ) -> SampledResult {
         let num_nodes = self.data.num_nodes;
         let mut all_results = Vec::with_capacity(n_samples as usize);
@@ -207,7 +208,10 @@ impl TransitRouter {
 
         for i in 0..n_samples {
             let dep_time = window_start + i * step;
-            let results = router::run_tdd(&self.data, source_node, dep_time, pattern_index as usize);
+            let results = router::run_tdd(
+                &self.data, source_node, dep_time,
+                pattern_index as usize, transfer_slack,
+            );
             for (j, r) in results.iter().enumerate() {
                 if r[0] != u32::MAX {
                     sum_times[j] += (r[0] - dep_time) as f64;
@@ -230,7 +234,7 @@ impl TransitRouter {
     }
 
     /// Reconstruct path from source to destination.
-    /// Returns flat array: [node_index, edge_type, route_index, node_index, edge_type, route_index, ...]
+    /// Returns flat array: [node_index, edge_type, route_index, ...]
     pub fn reconstruct_path(&self, sssp: &SsspResult, destination: u32) -> Vec<u32> {
         let mut path = Vec::new();
         let mut current = destination;
@@ -238,7 +242,7 @@ impl TransitRouter {
         loop {
             let r = &sssp.results[current as usize];
             if r[0] == u32::MAX {
-                return Vec::new(); // unreachable
+                return Vec::new();
             }
             let prev = r[1];
             let edge_type = r[2];

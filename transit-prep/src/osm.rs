@@ -22,12 +22,13 @@ pub fn fetch_osm(bbox: (f64, f64, f64, f64), cache_dir: &Path) -> Result<PathBuf
         return Ok(cache_path);
     }
 
-    // Overpass query for pedestrian-walkable ways
+    // Overpass query for pedestrian-walkable ways + station entrances/corridors
     // bbox format for Overpass: (south,west,north,east) = (min_lat,min_lon,max_lat,max_lon)
     let query = format!(
         r#"[out:xml][timeout:300];
 (
-  way["highway"~"^(footway|pedestrian|path|steps|residential|living_street|tertiary|secondary|primary|trunk|service|unclassified|crossing|cycleway|track)$"]({},{},{},{});
+  way["highway"~"^(footway|pedestrian|path|steps|residential|living_street|tertiary|secondary|primary|trunk|service|unclassified|crossing|cycleway|track|corridor)$"]({0},{1},{2},{3});
+  node["railway"="subway_entrance"]({0},{1},{2},{3});
 );
 (._;>;);
 out body;"#,

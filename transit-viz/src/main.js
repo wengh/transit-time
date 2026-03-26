@@ -55,6 +55,14 @@ function updateSamplesDisplay() {
   document.getElementById('samples-display').textContent = slider.value;
 }
 
+function updateSlackDisplay() {
+  const val = parseInt(document.getElementById('slack-slider').value);
+  const m = Math.floor(val / 60);
+  const s = val % 60;
+  document.getElementById('slack-display').textContent =
+    `${m}:${String(s).padStart(2, '0')}`;
+}
+
 function renderIsochrone() {
   if (!router || !currentTravelTimes || !map || !canvas) return;
 
@@ -90,6 +98,7 @@ function runQuery() {
   const mode = document.getElementById('mode').value;
   const patternIdx = parseInt(document.getElementById('pattern').value);
   const depTime = parseInt(document.getElementById('time-slider').value);
+  const transferSlack = parseInt(document.getElementById('slack-slider').value);
 
   const status = document.getElementById('status');
   status.textContent = 'Computing...';
@@ -97,11 +106,11 @@ function runQuery() {
   setTimeout(() => {
     try {
       if (mode === 'single') {
-        currentTravelTimes = router.run_tdd(sourceNode, depTime, patternIdx);
+        currentTravelTimes = router.run_tdd(sourceNode, depTime, patternIdx, transferSlack);
       } else {
         const nSamples = parseInt(document.getElementById('samples-slider').value);
         currentTravelTimes = router.run_tdd_sampled(
-          sourceNode, depTime, depTime + 3600, nSamples, patternIdx
+          sourceNode, depTime, depTime + 3600, nSamples, patternIdx, transferSlack
         );
       }
       renderIsochrone();
@@ -245,6 +254,13 @@ async function main() {
   });
 
   document.getElementById('pattern').addEventListener('change', () => {
+    runQuery();
+  });
+
+  document.getElementById('slack-slider').addEventListener('input', () => {
+    updateSlackDisplay();
+  });
+  document.getElementById('slack-slider').addEventListener('change', () => {
     runQuery();
   });
 }

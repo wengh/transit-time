@@ -64,7 +64,8 @@ fn test_chicago_route() {
     let departure_time = 11 * 3600 + 10 * 60;
     eprintln!("Departure time: {} (11:10 AM)", departure_time);
 
-    let result = transit_router::router::run_tdd(&prepared, origin_node, departure_time, best_pattern);
+    let transfer_slack = 60; // 1 minute default
+    let result = transit_router::router::run_tdd(&prepared, origin_node, departure_time, best_pattern, transfer_slack);
 
     let dest_arrival = result[dest_node as usize][0];
     if dest_arrival == u32::MAX {
