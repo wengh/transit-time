@@ -1,11 +1,30 @@
 import init, { TransitRouter } from '../pkg/transit_router.js';
 
+// City definitions: add new cities here
+const CITIES = [
+  {
+    id: 'chicago',
+    name: 'Chicago, IL',
+    file: 'chicago.bin',
+    center: [41.88, -87.63],
+    zoom: 12,
+    detail: 'CTA buses & rail, Metra, Pace — 711K nodes',
+  },
+  {
+    id: 'chapel_hill',
+    name: 'Chapel Hill, NC',
+    file: 'chapel_hill.bin',
+    center: [35.913, -79.055],
+    zoom: 14,
+    detail: 'Chapel Hill Transit — small city test dataset',
+  },
+];
+
 let router = null;
 let map = null;
 let sourceMarker = null;
 let sourceNode = null;
 let currentTravelTimes = null;
-let pathLayer = null;
 let canvas, ctx;
 
 // Color scale: green -> yellow -> orange -> red -> dark red
@@ -114,7 +133,8 @@ function runQuery() {
         );
       }
       renderIsochrone();
-      status.textContent = `Done. ${currentTravelTimes.filter(t => !isNaN(t)).length} nodes reached.`;
+      const reached = currentTravelTimes.filter(t => !isNaN(t)).length;
+      status.textContent = `Done. ${reached.toLocaleString()} nodes reached.`;
     } catch (e) {
       status.textContent = `Error: ${e}`;
       console.error(e);
@@ -134,34 +154,111 @@ function setupCanvas() {
   resize();
 }
 
-async function main() {
-  // Initialize WASM
-  await init();
-
-  // Load binary data
-  const status = document.getElementById('status');
-  status.textContent = 'Loading transit data...';
-
-  let dataBytes;
-  try {
-    const resp = await fetch('/data/city.bin');
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    dataBytes = new Uint8Array(await resp.arrayBuffer());
-  } catch (e) {
-    status.textContent = `Failed to load data: ${e.message}. Place city.bin in public/data/`;
-    return;
+function populateCityList() {
+  const list = document.getElementById('city-list');
+  list.innerHTML = '';
+  for (const city of CITIES) {
+    const li = document.createElement('li');
+    const btn = document.createElement('button');
+    btn.className = 'city-btn';
+    btn.innerHTML = `<div class="city-name">${city.name}</div><div class="city-detail">${city.detail}</div>`;
+    btn.addEventListener('click', () => loadCity(city));
+    li.appendChild(btn);
+    list.appendChild(li);
   }
+}
 
-  status.textContent = 'Initializing router...';
-  router = new TransitRouter(dataBytes);
+async function loadCity(city) {
+  document.getElementById('city-select').style.display = 'none';
+  const loadingOverlay = document.getElementById('loading-overlay');
+  const loadingText = document.getElementById('loading-text');
+  loadingOverlay.style.display = 'flex';
+  loadingText.textContent = `Loading ${city.name}...`;
 
-  status.textContent = `Loaded: ${router.num_nodes()} nodes, ${router.num_stops()} stops. Click map to set origin.`;
+  // Reset state
+  router = null;
+  sourceMarker = null;
+  sourceNode = null;
+  currentTravelTimes = null;
 
-  // Set up map centered on the data
-  const centerLat = router.node_lat(0);
-  const centerLon = router.node_lon(0);
+  try {
+    const resp = await fetch(`/data/${city.file}`);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const total = parseInt(resp.headers.get('content-length') || '0');
+    let loaded = 0;
 
-  map = L.map('map').setView([centerLat, centerLon], 13);
+    const reader = resp.body.getReader();
+    const chunks = [];
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      loaded += value.length;
+      if (total > 0) {
+        const pct = Math.round(loaded / total * 100);
+        loadingText.textContent = `Loading ${city.name}... ${pct}%`;
+      }
+    }
+    const dataBytes = new Uint8Array(loaded);
+    let offset = 0;
+    for (const chunk of chunks) {
+      dataBytes.set(chunk, offset);
+      offset += chunk.length;
+    }
+
+    loadingText.textContent = `Initializing router for ${city.name}...`;
+    await new Promise(r => setTimeout(r, 10)); // let UI update
+
+    router = new TransitRouter(dataBytes);
+
+    loadingOverlay.style.display = 'none';
+    document.getElementById('controls').style.display = 'block';
+    document.getElementById('legend').style.display = 'block';
+    document.getElementById('city-title').textContent = city.name;
+    document.getElementById('status').textContent =
+      `${router.num_nodes().toLocaleString()} nodes, ${router.num_stops().toLocaleString()} stops. Click map to set origin.`;
+
+    // Set up or recenter map
+    if (!map) {
+      initMap(city);
+    } else {
+      map.setView(city.center, city.zoom);
+      if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
+    }
+
+    // Populate pattern selector
+    const patternSelect = document.getElementById('pattern');
+    patternSelect.innerHTML = '';
+    const dayNames = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+    for (let i = 0; i < router.num_patterns(); i++) {
+      const mask = router.pattern_day_mask(i);
+      const days = dayNames.filter((_, j) => mask & (1 << j)).join(', ');
+      const opt = document.createElement('option');
+      opt.value = i;
+      opt.textContent = `${days || 'Date-based'}`;
+      patternSelect.appendChild(opt);
+    }
+
+    // Auto-select the pattern with the most coverage (most days set)
+    let bestIdx = 0;
+    let bestBits = 0;
+    for (let i = 0; i < router.num_patterns(); i++) {
+      const mask = router.pattern_day_mask(i);
+      let bits = 0;
+      for (let b = 0; b < 7; b++) if (mask & (1 << b)) bits++;
+      if (bits > bestBits) { bestBits = bits; bestIdx = i; }
+    }
+    patternSelect.value = bestIdx;
+
+  } catch (e) {
+    loadingOverlay.style.display = 'none';
+    document.getElementById('city-select').style.display = 'flex';
+    alert(`Failed to load ${city.name}: ${e.message}`);
+  }
+}
+
+function initMap(city) {
+  map = L.map('map').setView(city.center, city.zoom);
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     attribution: '&copy; OpenStreetMap contributors',
     maxZoom: 19,
@@ -173,20 +270,9 @@ async function main() {
   map.on('moveend', renderIsochrone);
   map.on('zoomend', renderIsochrone);
 
-  // Populate pattern selector
-  const patternSelect = document.getElementById('pattern');
-  const dayNames = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-  for (let i = 0; i < router.num_patterns(); i++) {
-    const mask = router.pattern_day_mask(i);
-    const days = dayNames.filter((_, j) => mask & (1 << j)).join(', ');
-    const opt = document.createElement('option');
-    opt.value = i;
-    opt.textContent = `Pattern ${i}: ${days || 'Date-based'}`;
-    patternSelect.appendChild(opt);
-  }
-
   // Map click handler
   map.on('click', (e) => {
+    if (!router) return;
     const { lat, lng } = e.latlng;
     sourceNode = router.snap_to_node(lat, lng);
     const snapLat = router.node_lat(sourceNode);
@@ -195,15 +281,13 @@ async function main() {
     if (sourceMarker) {
       sourceMarker.setLatLng([snapLat, snapLon]);
     } else {
-      sourceMarker = L.marker([snapLat, snapLon], {
-        title: 'Origin',
-      }).addTo(map);
+      sourceMarker = L.marker([snapLat, snapLon], { title: 'Origin' }).addTo(map);
     }
 
     runQuery();
   });
 
-  // Hover for path display
+  // Hover for travel time display
   map.on('mousemove', (e) => {
     if (!router || !currentTravelTimes) return;
 
@@ -220,7 +304,6 @@ async function main() {
     const minutes = Math.round(tt / 60);
     document.getElementById('hover-time').textContent = `Travel time: ${minutes} min`;
 
-    // Check if this node is a transit stop
     let stopInfo = '';
     for (let s = 0; s < router.num_stops(); s++) {
       if (router.stop_node(s) === node) {
@@ -239,30 +322,29 @@ async function main() {
     runQuery();
   });
 
-  document.getElementById('time-slider').addEventListener('input', () => {
-    updateTimeDisplay();
-  });
-  document.getElementById('time-slider').addEventListener('change', () => {
-    runQuery();
-  });
+  document.getElementById('time-slider').addEventListener('input', updateTimeDisplay);
+  document.getElementById('time-slider').addEventListener('change', runQuery);
+  document.getElementById('samples-slider').addEventListener('input', updateSamplesDisplay);
+  document.getElementById('samples-slider').addEventListener('change', runQuery);
+  document.getElementById('pattern').addEventListener('change', runQuery);
+  document.getElementById('slack-slider').addEventListener('input', updateSlackDisplay);
+  document.getElementById('slack-slider').addEventListener('change', runQuery);
 
-  document.getElementById('samples-slider').addEventListener('input', () => {
-    updateSamplesDisplay();
+  // Change city button
+  document.getElementById('change-city').addEventListener('click', () => {
+    document.getElementById('controls').style.display = 'none';
+    document.getElementById('legend').style.display = 'none';
+    document.getElementById('hover-info').style.display = 'none';
+    currentTravelTimes = null;
+    if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
+    if (sourceMarker) { sourceMarker.remove(); sourceMarker = null; }
+    document.getElementById('city-select').style.display = 'flex';
   });
-  document.getElementById('samples-slider').addEventListener('change', () => {
-    runQuery();
-  });
+}
 
-  document.getElementById('pattern').addEventListener('change', () => {
-    runQuery();
-  });
-
-  document.getElementById('slack-slider').addEventListener('input', () => {
-    updateSlackDisplay();
-  });
-  document.getElementById('slack-slider').addEventListener('change', () => {
-    runQuery();
-  });
+async function main() {
+  await init();
+  populateCityList();
 }
 
 main();
