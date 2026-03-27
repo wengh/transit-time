@@ -8,7 +8,7 @@ const CITIES = [
     file: 'chicago.bin',
     center: [41.88, -87.63],
     zoom: 12,
-    detail: 'CTA buses & rail, Metra, Pace — 711K nodes',
+    detail: 'CTA buses & rail, Metra, Pace',
   },
   {
     id: 'chapel_hill',
@@ -16,7 +16,7 @@ const CITIES = [
     file: 'chapel_hill.bin',
     center: [35.913, -79.055],
     zoom: 14,
-    detail: 'Chapel Hill Transit — small city test dataset',
+    detail: 'Chapel Hill Transit',
   },
 ];
 
@@ -26,12 +26,12 @@ let sourceMarker = null;
 let sourceNode = null;
 let currentTravelTimes = null;
 let canvas, ctx;
+let currentCity = null;
+let maxTimeSec = 7200; // current max travel time in seconds
 
-// Color scale: green -> yellow -> orange -> red -> dark red
 function travelTimeColor(seconds) {
   if (isNaN(seconds) || seconds < 0) return null;
-  const maxTime = 7200; // 2 hours
-  const t = Math.min(seconds / maxTime, 1.0);
+  const t = Math.min(seconds / maxTimeSec, 1.0);
 
   let r, g, b;
   if (t < 0.25) {
@@ -64,14 +64,23 @@ function formatTime(seconds) {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
 }
 
+function getSelectedDayOfWeek() {
+  const dateStr = document.getElementById('date-picker').value;
+  if (!dateStr) return 0; // Monday default
+  // JS Date: 0=Sun, we need 0=Mon
+  const d = new Date(dateStr + 'T12:00:00');
+  const jsDay = d.getDay(); // 0=Sun
+  return jsDay === 0 ? 6 : jsDay - 1; // Convert to 0=Mon..6=Sun
+}
+
 function updateTimeDisplay() {
-  const slider = document.getElementById('time-slider');
-  document.getElementById('time-display').textContent = formatTime(parseInt(slider.value));
+  document.getElementById('time-display').textContent =
+    formatTime(parseInt(document.getElementById('time-slider').value));
 }
 
 function updateSamplesDisplay() {
-  const slider = document.getElementById('samples-slider');
-  document.getElementById('samples-display').textContent = slider.value;
+  document.getElementById('samples-display').textContent =
+    document.getElementById('samples-slider').value;
 }
 
 function updateSlackDisplay() {
@@ -80,6 +89,43 @@ function updateSlackDisplay() {
   const s = val % 60;
   document.getElementById('slack-display').textContent =
     `${m}:${String(s).padStart(2, '0')}`;
+}
+
+function updateMaxTimeDisplay() {
+  const val = parseInt(document.getElementById('maxtime-slider').value);
+  document.getElementById('maxtime-display').textContent = `${val} min`;
+  maxTimeSec = val * 60;
+  updateLegend();
+}
+
+function updateLegend() {
+  const maxMin = maxTimeSec / 60;
+  document.getElementById('legend-mid').textContent = `${Math.round(maxMin / 2)}`;
+  document.getElementById('legend-max').textContent = `${maxMin} min`;
+
+  // Update gradient to reflect current maxTime
+  const gradient = document.getElementById('legend-gradient');
+  gradient.style.background =
+    'linear-gradient(to right, #00ff00, #ffff00, #ff8800, #ff0000, #880000)';
+}
+
+function updatePatternInfo() {
+  if (!router) return;
+  const dayOfWeek = getSelectedDayOfWeek();
+  const dayNames = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+  let matchCount = 0;
+  let totalEvents = 0;
+  for (let i = 0; i < router.num_patterns(); i++) {
+    const mask = router.pattern_day_mask(i);
+    if (mask & (1 << dayOfWeek)) {
+      matchCount++;
+      // We can't easily get event counts from WASM, just count patterns
+    }
+  }
+
+  document.getElementById('pattern-info').textContent =
+    `${dayNames[dayOfWeek]}: ${matchCount} service pattern${matchCount !== 1 ? 's' : ''} active`;
 }
 
 function renderIsochrone() {
@@ -94,7 +140,7 @@ function renderIsochrone() {
 
   for (let i = 0; i < numNodes; i++) {
     const tt = currentTravelTimes[i];
-    if (isNaN(tt) || tt < 0) continue;
+    if (isNaN(tt) || tt < 0 || tt > maxTimeSec) continue;
 
     const color = travelTimeColor(tt);
     if (!color) continue;
@@ -115,9 +161,10 @@ function runQuery() {
   if (!router || sourceNode === null) return;
 
   const mode = document.getElementById('mode').value;
-  const patternIdx = parseInt(document.getElementById('pattern').value);
   const depTime = parseInt(document.getElementById('time-slider').value);
   const transferSlack = parseInt(document.getElementById('slack-slider').value);
+  const dayOfWeek = getSelectedDayOfWeek();
+  const maxTime = parseInt(document.getElementById('maxtime-slider').value) * 60;
 
   const status = document.getElementById('status');
   status.textContent = 'Computing...';
@@ -125,16 +172,18 @@ function runQuery() {
   setTimeout(() => {
     try {
       if (mode === 'single') {
-        currentTravelTimes = router.run_tdd(sourceNode, depTime, patternIdx, transferSlack);
+        currentTravelTimes = router.run_tdd_for_day(
+          sourceNode, depTime, dayOfWeek, transferSlack, maxTime
+        );
       } else {
         const nSamples = parseInt(document.getElementById('samples-slider').value);
-        currentTravelTimes = router.run_tdd_sampled(
-          sourceNode, depTime, depTime + 3600, nSamples, patternIdx, transferSlack
+        currentTravelTimes = router.run_tdd_sampled_for_day(
+          sourceNode, depTime, depTime + 3600, nSamples, dayOfWeek, transferSlack, maxTime
         );
       }
       renderIsochrone();
-      const reached = currentTravelTimes.filter(t => !isNaN(t)).length;
-      status.textContent = `Done. ${reached.toLocaleString()} nodes reached.`;
+      const reached = currentTravelTimes.filter(t => !isNaN(t) && t <= maxTime).length;
+      status.textContent = `Done. ${reached.toLocaleString()} nodes within ${maxTime / 60} min.`;
     } catch (e) {
       status.textContent = `Error: ${e}`;
       console.error(e);
@@ -162,13 +211,22 @@ function populateCityList() {
     const btn = document.createElement('button');
     btn.className = 'city-btn';
     btn.innerHTML = `<div class="city-name">${city.name}</div><div class="city-detail">${city.detail}</div>`;
-    btn.addEventListener('click', () => loadCity(city));
+    btn.addEventListener('click', () => {
+      history.replaceState(null, '', `/${city.id}`);
+      loadCity(city);
+    });
     li.appendChild(btn);
     list.appendChild(li);
   }
 }
 
+function getCityFromUrl() {
+  const path = window.location.pathname.replace(/^\//, '').replace(/\/$/, '');
+  return CITIES.find(c => c.id === path) || null;
+}
+
 async function loadCity(city) {
+  currentCity = city;
   document.getElementById('city-select').style.display = 'none';
   const loadingOverlay = document.getElementById('loading-overlay');
   const loadingText = document.getElementById('loading-text');
@@ -177,7 +235,6 @@ async function loadCity(city) {
 
   // Reset state
   router = null;
-  sourceMarker = null;
   sourceNode = null;
   currentTravelTimes = null;
 
@@ -207,7 +264,7 @@ async function loadCity(city) {
     }
 
     loadingText.textContent = `Initializing router for ${city.name}...`;
-    await new Promise(r => setTimeout(r, 10)); // let UI update
+    await new Promise(r => setTimeout(r, 10));
 
     router = new TransitRouter(dataBytes);
 
@@ -215,44 +272,28 @@ async function loadCity(city) {
     document.getElementById('controls').style.display = 'block';
     document.getElementById('legend').style.display = 'block';
     document.getElementById('city-title').textContent = city.name;
+
+    // Set date picker to today
+    const today = new Date();
+    document.getElementById('date-picker').value = today.toISOString().slice(0, 10);
+    updatePatternInfo();
+    updateMaxTimeDisplay();
+
     document.getElementById('status').textContent =
       `${router.num_nodes().toLocaleString()} nodes, ${router.num_stops().toLocaleString()} stops. Click map to set origin.`;
 
-    // Set up or recenter map
     if (!map) {
       initMap(city);
     } else {
       map.setView(city.center, city.zoom);
+      if (sourceMarker) { sourceMarker.remove(); sourceMarker = null; }
       if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
     }
-
-    // Populate pattern selector
-    const patternSelect = document.getElementById('pattern');
-    patternSelect.innerHTML = '';
-    const dayNames = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-    for (let i = 0; i < router.num_patterns(); i++) {
-      const mask = router.pattern_day_mask(i);
-      const days = dayNames.filter((_, j) => mask & (1 << j)).join(', ');
-      const opt = document.createElement('option');
-      opt.value = i;
-      opt.textContent = `${days || 'Date-based'}`;
-      patternSelect.appendChild(opt);
-    }
-
-    // Auto-select the pattern with the most coverage (most days set)
-    let bestIdx = 0;
-    let bestBits = 0;
-    for (let i = 0; i < router.num_patterns(); i++) {
-      const mask = router.pattern_day_mask(i);
-      let bits = 0;
-      for (let b = 0; b < 7; b++) if (mask & (1 << b)) bits++;
-      if (bits > bestBits) { bestBits = bits; bestIdx = i; }
-    }
-    patternSelect.value = bestIdx;
 
   } catch (e) {
     loadingOverlay.style.display = 'none';
     document.getElementById('city-select').style.display = 'flex';
+    history.replaceState(null, '', '/');
     alert(`Failed to load ${city.name}: ${e.message}`);
   }
 }
@@ -266,11 +307,9 @@ function initMap(city) {
 
   setupCanvas();
 
-  // Re-render on map move
   map.on('moveend', renderIsochrone);
   map.on('zoomend', renderIsochrone);
 
-  // Map click handler
   map.on('click', (e) => {
     if (!router) return;
     const { lat, lng } = e.latlng;
@@ -287,7 +326,6 @@ function initMap(city) {
     runQuery();
   });
 
-  // Hover for travel time display
   map.on('mousemove', (e) => {
     if (!router || !currentTravelTimes) return;
 
@@ -322,15 +360,22 @@ function initMap(city) {
     runQuery();
   });
 
+  document.getElementById('date-picker').addEventListener('change', () => {
+    updatePatternInfo();
+    runQuery();
+  });
   document.getElementById('time-slider').addEventListener('input', updateTimeDisplay);
   document.getElementById('time-slider').addEventListener('change', runQuery);
   document.getElementById('samples-slider').addEventListener('input', updateSamplesDisplay);
   document.getElementById('samples-slider').addEventListener('change', runQuery);
-  document.getElementById('pattern').addEventListener('change', runQuery);
+  document.getElementById('maxtime-slider').addEventListener('input', () => {
+    updateMaxTimeDisplay();
+    renderIsochrone(); // re-render with new color scale immediately
+  });
+  document.getElementById('maxtime-slider').addEventListener('change', runQuery);
   document.getElementById('slack-slider').addEventListener('input', updateSlackDisplay);
   document.getElementById('slack-slider').addEventListener('change', runQuery);
 
-  // Change city button
   document.getElementById('change-city').addEventListener('click', () => {
     document.getElementById('controls').style.display = 'none';
     document.getElementById('legend').style.display = 'none';
@@ -338,6 +383,7 @@ function initMap(city) {
     currentTravelTimes = null;
     if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
     if (sourceMarker) { sourceMarker.remove(); sourceMarker = null; }
+    history.replaceState(null, '', '/');
     document.getElementById('city-select').style.display = 'flex';
   });
 }
@@ -345,6 +391,12 @@ function initMap(city) {
 async function main() {
   await init();
   populateCityList();
+
+  // Check URL for direct city link
+  const urlCity = getCityFromUrl();
+  if (urlCity) {
+    loadCity(urlCity);
+  }
 }
 
 main();

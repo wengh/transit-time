@@ -22,9 +22,7 @@
     #city-select-inner h1 { font-size: 24px; margin-bottom: 8px; }
     #city-select-inner p { color: #666; margin-bottom: 24px; font-size: 14px; }
     .city-list { list-style: none; padding: 0; }
-    .city-list li {
-      margin-bottom: 10px;
-    }
+    .city-list li { margin-bottom: 10px; }
     .city-btn {
       display: block; width: 100%; padding: 14px 20px;
       background: white; border: 1px solid #ddd; border-radius: 8px;
@@ -54,6 +52,7 @@
     .control-group label { display: block; font-size: 13px; margin-bottom: 4px; color: #555; }
     .control-group select, .control-group input { width: 100%; padding: 6px; }
     #status { font-size: 12px; color: #888; margin-top: 8px; }
+    #pattern-info { font-size: 11px; color: #aaa; margin-top: 4px; }
     #change-city {
       display: inline-block; margin-top: 10px; padding: 4px 10px;
       background: #f0f0f0; border: 1px solid #ccc; border-radius: 4px;
@@ -68,7 +67,6 @@
     }
     #legend-gradient {
       width: 200px; height: 20px; border-radius: 4px;
-      background: linear-gradient(to right, #00ff00, #ffff00, #ff8800, #ff0000, #880000);
     }
     #legend-labels { display: flex; justify-content: space-between; font-size: 11px; margin-top: 4px; }
     #hover-info {
@@ -108,8 +106,8 @@
       </select>
     </div>
     <div class="control-group">
-      <label>Service Pattern</label>
-      <select id="pattern"></select>
+      <label>Date</label>
+      <input type="date" id="date-picker" />
     </div>
     <div class="control-group">
       <label>Departure Time: <span id="time-display">08:00</span></label>
@@ -120,9 +118,14 @@
       <input type="range" id="samples-slider" min="3" max="30" value="10" />
     </div>
     <div class="control-group">
+      <label>Max travel time: <span id="maxtime-display">120 min</span></label>
+      <input type="range" id="maxtime-slider" min="10" max="180" value="120" step="5" />
+    </div>
+    <div class="control-group">
       <label>Transfer slack: <span id="slack-display">1:00</span></label>
       <input type="range" id="slack-slider" min="0" max="300" value="60" step="15" />
     </div>
+    <div id="pattern-info"></div>
     <div id="status">Click on the map to set origin</div>
     <button id="change-city">Change city</button>
   </div>
@@ -130,7 +133,7 @@
   <div id="legend">
     <div id="legend-gradient"></div>
     <div id="legend-labels">
-      <span>0 min</span><span>30</span><span>60</span><span>90</span><span>120</span>
+      <span>0 min</span><span id="legend-mid"></span><span id="legend-max"></span>
     </div>
   </div>
 

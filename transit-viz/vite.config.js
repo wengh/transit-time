@@ -9,4 +9,6 @@ export default defineConfig({
   server: {
     port: 3000,
   },
+  // SPA fallback: serve index.html for city routes like /chicago, /chapel_hill
+  appType: 'spa',
 });

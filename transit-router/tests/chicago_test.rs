@@ -38,13 +38,9 @@ fn test_chicago_route() {
         }
     }
 
-    // Pick the Thursday pattern with most events
-    let thu_patterns: Vec<(usize, usize)> = prepared.patterns.iter().enumerate()
-        .filter(|(_, p)| p.day_mask & thu_bit != 0)
-        .map(|(i, p)| (i, p.events.len()))
-        .collect();
-    let best_pattern = thu_patterns.iter().max_by_key(|(_, n)| *n).unwrap().0;
-    eprintln!("Using pattern {} (most events for Thursday)", best_pattern);
+    // Use patterns_for_day to find all Thursday patterns (matches what the web UI does)
+    let thu_patterns = transit_router::router::patterns_for_day(&prepared, 3); // 3 = Thursday
+    eprintln!("All Thursday patterns: {:?}", thu_patterns);
 
     // Snap origin and destination
     let origin_lat = 41.8961613696194;
@@ -65,7 +61,10 @@ fn test_chicago_route() {
     eprintln!("Departure time: {} (11:10 AM)", departure_time);
 
     let transfer_slack = 60; // 1 minute default
-    let result = transit_router::router::run_tdd(&prepared, origin_node, departure_time, best_pattern, transfer_slack);
+    let max_time = 7200; // 2 hours
+    let result = transit_router::router::run_tdd_multi(
+        &prepared, origin_node, departure_time, &thu_patterns, transfer_slack, max_time,
+    );
 
     let dest_arrival = result[dest_node as usize][0];
     if dest_arrival == u32::MAX {

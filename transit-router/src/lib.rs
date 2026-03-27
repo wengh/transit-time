@@ -83,23 +83,11 @@ impl TransitRouter {
         self.data.patterns[idx as usize].day_mask
     }
 
-    pub fn find_pattern_for_day(&self, day_of_week: u32) -> i32 {
-        let bit = 1u8 << day_of_week;
-        for (i, p) in self.data.patterns.iter().enumerate() {
-            if p.day_mask & bit != 0 {
-                return i as i32;
-            }
-        }
-        -1
-    }
-
     pub fn snap_to_node(&self, lat: f64, lon: f64) -> u32 {
         router::snap_to_node(&self.data, lat, lon)
     }
 
-    /// Run single-departure TDD.
-    /// `transfer_slack`: minimum seconds when switching routes (default 60).
-    /// Returns travel times as Float64Array (NaN for unreached).
+    /// Run single-departure TDD with a single pattern.
     pub fn run_tdd(
         &self,
         source_node: u32,
@@ -123,6 +111,76 @@ impl TransitRouter {
             .collect()
     }
 
+    /// Run TDD for a specific day of week (0=Mon..6=Sun).
+    /// Merges all matching patterns. Returns travel times as Float64Array (NaN for unreached).
+    pub fn run_tdd_for_day(
+        &self,
+        source_node: u32,
+        departure_time: u32,
+        day_of_week: u8,
+        transfer_slack: u32,
+        max_time: u32,
+    ) -> Vec<f64> {
+        let pattern_indices = router::patterns_for_day(&self.data, day_of_week);
+        let result = router::run_tdd_multi(
+            &self.data, source_node, departure_time,
+            &pattern_indices, transfer_slack, max_time,
+        );
+        result
+            .iter()
+            .map(|r| {
+                if r[0] == u32::MAX {
+                    f64::NAN
+                } else {
+                    (r[0] - departure_time) as f64
+                }
+            })
+            .collect()
+    }
+
+    /// Run sampled TDD for a specific day of week over a time window.
+    pub fn run_tdd_sampled_for_day(
+        &self,
+        source_node: u32,
+        window_start: u32,
+        window_end: u32,
+        n_samples: u32,
+        day_of_week: u8,
+        transfer_slack: u32,
+        max_time: u32,
+    ) -> Vec<f64> {
+        let pattern_indices = router::patterns_for_day(&self.data, day_of_week);
+        let num_nodes = self.data.num_nodes;
+        let mut sum_times = vec![0.0f64; num_nodes];
+        let mut count = vec![0u32; num_nodes];
+
+        let step = if n_samples > 1 {
+            (window_end - window_start) / (n_samples - 1)
+        } else {
+            0
+        };
+
+        for i in 0..n_samples {
+            let dep_time = window_start + i * step;
+            let result = router::run_tdd_multi(
+                &self.data, source_node, dep_time,
+                &pattern_indices, transfer_slack, max_time,
+            );
+            for (j, r) in result.iter().enumerate() {
+                if r[0] != u32::MAX {
+                    sum_times[j] += (r[0] - dep_time) as f64;
+                    count[j] += 1;
+                }
+            }
+        }
+
+        sum_times
+            .iter()
+            .zip(count.iter())
+            .map(|(&s, &c)| if c > 0 { s / c as f64 } else { f64::NAN })
+            .collect()
+    }
+
     /// Run TDD and return full SSSP result for path reconstruction.
     pub fn run_tdd_full(
         &self,
@@ -136,101 +194,6 @@ impl TransitRouter {
             pattern_index as usize, transfer_slack,
         );
         SsspResult { results }
-    }
-
-    /// Run sampled TDD over a time window. Returns average travel times as Float64Array.
-    pub fn run_tdd_sampled(
-        &self,
-        source_node: u32,
-        window_start: u32,
-        window_end: u32,
-        n_samples: u32,
-        pattern_index: u32,
-        transfer_slack: u32,
-    ) -> Vec<f64> {
-        let num_nodes = self.data.num_nodes;
-        let mut sum_times = vec![0.0f64; num_nodes];
-        let mut count = vec![0u32; num_nodes];
-
-        let step = if n_samples > 1 {
-            (window_end - window_start) / (n_samples - 1)
-        } else {
-            0
-        };
-
-        for i in 0..n_samples {
-            let dep_time = window_start + i * step;
-            let result = router::run_tdd(
-                &self.data, source_node, dep_time,
-                pattern_index as usize, transfer_slack,
-            );
-            for (j, r) in result.iter().enumerate() {
-                if r[0] != u32::MAX {
-                    sum_times[j] += (r[0] - dep_time) as f64;
-                    count[j] += 1;
-                }
-            }
-        }
-
-        sum_times
-            .iter()
-            .zip(count.iter())
-            .map(|(&s, &c)| {
-                if c > 0 {
-                    s / c as f64
-                } else {
-                    f64::NAN
-                }
-            })
-            .collect()
-    }
-
-    /// Run sampled TDD and return all SSSP results for path display.
-    pub fn run_tdd_sampled_full(
-        &self,
-        source_node: u32,
-        window_start: u32,
-        window_end: u32,
-        n_samples: u32,
-        pattern_index: u32,
-        transfer_slack: u32,
-    ) -> SampledResult {
-        let num_nodes = self.data.num_nodes;
-        let mut all_results = Vec::with_capacity(n_samples as usize);
-        let mut sum_times = vec![0.0f64; num_nodes];
-        let mut count = vec![0u32; num_nodes];
-
-        let step = if n_samples > 1 {
-            (window_end - window_start) / (n_samples - 1)
-        } else {
-            0
-        };
-
-        for i in 0..n_samples {
-            let dep_time = window_start + i * step;
-            let results = router::run_tdd(
-                &self.data, source_node, dep_time,
-                pattern_index as usize, transfer_slack,
-            );
-            for (j, r) in results.iter().enumerate() {
-                if r[0] != u32::MAX {
-                    sum_times[j] += (r[0] - dep_time) as f64;
-                    count[j] += 1;
-                }
-            }
-            all_results.push(SsspResult { results });
-        }
-
-        let avg_times: Vec<f64> = sum_times
-            .iter()
-            .zip(count.iter())
-            .map(|(&s, &c)| if c > 0 { s / c as f64 } else { f64::NAN })
-            .collect();
-
-        SampledResult {
-            results: all_results,
-            avg_times,
-        }
     }
 
     /// Reconstruct path from source to destination.
