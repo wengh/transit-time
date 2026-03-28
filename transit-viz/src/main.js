@@ -26,6 +26,7 @@ let sourceMarker = null;
 let sourceNode = null;
 let currentTravelTimes = null;
 let currentSsspList = null; // Array of SsspResult objects for path reconstruction
+let nodeCoords = null; // Float64Array: [lat0, lon0, lat1, lon1, ...] cached from WASM
 let currentCity = null;
 let maxTimeSec = 2700; // current max travel time in seconds
 
@@ -129,7 +130,52 @@ function updatePatternInfo() {
 }
 
 let isoOverlay = null;
-let isoRenderZoom = null; // zoom level of last render
+
+// Reusable WebGL resources (created once, reused across renders)
+let glCanvas = null;
+let gl = null;
+let glProgram = null;
+let glPosBuffer = null;
+let glColorBuffer = null;
+
+function initWebGL() {
+  glCanvas = document.createElement('canvas');
+  gl = glCanvas.getContext('webgl', { alpha: true, premultipliedAlpha: false, antialias: false });
+  if (!gl) return false;
+
+  const vsrc = `
+    attribute vec2 a_pos;
+    attribute vec4 a_color;
+    uniform float u_pointSize;
+    varying vec4 v_color;
+    void main() {
+      gl_Position = vec4(a_pos, 0.0, 1.0);
+      gl_PointSize = u_pointSize;
+      v_color = a_color;
+    }`;
+  const fsrc = `
+    precision mediump float;
+    varying vec4 v_color;
+    void main() {
+      gl_FragColor = v_color;
+    }`;
+
+  function compile(type, src) {
+    const s = gl.createShader(type);
+    gl.shaderSource(s, src);
+    gl.compileShader(s);
+    return s;
+  }
+  glProgram = gl.createProgram();
+  gl.attachShader(glProgram, compile(gl.VERTEX_SHADER, vsrc));
+  gl.attachShader(glProgram, compile(gl.FRAGMENT_SHADER, fsrc));
+  gl.linkProgram(glProgram);
+  gl.useProgram(glProgram);
+
+  glPosBuffer = gl.createBuffer();
+  glColorBuffer = gl.createBuffer();
+  return true;
+}
 
 function renderIsochrone() {
   if (!router || !currentTravelTimes || !map) return;
@@ -137,7 +183,6 @@ function renderIsochrone() {
   const bounds = map.getBounds();
   const zoom = map.getZoom();
 
-  // Pad bounds by 50% on each side so panning doesn't immediately show blank edges
   const padLat = (bounds.getNorth() - bounds.getSouth()) * 0.5;
   const padLng = (bounds.getEast() - bounds.getWest()) * 0.5;
   const renderBounds = L.latLngBounds(
@@ -149,46 +194,99 @@ function renderIsochrone() {
   const bottomRight = map.project(renderBounds.getSouthEast(), zoom);
   const w = Math.ceil(bottomRight.x - topLeft.x);
   const h = Math.ceil(bottomRight.y - topLeft.y);
-
   if (w <= 0 || h <= 0) return;
 
-  const offscreen = document.createElement('canvas');
-  offscreen.width = w;
-  offscreen.height = h;
-  const octx = offscreen.getContext('2d');
+  // Lazy-init WebGL
+  if (!gl && !initWebGL()) return;
+
+  glCanvas.width = w;
+  glCanvas.height = h;
+  gl.viewport(0, 0, w, h);
+  gl.clearColor(0, 0, 0, 0);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
+  // Precompute Mercator projection constants to avoid per-point map.project() calls
+  const scale = 256 * Math.pow(2, zoom);
 
   const numNodes = router.num_nodes();
-  const dotSize = Math.max(2, Math.min(6, 14 - zoom));
+  // Minimum 1m diameter: at equator, 1px = 40075016 / (256 * 2^z) meters
+  const metersPerPx = 40075016 / scale;
+  const minPx = 5 / metersPerPx;
+  const dotSize = Math.max(minPx, Math.max(2, Math.min(6, 14 - zoom)));
+  const ox = topLeft.x;
+  const oy = topLeft.y;
+  const invW2 = 2 / w;
+  const invH2 = 2 / h;
+
+  // Build position and color arrays from cached nodeCoords
+  const positions = new Float32Array(numNodes * 2);
+  const colors = new Uint8Array(numNodes * 4);
+  let count = 0;
+  const coords = nodeCoords;
+  const times = currentTravelTimes;
+  const maxT = maxTimeSec;
 
   for (let i = 0; i < numNodes; i++) {
-    const tt = currentTravelTimes[i];
-    if (isNaN(tt) || tt < 0 || tt > maxTimeSec) continue;
+    const tt = times[i];
+    if (!(tt >= 0 && tt <= maxT)) continue; // handles NaN too
 
     const color = travelTimeColor(tt);
     if (!color) continue;
 
-    const lat = router.node_lat(i);
-    const lon = router.node_lon(i);
+    const ci2 = i * 2;
+    const lat = coords[ci2];
+    const lon = coords[ci2 + 1];
 
-    const px = map.project([lat, lon], zoom);
-    const x = px.x - topLeft.x;
-    const y = px.y - topLeft.y;
+    // Inline Web Mercator projection (same math as Leaflet's map.project)
+    const x = scale * (lon / 360 + 0.5) - ox;
+    const y = scale * (0.5 - Math.log(Math.tan(Math.PI / 4 + lat * Math.PI / 360)) / (2 * Math.PI)) - oy;
 
     if (x < -dotSize || x > w + dotSize || y < -dotSize || y > h + dotSize) continue;
 
-    octx.fillStyle = `rgba(${color[0]},${color[1]},${color[2]},0.6)`;
-    octx.fillRect(x - dotSize / 2, y - dotSize / 2, dotSize, dotSize);
+    const ci = count * 2;
+    positions[ci] = x * invW2 - 1;
+    positions[ci + 1] = 1 - y * invH2;
+
+    const cc = count * 4;
+    colors[cc] = color[0];
+    colors[cc + 1] = color[1];
+    colors[cc + 2] = color[2];
+    colors[cc + 3] = 153; // 0.6 * 255
+
+    count++;
   }
 
-  // Swap: add new overlay first, then remove old (no flash)
+  if (count === 0) return;
+
+  // Upload positions
+  const posLoc = gl.getAttribLocation(glProgram, 'a_pos');
+  gl.bindBuffer(gl.ARRAY_BUFFER, glPosBuffer);
+  gl.bufferData(gl.ARRAY_BUFFER, positions.subarray(0, count * 2), gl.DYNAMIC_DRAW);
+  gl.enableVertexAttribArray(posLoc);
+  gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
+
+  // Upload colors
+  const colorLoc = gl.getAttribLocation(glProgram, 'a_color');
+  gl.bindBuffer(gl.ARRAY_BUFFER, glColorBuffer);
+  gl.bufferData(gl.ARRAY_BUFFER, colors.subarray(0, count * 4), gl.DYNAMIC_DRAW);
+  gl.enableVertexAttribArray(colorLoc);
+  gl.vertexAttribPointer(colorLoc, 4, gl.UNSIGNED_BYTE, true, 0, 0);
+
+  // Set point size and draw
+  gl.uniform1f(gl.getUniformLocation(glProgram, 'u_pointSize'), dotSize);
+  gl.drawArrays(gl.POINTS, 0, count);
+  gl.finish();
+
+  // Swap overlay
   const oldOverlay = isoOverlay;
-  isoOverlay = L.imageOverlay(offscreen.toDataURL(), renderBounds, {
+  isoOverlay = L.imageOverlay(glCanvas.toDataURL(), renderBounds, {
     opacity: 1,
     interactive: false,
     zIndex: 500,
   }).addTo(map);
   if (oldOverlay) map.removeLayer(oldOverlay);
-  isoRenderZoom = zoom;
 }
 
 function runQuery() {
@@ -322,6 +420,7 @@ async function loadCity(city) {
     await new Promise(r => setTimeout(r, 10));
 
     router = new TransitRouter(dataBytes);
+    nodeCoords = router.all_node_coords(); // cache once, avoid per-frame WASM calls
 
     loadingOverlay.style.display = 'none';
     document.getElementById('controls').style.display = 'block';
@@ -383,7 +482,6 @@ function initMap(city) {
   });
 
   let routePolylines = [];
-  let hoverDebounce = null;
   let lastHoveredNode = null;
 
   function clearRouteOverlay() {
@@ -550,7 +648,7 @@ function initMap(city) {
       const range = maxT - minT;
 
       html += '<div style="border-top:1px solid #ddd;padding-top:6px;margin-top:6px">';
-      html += '<canvas id="time-dist" width="200" height="32" style="width:200px;height:32px"></canvas>';
+      html += '<canvas id="time-dist" height="32" style="width:100%;height:32px;display:block"></canvas>';
       html += `<div style="display:flex;justify-content:space-between;font-size:10px;color:#888;margin-top:2px">`;
       html += `<span>${minMin} min</span><span>${avgMin} avg</span><span>${maxMin} min</span></div>`;
       html += '</div>';
@@ -561,8 +659,12 @@ function initMap(city) {
       // Draw distribution on canvas
       const distCanvas = document.getElementById('time-dist');
       if (distCanvas) {
+        // Match canvas pixel size to its CSS layout size
+        const rect = distCanvas.getBoundingClientRect();
+        distCanvas.width = Math.round(rect.width);
+        distCanvas.height = Math.round(rect.height);
         const dctx = distCanvas.getContext('2d');
-        const w = 200, h = 32;
+        const w = distCanvas.width, h = distCanvas.height;
         dctx.clearRect(0, 0, w, h);
         const y = h / 2;
         const pad = 8;
@@ -629,25 +731,22 @@ function initMap(city) {
     if (node === lastHoveredNode) return;
     lastHoveredNode = node;
 
-    if (hoverDebounce) clearTimeout(hoverDebounce);
-    hoverDebounce = setTimeout(() => {
-      // Reconstruct paths from all SSSP results
-      const allPaths = [];
-      for (const sssp of currentSsspList) {
-        const depTime = router.sssp_departure_time(sssp);
-        const arrival = router.node_arrival_time(sssp, node);
-        if (arrival >= 0xFFFFFFFF) {
-          allPaths.push({ segments: [], totalTime: null });
-          continue;
-        }
-        const pathArray = router.reconstruct_path(sssp, node);
-        const segments = parsePathSegments(sssp, pathArray, depTime);
-        allPaths.push({ segments, totalTime: arrival - depTime });
+    // Reconstruct paths from all SSSP results
+    const allPaths = [];
+    for (const sssp of currentSsspList) {
+      const depTime = router.sssp_departure_time(sssp);
+      const arrival = router.node_arrival_time(sssp, node);
+      if (arrival >= 0xFFFFFFFF) {
+        allPaths.push({ segments: [], totalTime: null });
+        continue;
       }
+      const pathArray = router.reconstruct_path(sssp, node);
+      const segments = parsePathSegments(sssp, pathArray, depTime);
+      allPaths.push({ segments, totalTime: arrival - depTime });
+    }
 
-      drawRouteSegments(allPaths.filter(p => p.segments.length > 0));
-      buildHoverPanel(allPaths, node);
-    }, 50);
+    drawRouteSegments(allPaths.filter(p => p.segments.length > 0));
+    buildHoverPanel(allPaths, node);
   });
 
   map.on('mouseout', () => {

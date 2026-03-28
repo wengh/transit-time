@@ -83,6 +83,17 @@ impl TransitRouter {
         self.data.nodes[idx as usize].lon
     }
 
+    /// Return all node positions as flat [lat0, lon0, lat1, lon1, ...] array.
+    /// Called once after data load, cached on JS side.
+    pub fn all_node_coords(&self) -> Vec<f64> {
+        let mut out = Vec::with_capacity(self.data.num_nodes * 2);
+        for n in &self.data.nodes {
+            out.push(n.lat);
+            out.push(n.lon);
+        }
+        out
+    }
+
     pub fn stop_name(&self, idx: u32) -> String {
         self.data.stops[idx as usize].name.clone()
     }
