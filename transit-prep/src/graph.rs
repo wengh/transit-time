@@ -449,6 +449,20 @@ fn build_graph_from_raw(raw: RawOsmData) -> Result<OsmGraph> {
 pub fn snap_stops_to_nodes(stops: &[Stop], graph: &OsmGraph) -> Vec<(u32, u32)> {
     const MAX_SNAP_DISTANCE_METERS: f64 = 400.0;
     const ENTRANCE_PREFERENCE_METERS: f64 = 150.0;
+    // Cell size in degrees (~500m at mid-latitudes) to cover MAX_SNAP_DISTANCE with one neighbor ring
+    const CELL_SIZE_LAT: f64 = 0.0045;
+    const CELL_SIZE_LON: f64 = 0.006;
+
+    // Build spatial grid index
+    let mut grid: HashMap<(i32, i32), Vec<usize>> = HashMap::new();
+    for (i, node) in graph.nodes.iter().enumerate() {
+        let cell = (
+            (node.lat / CELL_SIZE_LAT).floor() as i32,
+            (node.lon / CELL_SIZE_LON).floor() as i32,
+        );
+        grid.entry(cell).or_default().push(i);
+    }
+
     let mut mapping = Vec::new();
     let mut skipped = 0;
     let mut snapped_to_entrance = 0;
@@ -459,15 +473,26 @@ pub fn snap_stops_to_nodes(stops: &[Stop], graph: &OsmGraph) -> Vec<(u32, u32)> 
         let mut best_entrance_dist = f64::MAX;
         let mut best_entrance_node = None;
 
-        for node in &graph.nodes {
-            let dist = haversine(stop.lat, stop.lon, node.lat, node.lon);
-            if dist < best_dist {
-                best_dist = dist;
-                best_node = node.index;
-            }
-            if node.is_entrance && dist < best_entrance_dist {
-                best_entrance_dist = dist;
-                best_entrance_node = Some(node.index);
+        let cell_lat = (stop.lat / CELL_SIZE_LAT).floor() as i32;
+        let cell_lon = (stop.lon / CELL_SIZE_LON).floor() as i32;
+
+        // Search the 3x3 neighborhood of cells
+        for dlat in -1..=1 {
+            for dlon in -1..=1 {
+                if let Some(indices) = grid.get(&(cell_lat + dlat, cell_lon + dlon)) {
+                    for &idx in indices {
+                        let node = &graph.nodes[idx];
+                        let dist = haversine(stop.lat, stop.lon, node.lat, node.lon);
+                        if dist < best_dist {
+                            best_dist = dist;
+                            best_node = node.index;
+                        }
+                        if node.is_entrance && dist < best_entrance_dist {
+                            best_entrance_dist = dist;
+                            best_entrance_node = Some(node.index);
+                        }
+                    }
+                }
             }
         }
 
