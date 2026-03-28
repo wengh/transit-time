@@ -88,16 +88,16 @@ pub fn run_prep(
 
     // Step 4: Build OSM graph
     eprintln!("\n--- Building OSM graph ---");
-    let osm_graph = graph::build_graph(&osm_path, bbox)?;
+    let mut osm_graph = graph::build_graph(&osm_path, bbox)?;
     eprintln!(
         "Graph: {} nodes, {} edges",
         osm_graph.nodes.len(),
         osm_graph.edges.len(),
     );
 
-    // Step 5: Snap stops to OSM nodes
-    eprintln!("\n--- Snapping stops to OSM nodes ---");
-    let stop_to_node = graph::snap_stops_to_nodes(&gtfs_data.stops, &osm_graph);
+    // Step 5: Snap stops to OSM edges (inserting virtual nodes)
+    eprintln!("\n--- Snapping stops to OSM edges ---");
+    let stop_to_node = graph::snap_stops_to_nodes(&gtfs_data.stops, &mut osm_graph);
     eprintln!("Snapped {} stops", stop_to_node.len());
 
     // Step 6: Build service patterns and event arrays

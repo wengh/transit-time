@@ -443,51 +443,90 @@ fn build_graph_from_raw(raw: RawOsmData) -> Result<OsmGraph> {
     Ok(OsmGraph { nodes, edges })
 }
 
-/// Snap each transit stop to its nearest OSM node.
+/// Project point P onto line segment AB. Returns (t, proj_lat, proj_lon) where
+/// t is the fractional position along AB (0.0 = A, 1.0 = B) and proj is the
+/// closest point on the segment. Uses linear interpolation in lat/lon space,
+/// which is accurate enough for short street segments.
+fn project_onto_segment(
+    p_lat: f64, p_lon: f64,
+    a_lat: f64, a_lon: f64,
+    b_lat: f64, b_lon: f64,
+) -> (f64, f64, f64) {
+    let dx = b_lon - a_lon;
+    let dy = b_lat - a_lat;
+    let len_sq = dx * dx + dy * dy;
+    if len_sq < 1e-20 {
+        return (0.0, a_lat, a_lon);
+    }
+    let t = ((p_lon - a_lon) * dx + (p_lat - a_lat) * dy) / len_sq;
+    let t = t.clamp(0.0, 1.0);
+    (t, a_lat + t * dy, a_lon + t * dx)
+}
+
+struct SnapResult {
+    stop_index: u32,
+    edge_index: usize,
+    t: f64,           // fractional position along edge
+    proj_lat: f64,
+    proj_lon: f64,
+    dist: f64,        // distance from stop to projected point in meters
+}
+
+/// Snap each transit stop to its nearest point on an OSM edge (or entrance node).
+/// Inserts virtual nodes at snap points and splits edges accordingly.
 /// Prefers entrance nodes when within ENTRANCE_PREFERENCE_METERS.
-/// Only snaps stops within MAX_SNAP_DISTANCE_METERS.
-pub fn snap_stops_to_nodes(stops: &[Stop], graph: &OsmGraph) -> Vec<(u32, u32)> {
+pub fn snap_stops_to_nodes(stops: &[Stop], graph: &mut OsmGraph) -> Vec<(u32, u32)> {
     const MAX_SNAP_DISTANCE_METERS: f64 = 400.0;
     const ENTRANCE_PREFERENCE_METERS: f64 = 150.0;
-    // Cell size in degrees (~500m at mid-latitudes) to cover MAX_SNAP_DISTANCE with one neighbor ring
     const CELL_SIZE_LAT: f64 = 0.0045;
     const CELL_SIZE_LON: f64 = 0.006;
 
-    // Build spatial grid index
-    let mut grid: HashMap<(i32, i32), Vec<usize>> = HashMap::new();
-    for (i, node) in graph.nodes.iter().enumerate() {
-        let cell = (
-            (node.lat / CELL_SIZE_LAT).floor() as i32,
-            (node.lon / CELL_SIZE_LON).floor() as i32,
-        );
-        grid.entry(cell).or_default().push(i);
+    // Build spatial grid index over edges (indexed by cells of both endpoints)
+    let mut edge_grid: HashMap<(i32, i32), Vec<usize>> = HashMap::new();
+    for (i, edge) in graph.edges.iter().enumerate() {
+        let u = &graph.nodes[edge.u as usize];
+        let v = &graph.nodes[edge.v as usize];
+        for node in [u, v] {
+            let cell = (
+                (node.lat / CELL_SIZE_LAT).floor() as i32,
+                (node.lon / CELL_SIZE_LON).floor() as i32,
+            );
+            edge_grid.entry(cell).or_default().push(i);
+        }
     }
 
-    let mut mapping = Vec::new();
+    // Build spatial grid index over entrance nodes
+    let mut entrance_grid: HashMap<(i32, i32), Vec<usize>> = HashMap::new();
+    for (i, node) in graph.nodes.iter().enumerate() {
+        if node.is_entrance {
+            let cell = (
+                (node.lat / CELL_SIZE_LAT).floor() as i32,
+                (node.lon / CELL_SIZE_LON).floor() as i32,
+            );
+            entrance_grid.entry(cell).or_default().push(i);
+        }
+    }
+
+    // Pass 1: Compute snap points (read-only)
+    let mut snap_results: Vec<SnapResult> = Vec::new();
+    let mut entrance_mappings: Vec<(u32, u32)> = Vec::new();
     let mut skipped = 0;
     let mut snapped_to_entrance = 0;
 
     for stop in stops {
-        let mut best_dist = f64::MAX;
-        let mut best_node = 0u32;
-        let mut best_entrance_dist = f64::MAX;
-        let mut best_entrance_node = None;
-
         let cell_lat = (stop.lat / CELL_SIZE_LAT).floor() as i32;
         let cell_lon = (stop.lon / CELL_SIZE_LON).floor() as i32;
 
-        // Search the 3x3 neighborhood of cells
+        // Check entrance nodes first
+        let mut best_entrance_dist = f64::MAX;
+        let mut best_entrance_node = None;
         for dlat in -1..=1 {
             for dlon in -1..=1 {
-                if let Some(indices) = grid.get(&(cell_lat + dlat, cell_lon + dlon)) {
+                if let Some(indices) = entrance_grid.get(&(cell_lat + dlat, cell_lon + dlon)) {
                     for &idx in indices {
                         let node = &graph.nodes[idx];
                         let dist = haversine(stop.lat, stop.lon, node.lat, node.lon);
-                        if dist < best_dist {
-                            best_dist = dist;
-                            best_node = node.index;
-                        }
-                        if node.is_entrance && dist < best_entrance_dist {
+                        if dist < best_entrance_dist {
                             best_entrance_dist = dist;
                             best_entrance_node = Some(node.index);
                         }
@@ -496,23 +535,137 @@ pub fn snap_stops_to_nodes(stops: &[Stop], graph: &OsmGraph) -> Vec<(u32, u32)> 
             }
         }
 
-        let (chosen_node, chosen_dist) =
-            if let Some(ent_node) = best_entrance_node {
-                if best_entrance_dist <= ENTRANCE_PREFERENCE_METERS {
-                    snapped_to_entrance += 1;
-                    (ent_node, best_entrance_dist)
-                } else {
-                    (best_node, best_dist)
-                }
-            } else {
-                (best_node, best_dist)
-            };
+        if best_entrance_dist <= ENTRANCE_PREFERENCE_METERS {
+            snapped_to_entrance += 1;
+            entrance_mappings.push((stop.index, best_entrance_node.unwrap()));
+            continue;
+        }
 
-        if chosen_dist <= MAX_SNAP_DISTANCE_METERS {
-            mapping.push((stop.index, chosen_node));
+        // Find nearest edge projection
+        let mut best_dist = f64::MAX;
+        let mut best_snap: Option<SnapResult> = None;
+        let mut seen_edges: HashSet<usize> = HashSet::new();
+
+        for dlat in -1..=1 {
+            for dlon in -1..=1 {
+                if let Some(edge_indices) = edge_grid.get(&(cell_lat + dlat, cell_lon + dlon)) {
+                    for &ei in edge_indices {
+                        if !seen_edges.insert(ei) {
+                            continue; // already checked this edge
+                        }
+                        let edge = &graph.edges[ei];
+                        let u = &graph.nodes[edge.u as usize];
+                        let v = &graph.nodes[edge.v as usize];
+                        let (t, proj_lat, proj_lon) = project_onto_segment(
+                            stop.lat, stop.lon, u.lat, u.lon, v.lat, v.lon,
+                        );
+                        let dist = haversine(stop.lat, stop.lon, proj_lat, proj_lon);
+                        if dist < best_dist {
+                            best_dist = dist;
+                            best_snap = Some(SnapResult {
+                                stop_index: stop.index,
+                                edge_index: ei,
+                                t,
+                                proj_lat,
+                                proj_lon,
+                                dist,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Some(snap) = best_snap {
+            if snap.dist <= MAX_SNAP_DISTANCE_METERS {
+                snap_results.push(snap);
+            } else {
+                skipped += 1;
+            }
         } else {
             skipped += 1;
         }
+    }
+
+    // Pass 2: Group snaps by edge, sort by t, mutate graph
+    let mut snaps_by_edge: HashMap<usize, Vec<usize>> = HashMap::new();
+    for (i, snap) in snap_results.iter().enumerate() {
+        snaps_by_edge.entry(snap.edge_index).or_default().push(i);
+    }
+
+    let mut mapping = entrance_mappings;
+    let mut edges_to_remove: HashSet<usize> = HashSet::new();
+
+    for (edge_idx, mut snap_indices) in snaps_by_edge {
+        // Sort snaps along the edge by t
+        snap_indices.sort_by(|&a, &b| {
+            snap_results[a].t.partial_cmp(&snap_results[b].t).unwrap()
+        });
+
+        let orig_edge = &graph.edges[edge_idx];
+        let orig_u = orig_edge.u;
+        let orig_v = orig_edge.v;
+        let orig_dist = orig_edge.distance_meters;
+        edges_to_remove.insert(edge_idx);
+
+        // Walk along the edge, splitting at each snap point
+        let mut prev_node = orig_u;
+        let mut prev_t = 0.0f64;
+
+        for &si in &snap_indices {
+            let snap = &snap_results[si];
+
+            // If snap is at an endpoint (t ≈ 0 or t ≈ 1), reuse existing node
+            if snap.t < 0.001 {
+                mapping.push((snap.stop_index, orig_u));
+                continue;
+            }
+            if snap.t > 0.999 {
+                mapping.push((snap.stop_index, orig_v));
+                continue;
+            }
+
+            // Create virtual node at projected point
+            let new_index = graph.nodes.len() as u32;
+            graph.nodes.push(OsmNode {
+                id: 0,
+                lat: snap.proj_lat,
+                lon: snap.proj_lon,
+                index: new_index,
+                is_entrance: false,
+            });
+
+            // Edge from previous split point to this virtual node
+            let seg_dist = ((snap.t - prev_t) * orig_dist as f64) as f32;
+            if seg_dist > 0.0 {
+                graph.edges.push(OsmEdge {
+                    u: prev_node,
+                    v: new_index,
+                    distance_meters: seg_dist,
+                });
+            }
+
+            mapping.push((snap.stop_index, new_index));
+            prev_node = new_index;
+            prev_t = snap.t;
+        }
+
+        // Final segment from last split point to original endpoint v
+        let final_dist = ((1.0 - prev_t) * orig_dist as f64) as f32;
+        if final_dist > 0.0 {
+            graph.edges.push(OsmEdge {
+                u: prev_node,
+                v: orig_v,
+                distance_meters: final_dist,
+            });
+        }
+    }
+
+    // Remove original split edges (swap-remove in reverse order to keep indices valid)
+    let mut remove_sorted: Vec<usize> = edges_to_remove.into_iter().collect();
+    remove_sorted.sort_unstable_by(|a, b| b.cmp(a));
+    for idx in remove_sorted {
+        graph.edges.swap_remove(idx);
     }
 
     if skipped > 0 {
@@ -527,6 +680,10 @@ pub fn snap_stops_to_nodes(stops: &[Stop], graph: &OsmGraph) -> Vec<(u32, u32)> 
             snapped_to_entrance
         );
     }
+    eprintln!(
+        "Created {} virtual nodes for edge snapping",
+        snap_results.len()
+    );
 
     mapping
 }
