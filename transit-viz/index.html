@@ -72,7 +72,8 @@
     #hover-info {
       position: absolute; bottom: 20px; right: 10px; z-index: 1000;
       background: white; padding: 12px; border-radius: 8px;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.2); display: none; min-width: 200px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.2); display: none;
+      min-width: 220px; max-width: 320px; max-height: 50vh; overflow-y: auto;
     }
     canvas#overlay {
       position: absolute; top: 0; left: 0; z-index: 500;
@@ -118,8 +119,8 @@
       <input type="range" id="samples-slider" min="3" max="30" value="10" />
     </div>
     <div class="control-group">
-      <label>Max travel time: <span id="maxtime-display">120 min</span></label>
-      <input type="range" id="maxtime-slider" min="10" max="180" value="120" step="5" />
+      <label>Max travel time: <span id="maxtime-display">45 min</span></label>
+      <input type="range" id="maxtime-slider" min="10" max="180" value="45" step="5" />
     </div>
     <div class="control-group">
       <label>Transfer slack: <span id="slack-display">1:00</span></label>
@@ -138,8 +139,6 @@
   </div>
 
   <div id="hover-info">
-    <div id="hover-time"></div>
-    <div id="hover-stop" style="font-size:12px;color:#666;margin-top:4px;"></div>
   </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>

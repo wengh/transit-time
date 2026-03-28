@@ -14,6 +14,7 @@ pub struct PreparedData {
     pub patterns: Vec<ServicePattern>,
     pub shapes: HashMap<String, Vec<(f64, f64)>>,
     pub route_names: Vec<String>,
+    pub route_shapes: Vec<String>, // route_index -> shape_id
 }
 
 // Binary format:
@@ -157,6 +158,14 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
             write_f64(&mut buf, lat);
             write_f64(&mut buf, lon);
         }
+    }
+
+    // Route-to-shape mapping
+    write_u32(&mut buf, data.route_shapes.len() as u32);
+    for shape_id in &data.route_shapes {
+        let id_bytes = shape_id.as_bytes();
+        write_u32(&mut buf, id_bytes.len() as u32);
+        buf.extend_from_slice(id_bytes);
     }
 
     // Compress with gzip

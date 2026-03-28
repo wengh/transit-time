@@ -6,6 +6,23 @@ const WALKING_SPEED_MPS: f32 = 1.4; // ~5 km/h
 pub const DEFAULT_TRANSFER_SLACK: u32 = 60; // default minimum transfer time in seconds
 pub const DEFAULT_MAX_TIME: u32 = 7200; // 2 hours
 
+#[derive(Clone, Copy)]
+pub struct NodeResult {
+    pub arrival_time: u32,
+    pub prev_node: u32,
+    pub edge_type: u32,   // 0 = walk, 1 = transit
+    pub route_index: u32, // u32::MAX if walk
+}
+
+impl NodeResult {
+    pub const UNREACHED: NodeResult = NodeResult {
+        arrival_time: u32::MAX,
+        prev_node: u32::MAX,
+        edge_type: 0,
+        route_index: u32::MAX,
+    };
+}
+
 /// Snap lat/lon to nearest OSM node.
 pub fn snap_to_node(data: &PreparedData, lat: f64, lon: f64) -> u32 {
     let mut best = 0u32;
@@ -41,7 +58,7 @@ pub fn run_tdd(
     departure_time: u32,
     pattern_index: usize,
     transfer_slack: u32,
-) -> Vec<[u32; 4]> {
+) -> Vec<NodeResult> {
     let patterns: Vec<&PatternData> = if pattern_index < data.patterns.len() {
         vec![&data.patterns[pattern_index]]
     } else {
@@ -58,7 +75,7 @@ pub fn run_tdd_multi(
     pattern_indices: &[usize],
     transfer_slack: u32,
     max_time: u32,
-) -> Vec<[u32; 4]> {
+) -> Vec<NodeResult> {
     let patterns: Vec<&PatternData> = pattern_indices
         .iter()
         .filter_map(|&i| data.patterns.get(i))
@@ -73,10 +90,12 @@ fn run_tdd_inner(
     patterns: &[&PatternData],
     transfer_slack: u32,
     max_time: u32,
-) -> Vec<[u32; 4]> {
+) -> Vec<NodeResult> {
     let n = data.num_nodes;
-    let mut result = vec![[u32::MAX, u32::MAX, 0u32, u32::MAX]; n];
-    result[source_node as usize] = [departure_time, u32::MAX, 0, u32::MAX];
+    let mut result = vec![NodeResult::UNREACHED; n];
+    result[source_node as usize] = NodeResult {
+        arrival_time: departure_time, prev_node: u32::MAX, edge_type: 0, route_index: u32::MAX,
+    };
 
     let mut arrived_by_route = vec![u32::MAX; n];
 
@@ -84,7 +103,7 @@ fn run_tdd_inner(
     pq.push(Reverse((departure_time, source_node)));
 
     while let Some(Reverse((t_current, node))) = pq.pop() {
-        if t_current > result[node as usize][0] {
+        if t_current > result[node as usize].arrival_time {
             continue;
         }
 
@@ -98,8 +117,10 @@ fn run_tdd_inner(
         for &(neighbor, distance) in &data.adj[node as usize] {
             let walk_time = (distance / WALKING_SPEED_MPS) as u32;
             let arrival = t_current + walk_time;
-            if arrival < result[neighbor as usize][0] {
-                result[neighbor as usize] = [arrival, node, 0, u32::MAX];
+            if arrival < result[neighbor as usize].arrival_time {
+                result[neighbor as usize] = NodeResult {
+                    arrival_time: arrival, prev_node: node, edge_type: 0, route_index: u32::MAX,
+                };
                 arrived_by_route[neighbor as usize] = u32::MAX;
                 pq.push(Reverse((arrival, neighbor)));
             }
@@ -129,7 +150,7 @@ fn scan_pattern_at_stop(
     current_route: u32,
     transfer_slack: u32,
     node: u32,
-    result: &mut Vec<[u32; 4]>,
+    result: &mut Vec<NodeResult>,
     arrived_by_route: &mut Vec<u32>,
     pq: &mut BinaryHeap<Reverse<(u32, u32)>>,
 ) {
@@ -156,9 +177,10 @@ fn scan_pattern_at_stop(
             };
             let arrival = earliest + wait + freq.travel_time;
             let dest_node = data.stop_node_map[freq.next_stop_index as usize];
-            if arrival < result[dest_node as usize][0] {
-                result[dest_node as usize] =
-                    [arrival, node, 1, freq.route_index];
+            if arrival < result[dest_node as usize].arrival_time {
+                result[dest_node as usize] = NodeResult {
+                    arrival_time: arrival, prev_node: node, edge_type: 1, route_index: freq.route_index,
+                };
                 arrived_by_route[dest_node as usize] = freq.route_index;
                 pq.push(Reverse((arrival, dest_node)));
             }
@@ -195,9 +217,10 @@ fn scan_pattern_at_stop(
                 found_same.push(event.route_index);
                 let arrival = dep_time + event.travel_time;
                 let dest_node = data.stop_node_map[event.next_stop_index as usize];
-                if arrival < result[dest_node as usize][0] {
-                    result[dest_node as usize] =
-                        [arrival, node, 1, event.route_index];
+                if arrival < result[dest_node as usize].arrival_time {
+                    result[dest_node as usize] = NodeResult {
+                        arrival_time: arrival, prev_node: node, edge_type: 1, route_index: event.route_index,
+                    };
                     arrived_by_route[dest_node as usize] = event.route_index;
                     pq.push(Reverse((arrival, dest_node)));
                 }
@@ -211,9 +234,10 @@ fn scan_pattern_at_stop(
                 found_transfer.push(event.route_index);
                 let arrival = dep_time + event.travel_time;
                 let dest_node = data.stop_node_map[event.next_stop_index as usize];
-                if arrival < result[dest_node as usize][0] {
-                    result[dest_node as usize] =
-                        [arrival, node, 1, event.route_index];
+                if arrival < result[dest_node as usize].arrival_time {
+                    result[dest_node as usize] = NodeResult {
+                        arrival_time: arrival, prev_node: node, edge_type: 1, route_index: event.route_index,
+                    };
                     arrived_by_route[dest_node as usize] = event.route_index;
                     pq.push(Reverse((arrival, dest_node)));
                 }

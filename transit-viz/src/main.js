@@ -25,9 +25,10 @@ let map = null;
 let sourceMarker = null;
 let sourceNode = null;
 let currentTravelTimes = null;
+let currentSsspList = null; // Array of SsspResult objects for path reconstruction
 let canvas, ctx;
 let currentCity = null;
-let maxTimeSec = 7200; // current max travel time in seconds
+let maxTimeSec = 2700; // current max travel time in seconds
 
 function travelTimeColor(seconds) {
   if (isNaN(seconds) || seconds < 0) return null;
@@ -172,14 +173,42 @@ function runQuery() {
   setTimeout(() => {
     try {
       if (mode === 'single') {
-        currentTravelTimes = router.run_tdd_for_day(
+        const sssp = router.run_tdd_full_for_day(
           sourceNode, depTime, dayOfWeek, transferSlack, maxTime
         );
+        currentSsspList = [sssp];
+        // Derive travel times from SSSP
+        const numNodes = router.num_nodes();
+        currentTravelTimes = new Float64Array(numNodes);
+        for (let i = 0; i < numNodes; i++) {
+          const arr = router.node_arrival_time(sssp, i);
+          currentTravelTimes[i] = arr < 0xFFFFFFFF ? (arr - depTime) : NaN;
+        }
       } else {
         const nSamples = parseInt(document.getElementById('samples-slider').value);
-        currentTravelTimes = router.run_tdd_sampled_for_day(
-          sourceNode, depTime, depTime + 3600, nSamples, dayOfWeek, transferSlack, maxTime
-        );
+        const interval = Math.floor(3600 / nSamples);
+        currentSsspList = [];
+        const numNodes = router.num_nodes();
+        const sumTimes = new Float64Array(numNodes);
+        const counts = new Uint32Array(numNodes);
+        for (let s = 0; s < nSamples; s++) {
+          const t = depTime + s * interval;
+          const sssp = router.run_tdd_full_for_day(
+            sourceNode, t, dayOfWeek, transferSlack, maxTime
+          );
+          currentSsspList.push(sssp);
+          for (let i = 0; i < numNodes; i++) {
+            const arr = router.node_arrival_time(sssp, i);
+            if (arr < 0xFFFFFFFF) {
+              sumTimes[i] += (arr - t);
+              counts[i]++;
+            }
+          }
+        }
+        currentTravelTimes = new Float64Array(numNodes);
+        for (let i = 0; i < numNodes; i++) {
+          currentTravelTimes[i] = counts[i] > 0 ? sumTimes[i] / counts[i] : NaN;
+        }
       }
       renderIsochrone();
       const reached = currentTravelTimes.filter(t => !isNaN(t) && t <= maxTime).length;
@@ -300,9 +329,10 @@ async function loadCity(city) {
 
 function initMap(city) {
   map = L.map('map').setView(city.center, city.zoom);
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    attribution: '&copy; OpenStreetMap contributors',
-    maxZoom: 19,
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png', {
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/">CARTO</a>',
+    maxZoom: 20,
+    subdomains: 'abcd',
   }).addTo(map);
 
   setupCanvas();
@@ -326,8 +356,237 @@ function initMap(city) {
     runQuery();
   });
 
+  let routePolylines = [];
+  let hoverDebounce = null;
+  let lastHoveredNode = null;
+
+  function clearRouteOverlay() {
+    routePolylines.forEach(p => p.remove());
+    routePolylines = [];
+  }
+
+  function parsePathSegments(sssp, pathArray, depTime) {
+    // pathArray is flat [node, edgeType, routeIdx, ...] with incoming-edge labels.
+    // For transit segments, boarding stop = last node of previous walk segment.
+    const segments = [];
+    let i = 0;
+    while (i < pathArray.length) {
+      const startIdx = i;
+      const edgeType = pathArray[i + 1];
+      const routeIdx = pathArray[i + 2];
+      // Group consecutive entries with same edge type and route
+      while (i + 3 < pathArray.length &&
+             pathArray[i + 3 + 1] === edgeType &&
+             pathArray[i + 3 + 2] === routeIdx) {
+        i += 3;
+      }
+      const endIdx = i;
+      const startNode = pathArray[startIdx];
+      const endNode = pathArray[endIdx];
+      const startTime = router.node_arrival_time(sssp, startNode);
+      const endTime = router.node_arrival_time(sssp, endNode);
+
+      const coords = [];
+      for (let j = startIdx; j <= endIdx; j += 3) {
+        const n = pathArray[j];
+        coords.push([router.node_lat(n), router.node_lon(n)]);
+      }
+
+      let boardStopName = '';
+      let boardNode = startNode;
+      if (edgeType === 1 && segments.length > 0) {
+        // Boarding stop is the last node of the previous segment
+        const prev = segments[segments.length - 1];
+        boardStopName = prev.endStopName;
+        boardNode = prev.endNodeIdx;
+      }
+
+      // For transit segments, try to use actual route geometry
+      let finalCoords = coords;
+      if (edgeType === 1 && routeIdx < 0xFFFFFFFF) {
+        const shapeCoords = router.route_shape_between(routeIdx, boardNode, endNode);
+        if (shapeCoords.length >= 4) {
+          finalCoords = [];
+          for (let k = 0; k < shapeCoords.length; k += 2) {
+            finalCoords.push([shapeCoords[k], shapeCoords[k + 1]]);
+          }
+        } else if (segments.length > 0) {
+          // Fallback: prepend boarding stop coord
+          const prev = segments[segments.length - 1];
+          if (prev.coords.length > 0) {
+            coords.unshift(prev.coords[prev.coords.length - 1]);
+          }
+        }
+      }
+
+      const seg = {
+        edgeType, // 0=walk, 1=transit
+        routeIdx,
+        routeName: edgeType === 1 && routeIdx < 0xFFFFFFFF ? router.route_name(routeIdx) : '',
+        startStopName: edgeType === 1 ? boardStopName : router.node_stop_name(startNode),
+        endStopName: router.node_stop_name(endNode),
+        endNodeIdx: endNode,
+        duration: endTime - startTime,
+        coords: finalCoords,
+      };
+      segments.push(seg);
+      i += 3;
+    }
+    return segments;
+  }
+
+  // Color palette for transit routes
+  const ROUTE_COLORS = ['#e6194b','#3cb44b','#4363d8','#f58231','#911eb4','#42d4f4','#f032e6','#bfef45','#469990','#e6beff'];
+
+  function drawRouteSegments(allPaths) {
+    clearRouteOverlay();
+    const routeColorMap = {};
+    let colorIdx = 0;
+
+    for (const { segments } of allPaths) {
+      for (const seg of segments) {
+        if (seg.coords.length < 2) continue;
+        let color, dashArray, weight;
+        if (seg.edgeType === 0) {
+          color = '#888';
+          dashArray = '6, 8';
+          weight = 3;
+        } else {
+          if (!(seg.routeName in routeColorMap)) {
+            routeColorMap[seg.routeName] = ROUTE_COLORS[colorIdx % ROUTE_COLORS.length];
+            colorIdx++;
+          }
+          color = routeColorMap[seg.routeName];
+          dashArray = null;
+          weight = 4;
+        }
+        const line = L.polyline(seg.coords, {
+          color, weight, opacity: 1,
+          dashArray, interactive: false,
+        }).addTo(map);
+        routePolylines.push(line);
+      }
+    }
+  }
+
+  function buildHoverPanel(allPaths, node) {
+    const hoverInfo = document.getElementById('hover-info');
+    const isSampled = allPaths.length > 1;
+
+    // Collect travel times from all paths
+    const travelTimes = allPaths
+      .map(p => p.totalTime)
+      .filter(t => t !== null && isFinite(t))
+      .sort((a, b) => a - b);
+
+    if (travelTimes.length === 0) {
+      hoverInfo.style.display = 'none';
+      return;
+    }
+
+    let html = '';
+    if (isSampled) {
+      const avg = Math.round(travelTimes.reduce((a, b) => a + b, 0) / travelTimes.length / 60);
+      const reachCount = travelTimes.length;
+      html += `<div style="font-weight:600;margin-bottom:6px">Avg travel time: ${avg} min (${reachCount}/${allPaths.length} departures)</div>`;
+    } else {
+      const minutes = Math.round(travelTimes[0] / 60);
+      html += `<div style="font-weight:600;margin-bottom:6px">Travel time: ${minutes} min</div>`;
+    }
+
+    // Show route segments from most common (or single) path
+    // Use the path with median travel time
+    const medianPath = allPaths.filter(p => p.totalTime !== null && isFinite(p.totalTime));
+    if (medianPath.length > 0) {
+      const mid = medianPath[Math.floor(medianPath.length / 2)];
+      html += '<div style="border-top:1px solid #ddd;padding-top:6px;margin-top:2px">';
+      for (const seg of mid.segments) {
+        const durMin = Math.round(seg.duration / 60);
+        if (seg.edgeType === 0) {
+          html += `<div style="font-size:12px;color:#666;padding:2px 0">Walk ${durMin} min</div>`;
+        } else {
+          const fromTo = (seg.startStopName && seg.endStopName)
+            ? ` · ${seg.startStopName} → ${seg.endStopName}` : '';
+          html += `<div style="font-size:12px;padding:2px 0"><b>${seg.routeName || 'Transit'}</b>${fromTo}  ${durMin} min</div>`;
+        }
+      }
+      html += '</div>';
+    }
+
+    // Time distribution plot for sampled mode
+    if (isSampled && travelTimes.length >= 2) {
+      const minT = travelTimes[0];
+      const maxT = travelTimes[travelTimes.length - 1];
+      const avgT = travelTimes.reduce((a, b) => a + b, 0) / travelTimes.length;
+      const minMin = Math.round(minT / 60);
+      const maxMin = Math.round(maxT / 60);
+      const avgMin = Math.round(avgT / 60);
+      const range = maxT - minT;
+
+      html += '<div style="border-top:1px solid #ddd;padding-top:6px;margin-top:6px">';
+      html += '<canvas id="time-dist" width="200" height="32" style="width:200px;height:32px"></canvas>';
+      html += `<div style="display:flex;justify-content:space-between;font-size:10px;color:#888;margin-top:2px">`;
+      html += `<span>${minMin} min</span><span>${avgMin} avg</span><span>${maxMin} min</span></div>`;
+      html += '</div>';
+
+      hoverInfo.innerHTML = html;
+      hoverInfo.style.display = 'block';
+
+      // Draw distribution on canvas
+      const distCanvas = document.getElementById('time-dist');
+      if (distCanvas) {
+        const dctx = distCanvas.getContext('2d');
+        const w = 200, h = 32;
+        dctx.clearRect(0, 0, w, h);
+        const y = h / 2;
+        const pad = 8;
+        const plotW = w - 2 * pad;
+
+        // Horizontal line
+        dctx.strokeStyle = '#ccc';
+        dctx.lineWidth = 1;
+        dctx.beginPath();
+        dctx.moveTo(pad, y);
+        dctx.lineTo(w - pad, y);
+        dctx.stroke();
+
+        // End ticks
+        dctx.strokeStyle = '#aaa';
+        dctx.beginPath();
+        dctx.moveTo(pad, y - 6); dctx.lineTo(pad, y + 6);
+        dctx.moveTo(w - pad, y - 6); dctx.lineTo(w - pad, y + 6);
+        dctx.stroke();
+
+        // Sample dots with y jitter to distinguish clusters
+        dctx.fillStyle = '#4a90d9';
+        for (let si = 0; si < travelTimes.length; si++) {
+          const t = travelTimes[si];
+          const x = range > 0 ? pad + ((t - minT) / range) * plotW : w / 2;
+          // Deterministic jitter based on index to avoid overlap
+          const jitter = ((si * 7 + 3) % 11 - 5) * 1.2;
+          dctx.beginPath();
+          dctx.arc(x, y + jitter, 3, 0, Math.PI * 2);
+          dctx.fill();
+        }
+
+        // Average marker (triangle)
+        const avgX = range > 0 ? pad + ((avgT - minT) / range) * plotW : w / 2;
+        dctx.fillStyle = '#333';
+        dctx.beginPath();
+        dctx.moveTo(avgX, y - 8);
+        dctx.lineTo(avgX - 4, y - 14);
+        dctx.lineTo(avgX + 4, y - 14);
+        dctx.closePath();
+        dctx.fill();
+      }
+    } else {
+      hoverInfo.innerHTML = html;
+      hoverInfo.style.display = 'block';
+    }
+  }
+
   map.on('mousemove', (e) => {
-    if (!router || !currentTravelTimes) return;
+    if (!router || !currentTravelTimes || !currentSsspList) return;
 
     const { lat, lng } = e.latlng;
     const node = router.snap_to_node(lat, lng);
@@ -336,21 +595,39 @@ function initMap(city) {
     const hoverInfo = document.getElementById('hover-info');
     if (isNaN(tt) || tt < 0) {
       hoverInfo.style.display = 'none';
+      clearRouteOverlay();
+      lastHoveredNode = null;
       return;
     }
 
-    const minutes = Math.round(tt / 60);
-    document.getElementById('hover-time').textContent = `Travel time: ${minutes} min`;
+    if (node === lastHoveredNode) return;
+    lastHoveredNode = node;
 
-    let stopInfo = '';
-    for (let s = 0; s < router.num_stops(); s++) {
-      if (router.stop_node(s) === node) {
-        stopInfo = router.stop_name(s);
-        break;
+    if (hoverDebounce) clearTimeout(hoverDebounce);
+    hoverDebounce = setTimeout(() => {
+      // Reconstruct paths from all SSSP results
+      const allPaths = [];
+      for (const sssp of currentSsspList) {
+        const depTime = router.sssp_departure_time(sssp);
+        const arrival = router.node_arrival_time(sssp, node);
+        if (arrival >= 0xFFFFFFFF) {
+          allPaths.push({ segments: [], totalTime: null });
+          continue;
+        }
+        const pathArray = router.reconstruct_path(sssp, node);
+        const segments = parsePathSegments(sssp, pathArray, depTime);
+        allPaths.push({ segments, totalTime: arrival - depTime });
       }
-    }
-    document.getElementById('hover-stop').textContent = stopInfo;
-    hoverInfo.style.display = 'block';
+
+      drawRouteSegments(allPaths.filter(p => p.segments.length > 0));
+      buildHoverPanel(allPaths, node);
+    }, 50);
+  });
+
+  map.on('mouseout', () => {
+    clearRouteOverlay();
+    document.getElementById('hover-info').style.display = 'none';
+    lastHoveredNode = null;
   });
 
   // Control event handlers

@@ -59,12 +59,13 @@ pub struct PreparedData {
     pub num_nodes: usize,
     pub num_edges: usize,
     pub num_stops: usize,
-    // Adjacency list for walking graph
-    pub adj: Vec<Vec<(u32, f32)>>, // node_index -> [(neighbor_index, distance_meters)]
-    // Which nodes are transit stops
+    pub adj: Vec<Vec<(u32, f32)>>,
     pub node_is_stop: Vec<bool>,
-    // For each node that is a stop: the stop indices at this node
     pub node_stop_indices: Vec<Vec<u32>>,
+    /// shape_id -> [(lat, lon)]
+    pub shapes: std::collections::HashMap<String, Vec<(f64, f64)>>,
+    /// route_index -> shape_id (empty string if no shape)
+    pub route_shapes: Vec<String>,
 }
 
 pub fn load(compressed: &[u8]) -> Result<PreparedData, String> {
@@ -91,7 +92,7 @@ pub fn load(compressed: &[u8]) -> Result<PreparedData, String> {
     let num_stop_to_node = read_u32(&buf, &mut pos) as usize;
     let num_patterns = read_u32(&buf, &mut pos) as usize;
     let num_route_names = read_u32(&buf, &mut pos) as usize;
-    let _num_shapes = read_u32(&buf, &mut pos) as usize;
+    let num_shapes = read_u32(&buf, &mut pos) as usize;
 
     // Nodes
     let mut nodes = Vec::with_capacity(num_nodes);
@@ -210,6 +211,35 @@ pub fn load(compressed: &[u8]) -> Result<PreparedData, String> {
         });
     }
 
+    // Shapes
+    let mut shapes = std::collections::HashMap::new();
+    for _ in 0..num_shapes {
+        let id_len = read_u32(&buf, &mut pos) as usize;
+        let shape_id = String::from_utf8_lossy(&buf[pos..pos + id_len]).to_string();
+        pos += id_len;
+        let num_points = read_u32(&buf, &mut pos) as usize;
+        let mut points = Vec::with_capacity(num_points);
+        for _ in 0..num_points {
+            let lat = read_f64(&buf, &mut pos);
+            let lon = read_f64(&buf, &mut pos);
+            points.push((lat, lon));
+        }
+        shapes.insert(shape_id, points);
+    }
+
+    // Route-to-shape mapping (may not be present in older binaries)
+    let mut route_shapes = vec![String::new(); num_route_names];
+    if pos < buf.len() {
+        let num_route_shapes = read_u32(&buf, &mut pos) as usize;
+        for i in 0..num_route_shapes {
+            let id_len = read_u32(&buf, &mut pos) as usize;
+            if id_len > 0 {
+                route_shapes[i] = String::from_utf8_lossy(&buf[pos..pos + id_len]).to_string();
+            }
+            pos += id_len;
+        }
+    }
+
     // Build adjacency list
     let mut adj: Vec<Vec<(u32, f32)>> = vec![Vec::new(); num_nodes];
     for edge in &edges {
@@ -230,6 +260,8 @@ pub fn load(compressed: &[u8]) -> Result<PreparedData, String> {
         adj,
         node_is_stop,
         node_stop_indices,
+        shapes,
+        route_shapes,
     })
 }
 

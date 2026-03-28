@@ -6,6 +6,7 @@ mod binary;
 
 use anyhow::{Context, Result};
 use clap::Parser;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
@@ -105,6 +106,22 @@ pub fn run_prep(
     let patterns = gtfs::build_service_patterns(&gtfs_data);
     eprintln!("Built {} service patterns", patterns.len());
 
+    // Build route_index -> shape_id mapping (pick first shape per route from trips)
+    let mut route_id_to_index: HashMap<String, u32> = HashMap::new();
+    for route in &gtfs_data.routes {
+        route_id_to_index.insert(route.id.clone(), route.index);
+    }
+    let mut route_shapes: Vec<String> = vec![String::new(); gtfs_data.routes.len()];
+    for trip in &gtfs_data.trips {
+        if let Some(ref shape_id) = trip.shape_id {
+            if let Some(&ridx) = route_id_to_index.get(&trip.route_id) {
+                if route_shapes[ridx as usize].is_empty() {
+                    route_shapes[ridx as usize] = shape_id.clone();
+                }
+            }
+        }
+    }
+
     // Step 7: Serialize to binary
     eprintln!("\n--- Writing binary output ---");
     let prepared = binary::PreparedData {
@@ -115,6 +132,7 @@ pub fn run_prep(
         patterns,
         shapes: gtfs_data.shapes,
         route_names: gtfs_data.routes.into_iter().map(|r| r.short_name).collect(),
+        route_shapes,
     };
     binary::write_binary(&prepared, output)?;
     let size = std::fs::metadata(output)?.len();

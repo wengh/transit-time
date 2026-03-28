@@ -4,35 +4,59 @@ pub mod router;
 use wasm_bindgen::prelude::*;
 use data::PreparedData;
 
+use router::NodeResult;
+
+/// SSSP result from a TDD query. Usable from both WASM and native code.
+pub struct SsspResult {
+    pub results: Vec<NodeResult>,
+    pub departure_time: u32,
+}
+
+/// Reconstruct path from source to destination.
+/// Returns flat array: [node_index, edge_type, route_index, ...]
+/// Each node is labeled with the *outgoing* edge (edge to next node),
+/// so a boarding stop gets the transit edge type, not walk.
+/// The final node keeps its incoming edge type.
+/// Reconstruct path from source to destination.
+/// Returns flat array: [node_index, edge_type, route_index, ...]
+/// Each node is labeled with the *incoming* edge (how we arrived at it).
+/// For transit segments, the boarding stop is the last node of the
+/// preceding walk segment — callers should use that for display.
+pub fn reconstruct_path(_data: &PreparedData, sssp: &SsspResult, destination: u32) -> Vec<u32> {
+    let mut path = Vec::new();
+    let mut current = destination;
+
+    loop {
+        let r = &sssp.results[current as usize];
+        if r.arrival_time == u32::MAX {
+            return Vec::new();
+        }
+        path.push([current, r.edge_type, r.route_index]);
+
+        if r.prev_node == u32::MAX || r.prev_node == current {
+            break;
+        }
+        current = r.prev_node;
+    }
+
+    path.reverse();
+    path.into_iter().flat_map(|[n, e, r]| [n, e, r]).collect()
+}
+
+// === WASM wrappers ===
+
+#[wasm_bindgen]
+pub struct WasmSsspResult {
+    inner: SsspResult,
+}
+
 #[wasm_bindgen]
 pub struct TransitRouter {
     data: PreparedData,
 }
 
 #[wasm_bindgen]
-pub struct SsspResult {
-    /// For each node: (arrival_time, prev_node, prev_edge_type, prev_route_index)
-    /// edge_type: 0 = walk, 1 = transit
-    /// u32::MAX means unreached
-    results: Vec<[u32; 4]>,
-}
-
-#[wasm_bindgen]
-pub struct SampledResult {
-    results: Vec<SsspResult>,
-    avg_times: Vec<f64>,
-}
-
-#[wasm_bindgen]
-pub struct PathSegment {
-    pub node_index: u32,
-    pub edge_type: u32, // 0 = walk, 1 = transit
-    pub route_index: u32,
-}
-
-#[wasm_bindgen]
 impl TransitRouter {
-    /// Load prepared data from compressed binary bytes.
     #[wasm_bindgen(constructor)]
     pub fn new(bytes: &[u8]) -> Result<TransitRouter, JsValue> {
         let data = data::load(bytes).map_err(|e| JsValue::from_str(&format!("{}", e)))?;
@@ -75,6 +99,16 @@ impl TransitRouter {
         }
     }
 
+    pub fn node_stop_name(&self, node_idx: u32) -> String {
+        let idx = node_idx as usize;
+        if idx < self.data.node_is_stop.len() && self.data.node_is_stop[idx] {
+            if let Some(&stop_idx) = self.data.node_stop_indices[idx].first() {
+                return self.data.stops[stop_idx as usize].name.clone();
+            }
+        }
+        String::new()
+    }
+
     pub fn num_patterns(&self) -> u32 {
         self.data.patterns.len() as u32
     }
@@ -87,7 +121,7 @@ impl TransitRouter {
         router::snap_to_node(&self.data, lat, lon)
     }
 
-    /// Run single-departure TDD with a single pattern.
+    /// Run single-departure TDD. Returns travel times (NaN for unreached).
     pub fn run_tdd(
         &self,
         source_node: u32,
@@ -99,20 +133,12 @@ impl TransitRouter {
             &self.data, source_node, departure_time,
             pattern_index as usize, transfer_slack,
         );
-        result
-            .iter()
-            .map(|r| {
-                if r[0] == u32::MAX {
-                    f64::NAN
-                } else {
-                    (r[0] - departure_time) as f64
-                }
-            })
-            .collect()
+        result.iter().map(|r| {
+            if r.arrival_time == u32::MAX { f64::NAN } else { (r.arrival_time - departure_time) as f64 }
+        }).collect()
     }
 
-    /// Run TDD for a specific day of week (0=Mon..6=Sun).
-    /// Merges all matching patterns. Returns travel times as Float64Array (NaN for unreached).
+    /// Run TDD for a specific day of week. Returns travel times (NaN for unreached).
     pub fn run_tdd_for_day(
         &self,
         source_node: u32,
@@ -126,19 +152,12 @@ impl TransitRouter {
             &self.data, source_node, departure_time,
             &pattern_indices, transfer_slack, max_time,
         );
-        result
-            .iter()
-            .map(|r| {
-                if r[0] == u32::MAX {
-                    f64::NAN
-                } else {
-                    (r[0] - departure_time) as f64
-                }
-            })
-            .collect()
+        result.iter().map(|r| {
+            if r.arrival_time == u32::MAX { f64::NAN } else { (r.arrival_time - departure_time) as f64 }
+        }).collect()
     }
 
-    /// Run sampled TDD for a specific day of week over a time window.
+    /// Run sampled TDD over a time window. Returns averaged travel times.
     pub fn run_tdd_sampled_for_day(
         &self,
         source_node: u32,
@@ -156,9 +175,7 @@ impl TransitRouter {
 
         let step = if n_samples > 1 {
             (window_end - window_start) / (n_samples - 1)
-        } else {
-            0
-        };
+        } else { 0 };
 
         for i in 0..n_samples {
             let dep_time = window_start + i * step;
@@ -167,58 +184,92 @@ impl TransitRouter {
                 &pattern_indices, transfer_slack, max_time,
             );
             for (j, r) in result.iter().enumerate() {
-                if r[0] != u32::MAX {
-                    sum_times[j] += (r[0] - dep_time) as f64;
+                if r.arrival_time != u32::MAX {
+                    sum_times[j] += (r.arrival_time - dep_time) as f64;
                     count[j] += 1;
                 }
             }
         }
 
-        sum_times
-            .iter()
-            .zip(count.iter())
+        sum_times.iter().zip(count.iter())
             .map(|(&s, &c)| if c > 0 { s / c as f64 } else { f64::NAN })
             .collect()
     }
 
     /// Run TDD and return full SSSP result for path reconstruction.
-    pub fn run_tdd_full(
+    pub fn run_tdd_full_for_day(
         &self,
         source_node: u32,
         departure_time: u32,
-        pattern_index: u32,
+        day_of_week: u8,
         transfer_slack: u32,
-    ) -> SsspResult {
-        let results = router::run_tdd(
+        max_time: u32,
+    ) -> WasmSsspResult {
+        let pat_indices = router::patterns_for_day(&self.data, day_of_week);
+        let results = router::run_tdd_multi(
             &self.data, source_node, departure_time,
-            pattern_index as usize, transfer_slack,
+            &pat_indices, transfer_slack, max_time,
         );
-        SsspResult { results }
+        WasmSsspResult { inner: SsspResult { results, departure_time } }
     }
 
-    /// Reconstruct path from source to destination.
-    /// Returns flat array: [node_index, edge_type, route_index, ...]
-    pub fn reconstruct_path(&self, sssp: &SsspResult, destination: u32) -> Vec<u32> {
-        let mut path = Vec::new();
-        let mut current = destination;
+    pub fn node_arrival_time(&self, sssp: &WasmSsspResult, node: u32) -> u32 {
+        sssp.inner.results[node as usize].arrival_time
+    }
 
-        loop {
-            let r = &sssp.results[current as usize];
-            if r[0] == u32::MAX {
-                return Vec::new();
-            }
-            let prev = r[1];
-            let edge_type = r[2];
-            let route_idx = r[3];
-            path.push([current, edge_type, route_idx]);
+    pub fn sssp_departure_time(&self, sssp: &WasmSsspResult) -> u32 {
+        sssp.inner.departure_time
+    }
 
-            if prev == u32::MAX || prev == current {
-                break;
-            }
-            current = prev;
+    pub fn reconstruct_path(&self, sssp: &WasmSsspResult, destination: u32) -> Vec<u32> {
+        reconstruct_path(&self.data, &sssp.inner, destination)
+    }
+
+    /// Get the shape polyline for a route between two stops (identified by node indices).
+    /// Returns flat array [lat, lon, lat, lon, ...] of the sub-polyline, or empty if no shape.
+    pub fn route_shape_between(&self, route_idx: u32, from_node: u32, to_node: u32) -> Vec<f64> {
+        let ri = route_idx as usize;
+        if ri >= self.data.route_shapes.len() {
+            return Vec::new();
+        }
+        let shape_id = &self.data.route_shapes[ri];
+        if shape_id.is_empty() {
+            return Vec::new();
+        }
+        let points = match self.data.shapes.get(shape_id) {
+            Some(p) if p.len() >= 2 => p,
+            _ => return Vec::new(),
+        };
+
+        let from_lat = self.data.nodes[from_node as usize].lat;
+        let from_lon = self.data.nodes[from_node as usize].lon;
+        let to_lat = self.data.nodes[to_node as usize].lat;
+        let to_lon = self.data.nodes[to_node as usize].lon;
+
+        // Find closest point on shape to each stop
+        let mut best_from = 0usize;
+        let mut best_from_d = f64::MAX;
+        let mut best_to = 0usize;
+        let mut best_to_d = f64::MAX;
+        for (i, &(lat, lon)) in points.iter().enumerate() {
+            let df = (lat - from_lat).powi(2) + (lon - from_lon).powi(2);
+            let dt = (lat - to_lat).powi(2) + (lon - to_lon).powi(2);
+            if df < best_from_d { best_from_d = df; best_from = i; }
+            if dt < best_to_d { best_to_d = dt; best_to = i; }
         }
 
-        path.reverse();
-        path.into_iter().flat_map(|[n, e, r]| [n, e, r]).collect()
+        // Ensure from < to along shape (swap if reversed)
+        let (start, end) = if best_from <= best_to {
+            (best_from, best_to)
+        } else {
+            (best_to, best_from)
+        };
+
+        let mut result = Vec::with_capacity((end - start + 1) * 2);
+        for i in start..=end {
+            result.push(points[i].0);
+            result.push(points[i].1);
+        }
+        result
     }
 }

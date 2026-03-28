@@ -66,13 +66,13 @@ fn test_chicago_route() {
         &prepared, origin_node, departure_time, &thu_patterns, transfer_slack, max_time,
     );
 
-    let dest_arrival = result[dest_node as usize][0];
+    let dest_arrival = result[dest_node as usize].arrival_time;
     if dest_arrival == u32::MAX {
         eprintln!("ERROR: Destination is unreachable!");
 
         // Check reachability stats
-        let reachable = result.iter().filter(|r| r[0] != u32::MAX).count();
-        let transit_reached = result.iter().filter(|r| r[2] == 1).count();
+        let reachable = result.iter().filter(|r| r.arrival_time != u32::MAX).count();
+        let transit_reached = result.iter().filter(|r| r.edge_type == 1).count();
         eprintln!("Total reachable: {}, via transit: {}", reachable, transit_reached);
         panic!("Destination unreachable");
     }
@@ -85,30 +85,20 @@ fn test_chicago_route() {
     eprintln!("Travel time: {} min ({} sec)", travel_min, travel_time_sec);
     eprintln!("Arrival time: {:02}:{:02}", arrival_h, arrival_m);
 
-    // Reconstruct path
+    // Reconstruct path using library function
     eprintln!("\n=== PATH RECONSTRUCTION ===");
-    let mut path_nodes: Vec<(u32, u32, u32)> = Vec::new(); // (node, edge_type, route_idx)
-    let mut current = dest_node;
-    loop {
-        let r = &result[current as usize];
-        if r[0] == u32::MAX {
-            break;
-        }
-        path_nodes.push((current, r[2], r[3]));
-        let prev = r[1];
-        if prev == u32::MAX || prev == current {
-            break;
-        }
-        current = prev;
-    }
-    path_nodes.reverse();
+    let sssp = transit_router::SsspResult { results: result, departure_time };
+    let path_flat = transit_router::reconstruct_path(&prepared, &sssp, dest_node);
 
-    // Group consecutive segments by type and route
+    // Group consecutive entries by (edge_type, route_idx)
     let mut segments: Vec<PathSegment> = Vec::new();
-    for &(node, edge_type, route_idx) in &path_nodes {
-        let arrival = result[node as usize][0];
-        let is_stop = prepared.node_is_stop[node as usize];
-        let stop_name = if is_stop {
+    let mut i = 0;
+    while i < path_flat.len() {
+        let node = path_flat[i];
+        let edge_type = path_flat[i + 1];
+        let route_idx = path_flat[i + 2];
+        let arrival = sssp.results[node as usize].arrival_time;
+        let stop_name = if prepared.node_is_stop[node as usize] {
             prepared.node_stop_indices[node as usize]
                 .first()
                 .map(|&si| prepared.stops[si as usize].name.clone())
@@ -124,14 +114,10 @@ fn test_chicago_route() {
 
         if should_start_new {
             segments.push(PathSegment {
-                edge_type,
-                route_idx,
-                start_node: node,
+                edge_type, route_idx,
                 end_node: node,
-                start_arrival: arrival,
-                end_arrival: arrival,
-                start_stop_name: stop_name.clone(),
-                end_stop_name: stop_name,
+                start_arrival: arrival, end_arrival: arrival,
+                start_stop_name: stop_name.clone(), end_stop_name: stop_name,
                 node_count: 1,
             });
         } else {
@@ -141,36 +127,32 @@ fn test_chicago_route() {
             last.end_stop_name = stop_name;
             last.node_count += 1;
         }
+        i += 3;
     }
 
     for (i, seg) in segments.iter().enumerate() {
         let seg_duration = seg.end_arrival - seg.start_arrival;
         let seg_min = seg_duration / 60;
         let seg_sec = seg_duration % 60;
-
-        let start_time_h = seg.start_arrival / 3600;
-        let start_time_m = (seg.start_arrival % 3600) / 60;
-        let end_time_h = seg.end_arrival / 3600;
-        let end_time_m = (seg.end_arrival % 3600) / 60;
+        let (sh, sm) = (seg.start_arrival / 3600, (seg.start_arrival % 3600) / 60);
+        let (eh, em) = (seg.end_arrival / 3600, (seg.end_arrival % 3600) / 60);
 
         if seg.edge_type == 0 {
             eprintln!("  {}. WALK {} min {} sec ({:02}:{:02} -> {:02}:{:02}), {} nodes",
-                i + 1, seg_min, seg_sec, start_time_h, start_time_m,
-                end_time_h, end_time_m, seg.node_count);
+                i + 1, seg_min, seg_sec, sh, sm, eh, em, seg.node_count);
             if !seg.end_stop_name.is_empty() {
                 eprintln!("     to: {}", seg.end_stop_name);
             }
         } else {
             let route_name = if (seg.route_idx as usize) < prepared.route_names.len() {
                 &prepared.route_names[seg.route_idx as usize]
-            } else {
-                "?"
-            };
+            } else { "?" };
             eprintln!("  {}. TRANSIT route '{}' ({} min {} sec, {:02}:{:02} -> {:02}:{:02})",
-                i + 1, route_name, seg_min, seg_sec,
-                start_time_h, start_time_m, end_time_h, end_time_m);
-            if !seg.start_stop_name.is_empty() {
-                eprintln!("     board at: {}", seg.start_stop_name);
+                i + 1, route_name, seg_min, seg_sec, sh, sm, eh, em);
+            // Boarding stop is last node of previous segment
+            let board_name = if i > 0 { &segments[i - 1].end_stop_name } else { &seg.start_stop_name };
+            if !board_name.is_empty() {
+                eprintln!("     board at: {}", board_name);
             }
             if !seg.end_stop_name.is_empty() {
                 eprintln!("     alight at: {}", seg.end_stop_name);
@@ -188,7 +170,6 @@ fn test_chicago_route() {
 struct PathSegment {
     edge_type: u32,
     route_idx: u32,
-    start_node: u32,
     end_node: u32,
     start_arrival: u32,
     end_arrival: u32,
