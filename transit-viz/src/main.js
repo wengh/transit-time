@@ -26,7 +26,6 @@ let sourceMarker = null;
 let sourceNode = null;
 let currentTravelTimes = null;
 let currentSsspList = null; // Array of SsspResult objects for path reconstruction
-let canvas, ctx;
 let currentCity = null;
 let maxTimeSec = 2700; // current max travel time in seconds
 
@@ -129,15 +128,37 @@ function updatePatternInfo() {
     `${dayNames[dayOfWeek]}: ${matchCount} service pattern${matchCount !== 1 ? 's' : ''} active`;
 }
 
-function renderIsochrone() {
-  if (!router || !currentTravelTimes || !map || !canvas) return;
+let isoOverlay = null;
+let isoRenderZoom = null; // zoom level of last render
 
-  const width = canvas.width;
-  const height = canvas.height;
-  ctx.clearRect(0, 0, width, height);
+function renderIsochrone() {
+  if (!router || !currentTravelTimes || !map) return;
+
+  const bounds = map.getBounds();
+  const zoom = map.getZoom();
+
+  // Pad bounds by 50% on each side so panning doesn't immediately show blank edges
+  const padLat = (bounds.getNorth() - bounds.getSouth()) * 0.5;
+  const padLng = (bounds.getEast() - bounds.getWest()) * 0.5;
+  const renderBounds = L.latLngBounds(
+    [bounds.getSouth() - padLat, bounds.getWest() - padLng],
+    [bounds.getNorth() + padLat, bounds.getEast() + padLng],
+  );
+
+  const topLeft = map.project(renderBounds.getNorthWest(), zoom);
+  const bottomRight = map.project(renderBounds.getSouthEast(), zoom);
+  const w = Math.ceil(bottomRight.x - topLeft.x);
+  const h = Math.ceil(bottomRight.y - topLeft.y);
+
+  if (w <= 0 || h <= 0) return;
+
+  const offscreen = document.createElement('canvas');
+  offscreen.width = w;
+  offscreen.height = h;
+  const octx = offscreen.getContext('2d');
 
   const numNodes = router.num_nodes();
-  const dotSize = Math.max(2, Math.min(6, 14 - map.getZoom()));
+  const dotSize = Math.max(2, Math.min(6, 14 - zoom));
 
   for (let i = 0; i < numNodes; i++) {
     const tt = currentTravelTimes[i];
@@ -148,14 +169,26 @@ function renderIsochrone() {
 
     const lat = router.node_lat(i);
     const lon = router.node_lon(i);
-    const point = map.latLngToContainerPoint([lat, lon]);
 
-    if (point.x < -dotSize || point.x > width + dotSize ||
-        point.y < -dotSize || point.y > height + dotSize) continue;
+    const px = map.project([lat, lon], zoom);
+    const x = px.x - topLeft.x;
+    const y = px.y - topLeft.y;
 
-    ctx.fillStyle = `rgba(${color[0]},${color[1]},${color[2]},0.6)`;
-    ctx.fillRect(point.x - dotSize/2, point.y - dotSize/2, dotSize, dotSize);
+    if (x < -dotSize || x > w + dotSize || y < -dotSize || y > h + dotSize) continue;
+
+    octx.fillStyle = `rgba(${color[0]},${color[1]},${color[2]},0.6)`;
+    octx.fillRect(x - dotSize / 2, y - dotSize / 2, dotSize, dotSize);
   }
+
+  // Swap: add new overlay first, then remove old (no flash)
+  const oldOverlay = isoOverlay;
+  isoOverlay = L.imageOverlay(offscreen.toDataURL(), renderBounds, {
+    opacity: 1,
+    interactive: false,
+    zIndex: 500,
+  }).addTo(map);
+  if (oldOverlay) map.removeLayer(oldOverlay);
+  isoRenderZoom = zoom;
 }
 
 function runQuery() {
@@ -221,15 +254,8 @@ function runQuery() {
 }
 
 function setupCanvas() {
-  canvas = document.getElementById('overlay');
-  ctx = canvas.getContext('2d');
-  const resize = () => {
-    canvas.width = window.innerWidth;
-    canvas.height = window.innerHeight;
-    renderIsochrone();
-  };
-  window.addEventListener('resize', resize);
-  resize();
+  // No-op: isochrone rendering now uses L.ImageOverlay
+  // The old overlay canvas is no longer needed
 }
 
 function populateCityList() {
@@ -316,7 +342,7 @@ async function loadCity(city) {
     } else {
       map.setView(city.center, city.zoom);
       if (sourceMarker) { sourceMarker.remove(); sourceMarker = null; }
-      if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
+      if (isoOverlay) { map.removeLayer(isoOverlay); isoOverlay = null; }
     }
 
   } catch (e) {
@@ -658,7 +684,7 @@ function initMap(city) {
     document.getElementById('legend').style.display = 'none';
     document.getElementById('hover-info').style.display = 'none';
     currentTravelTimes = null;
-    if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
+    if (isoOverlay) { map.removeLayer(isoOverlay); isoOverlay = null; }
     if (sourceMarker) { sourceMarker.remove(); sourceMarker = null; }
     history.replaceState(null, '', '/');
     document.getElementById('city-select').style.display = 'flex';

@@ -75,10 +75,6 @@
       box-shadow: 0 2px 8px rgba(0,0,0,0.2); display: none;
       min-width: 220px; max-width: 320px; max-height: 50vh; overflow-y: auto;
     }
-    canvas#overlay {
-      position: absolute; top: 0; left: 0; z-index: 500;
-      pointer-events: none;
-    }
   </style>
 </head>
 <body>
@@ -95,7 +91,6 @@
   </div>
 
   <div id="map"></div>
-  <canvas id="overlay"></canvas>
 
   <div id="controls">
     <h3 id="city-title">Transit Isochrone</h3>
