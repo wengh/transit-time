@@ -56,14 +56,14 @@ The web app loads the WASM router and binary data, then:
 cargo run --release -p transit-prep -- \
   --city "Chapel Hill" \
   --bbox="-79.06,35.90,-79.03,35.93" \
-  --output transit-viz/public/data/city.bin \
+  --output transit-viz/public/data/chicago.bin \
   --cache-dir cache
 
 # Chicago, IL (large city — downloads ~94 MB PBF)
 cargo run --release -p transit-prep -- \
   --city Chicago \
   --bbox="-87.94,41.64,-87.52,42.02" \
-  --output transit-viz/public/data/city.bin \
+  --output transit-viz/public/data/chapel_hill.bin \
   --cache-dir cache
 ```
 
