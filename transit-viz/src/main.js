@@ -1,24 +1,9 @@
 import init, { TransitRouter } from '../pkg/transit_router.js';
 
-// City definitions: add new cities here
-const CITIES = [
-  {
-    id: 'chicago',
-    name: 'Chicago, IL',
-    file: 'chicago.bin',
-    center: [41.88, -87.63],
-    zoom: 12,
-    detail: 'CTA buses & rail, Metra, Pace',
-  },
-  {
-    id: 'chapel_hill',
-    name: 'Chapel Hill, NC',
-    file: 'chapel_hill.bin',
-    center: [35.913, -79.055],
-    zoom: 14,
-    detail: 'Chapel Hill Transit',
-  },
-];
+const cityModules = import.meta.glob('../../cities/*.json', { eager: true });
+const CITIES = Object.values(cityModules)
+  .map(mod => mod.default || mod)
+  .sort((a, b) => a.name.localeCompare(b.name));
 
 let router = null;
 let map = null;

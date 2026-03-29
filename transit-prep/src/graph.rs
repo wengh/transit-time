@@ -7,9 +7,22 @@ use std::path::Path;
 use crate::gtfs::Stop;
 
 const PEDESTRIAN_HIGHWAYS: &[&str] = &[
-    "footway", "pedestrian", "path", "steps", "residential", "living_street",
-    "tertiary", "secondary", "primary", "trunk", "service", "unclassified",
-    "crossing", "cycleway", "track", "corridor",
+    "footway",
+    "pedestrian",
+    "path",
+    "steps",
+    "residential",
+    "living_street",
+    "tertiary",
+    "secondary",
+    "primary",
+    "trunk",
+    "service",
+    "unclassified",
+    "crossing",
+    "cycleway",
+    "track",
+    "corridor",
 ];
 
 #[derive(Debug, Clone)]
@@ -79,108 +92,116 @@ fn parse_xml(osm_path: &Path) -> Result<RawOsmData> {
 
     loop {
         match reader.read_event() {
-            Ok(Event::Start(ref e)) => {
-                match e.name().as_ref() {
-                    b"node" => {
-                        let mut id = 0u64;
-                        let mut lat = 0.0f64;
-                        let mut lon = 0.0f64;
-                        for attr in e.attributes().flatten() {
-                            match attr.key.as_ref() {
-                                b"id" => id = String::from_utf8_lossy(&attr.value).parse().unwrap_or(0),
-                                b"lat" => lat = String::from_utf8_lossy(&attr.value).parse().unwrap_or(0.0),
-                                b"lon" => lon = String::from_utf8_lossy(&attr.value).parse().unwrap_or(0.0),
-                                _ => {}
+            Ok(Event::Start(ref e)) => match e.name().as_ref() {
+                b"node" => {
+                    let mut id = 0u64;
+                    let mut lat = 0.0f64;
+                    let mut lon = 0.0f64;
+                    for attr in e.attributes().flatten() {
+                        match attr.key.as_ref() {
+                            b"id" => id = String::from_utf8_lossy(&attr.value).parse().unwrap_or(0),
+                            b"lat" => {
+                                lat = String::from_utf8_lossy(&attr.value).parse().unwrap_or(0.0)
                             }
-                        }
-                        if id != 0 {
-                            all_nodes.insert(id, (lat, lon));
-                            current_node_id = id;
-                            in_node = true;
-                            node_has_entrance_tag = false;
+                            b"lon" => {
+                                lon = String::from_utf8_lossy(&attr.value).parse().unwrap_or(0.0)
+                            }
+                            _ => {}
                         }
                     }
-                    b"way" => {
-                        in_way = true;
-                        current_way_nodes.clear();
+                    if id != 0 {
+                        all_nodes.insert(id, (lat, lon));
+                        current_node_id = id;
+                        in_node = true;
+                        node_has_entrance_tag = false;
                     }
-                    _ => {}
                 }
-            }
-            Ok(Event::Empty(ref e)) => {
-                match e.name().as_ref() {
-                    b"node" => {
-                        let mut id = 0u64;
-                        let mut lat = 0.0f64;
-                        let mut lon = 0.0f64;
-                        for attr in e.attributes().flatten() {
-                            match attr.key.as_ref() {
-                                b"id" => id = String::from_utf8_lossy(&attr.value).parse().unwrap_or(0),
-                                b"lat" => lat = String::from_utf8_lossy(&attr.value).parse().unwrap_or(0.0),
-                                b"lon" => lon = String::from_utf8_lossy(&attr.value).parse().unwrap_or(0.0),
-                                _ => {}
-                            }
-                        }
-                        if id != 0 {
-                            all_nodes.insert(id, (lat, lon));
-                        }
-                    }
-                    b"nd" if in_way => {
-                        for attr in e.attributes().flatten() {
-                            if attr.key.as_ref() == b"ref" {
-                                if let Ok(node_ref) = String::from_utf8_lossy(&attr.value).parse::<u64>() {
-                                    current_way_nodes.push(node_ref);
-                                }
-                            }
-                        }
-                    }
-                    b"tag" if in_node => {
-                        let mut key = Vec::new();
-                        let mut val = Vec::new();
-                        for attr in e.attributes().flatten() {
-                            match attr.key.as_ref() {
-                                b"k" => key = attr.value.to_vec(),
-                                b"v" => val = attr.value.to_vec(),
-                                _ => {}
-                            }
-                        }
-                        let k = String::from_utf8_lossy(&key);
-                        let v = String::from_utf8_lossy(&val);
-                        if k == "railway" && v == "subway_entrance" {
-                            node_has_entrance_tag = true;
-                        }
-                    }
-                    _ => {}
+                b"way" => {
+                    in_way = true;
+                    current_way_nodes.clear();
                 }
-            }
-            Ok(Event::End(ref e)) => {
-                match e.name().as_ref() {
-                    b"node" => {
-                        if in_node && node_has_entrance_tag {
-                            entrance_node_ids.insert(current_node_id);
+                _ => {}
+            },
+            Ok(Event::Empty(ref e)) => match e.name().as_ref() {
+                b"node" => {
+                    let mut id = 0u64;
+                    let mut lat = 0.0f64;
+                    let mut lon = 0.0f64;
+                    for attr in e.attributes().flatten() {
+                        match attr.key.as_ref() {
+                            b"id" => id = String::from_utf8_lossy(&attr.value).parse().unwrap_or(0),
+                            b"lat" => {
+                                lat = String::from_utf8_lossy(&attr.value).parse().unwrap_or(0.0)
+                            }
+                            b"lon" => {
+                                lon = String::from_utf8_lossy(&attr.value).parse().unwrap_or(0.0)
+                            }
+                            _ => {}
                         }
-                        in_node = false;
                     }
-                    b"way" => {
-                        if in_way && current_way_nodes.len() >= 2 {
-                            ways.push(current_way_nodes.clone());
-                        }
-                        in_way = false;
+                    if id != 0 {
+                        all_nodes.insert(id, (lat, lon));
                     }
-                    _ => {}
                 }
-            }
+                b"nd" if in_way => {
+                    for attr in e.attributes().flatten() {
+                        if attr.key.as_ref() == b"ref" {
+                            if let Ok(node_ref) =
+                                String::from_utf8_lossy(&attr.value).parse::<u64>()
+                            {
+                                current_way_nodes.push(node_ref);
+                            }
+                        }
+                    }
+                }
+                b"tag" if in_node => {
+                    let mut key = Vec::new();
+                    let mut val = Vec::new();
+                    for attr in e.attributes().flatten() {
+                        match attr.key.as_ref() {
+                            b"k" => key = attr.value.to_vec(),
+                            b"v" => val = attr.value.to_vec(),
+                            _ => {}
+                        }
+                    }
+                    let k = String::from_utf8_lossy(&key);
+                    let v = String::from_utf8_lossy(&val);
+                    if k == "railway" && v == "subway_entrance" {
+                        node_has_entrance_tag = true;
+                    }
+                }
+                _ => {}
+            },
+            Ok(Event::End(ref e)) => match e.name().as_ref() {
+                b"node" => {
+                    if in_node && node_has_entrance_tag {
+                        entrance_node_ids.insert(current_node_id);
+                    }
+                    in_node = false;
+                }
+                b"way" => {
+                    if in_way && current_way_nodes.len() >= 2 {
+                        ways.push(current_way_nodes.clone());
+                    }
+                    in_way = false;
+                }
+                _ => {}
+            },
             Ok(Event::Eof) => break,
             Err(e) => return Err(e.into()),
             _ => {}
         }
     }
 
-    Ok(RawOsmData { all_nodes, entrance_node_ids, ways })
+    Ok(RawOsmData {
+        all_nodes,
+        entrance_node_ids,
+        ways,
+    })
 }
 
 fn parse_pbf(osm_path: &Path, bbox: (f64, f64, f64, f64)) -> Result<RawOsmData> {
-    use osmpbf::{ElementReader, Element};
+    use osmpbf::{Element, ElementReader};
 
     let (min_lon, min_lat, max_lon, max_lat) = bbox;
     let reader = ElementReader::from_path(osm_path)?;
@@ -227,8 +248,7 @@ fn parse_pbf(osm_path: &Path, bbox: (f64, f64, f64, f64)) -> Result<RawOsmData> 
                 let lon = node.lon();
 
                 // Keep node if: referenced by a way, or is within bbox
-                let in_bbox = lat >= min_lat && lat <= max_lat
-                    && lon >= min_lon && lon <= max_lon;
+                let in_bbox = lat >= min_lat && lat <= max_lat && lon >= min_lon && lon <= max_lon;
                 let needed = way_node_refs.contains(&id) || in_bbox;
 
                 if needed {
@@ -251,8 +271,7 @@ fn parse_pbf(osm_path: &Path, bbox: (f64, f64, f64, f64)) -> Result<RawOsmData> 
                 let lat = node.lat();
                 let lon = node.lon();
 
-                let in_bbox = lat >= min_lat && lat <= max_lat
-                    && lon >= min_lon && lon <= max_lon;
+                let in_bbox = lat >= min_lat && lat <= max_lat && lon >= min_lon && lon <= max_lon;
                 let needed = way_node_refs.contains(&id) || in_bbox;
 
                 if needed {
@@ -286,8 +305,7 @@ fn parse_pbf(osm_path: &Path, bbox: (f64, f64, f64, f64)) -> Result<RawOsmData> 
                 // Only include ways that have at least one node in bbox
                 let has_bbox_node = refs.iter().any(|&r| {
                     all_nodes.get(&r).is_some_and(|&(lat, lon)| {
-                        lat >= min_lat && lat <= max_lat
-                            && lon >= min_lon && lon <= max_lon
+                        lat >= min_lat && lat <= max_lat && lon >= min_lon && lon <= max_lon
                     })
                 });
 
@@ -299,14 +317,26 @@ fn parse_pbf(osm_path: &Path, bbox: (f64, f64, f64, f64)) -> Result<RawOsmData> 
         }
     })?;
 
-    eprintln!("PBF: {} nodes, {} entrance nodes, {} ways",
-        all_nodes.len(), entrance_node_ids.len(), ways.len());
+    eprintln!(
+        "PBF: {} nodes, {} entrance nodes, {} ways",
+        all_nodes.len(),
+        entrance_node_ids.len(),
+        ways.len()
+    );
 
-    Ok(RawOsmData { all_nodes, entrance_node_ids, ways })
+    Ok(RawOsmData {
+        all_nodes,
+        entrance_node_ids,
+        ways,
+    })
 }
 
 fn build_graph_from_raw(raw: RawOsmData) -> Result<OsmGraph> {
-    let RawOsmData { all_nodes, entrance_node_ids, ways } = raw;
+    let RawOsmData {
+        all_nodes,
+        entrance_node_ids,
+        ways,
+    } = raw;
 
     eprintln!("Found {} station entrance nodes", entrance_node_ids.len());
 
@@ -398,22 +428,38 @@ fn build_graph_from_raw(raw: RawOsmData) -> Result<OsmGraph> {
         .map(|n| n.index)
         .collect();
 
+    // Create a spatial grid to accelerate nearest street node lookup
+    let cell_size = 0.002; // ~220m
+    let mut grid: HashMap<(i32, i32), Vec<u32>> = HashMap::new();
+    for node in &nodes {
+        if node.is_entrance || !node_usage_count.contains_key(&node.id) {
+            continue;
+        }
+        let lat_idx = (node.lat / cell_size).floor() as i32;
+        let lon_idx = (node.lon / cell_size).floor() as i32;
+        grid.entry((lat_idx, lon_idx)).or_default().push(node.index);
+    }
+
     for &ent_idx in &entrance_only {
         let ent = &nodes[ent_idx as usize];
         let mut best_dist = f64::MAX;
         let mut best_idx = None;
 
-        for node in &nodes {
-            if node.index == ent_idx || node.is_entrance {
-                continue;
-            }
-            if !node_usage_count.contains_key(&node.id) {
-                continue;
-            }
-            let dist = haversine(ent.lat, ent.lon, node.lat, node.lon);
-            if dist < best_dist && dist < 200.0 {
-                best_dist = dist;
-                best_idx = Some(node.index);
+        let lat_idx = (ent.lat / cell_size).floor() as i32;
+        let lon_idx = (ent.lon / cell_size).floor() as i32;
+
+        for dlat in -1..=1 {
+            for dlon in -1..=1 {
+                if let Some(cell_nodes) = grid.get(&(lat_idx + dlat, lon_idx + dlon)) {
+                    for &node_idx in cell_nodes {
+                        let node = &nodes[node_idx as usize];
+                        let dist = haversine(ent.lat, ent.lon, node.lat, node.lon);
+                        if dist < best_dist && dist < 200.0 {
+                            best_dist = dist;
+                            best_idx = Some(node.index);
+                        }
+                    }
+                }
             }
         }
 
@@ -448,9 +494,12 @@ fn build_graph_from_raw(raw: RawOsmData) -> Result<OsmGraph> {
 /// closest point on the segment. Uses linear interpolation in lat/lon space,
 /// which is accurate enough for short street segments.
 fn project_onto_segment(
-    p_lat: f64, p_lon: f64,
-    a_lat: f64, a_lon: f64,
-    b_lat: f64, b_lon: f64,
+    p_lat: f64,
+    p_lon: f64,
+    a_lat: f64,
+    a_lon: f64,
+    b_lat: f64,
+    b_lon: f64,
 ) -> (f64, f64, f64) {
     let dx = b_lon - a_lon;
     let dy = b_lat - a_lat;
@@ -466,10 +515,10 @@ fn project_onto_segment(
 struct SnapResult {
     stop_index: u32,
     edge_index: usize,
-    t: f64,           // fractional position along edge
+    t: f64, // fractional position along edge
     proj_lat: f64,
     proj_lon: f64,
-    dist: f64,        // distance from stop to projected point in meters
+    dist: f64, // distance from stop to projected point in meters
 }
 
 /// Snap each transit stop to its nearest point on an OSM edge (or entrance node).
@@ -556,9 +605,8 @@ pub fn snap_stops_to_nodes(stops: &[Stop], graph: &mut OsmGraph) -> Vec<(u32, u3
                         let edge = &graph.edges[ei];
                         let u = &graph.nodes[edge.u as usize];
                         let v = &graph.nodes[edge.v as usize];
-                        let (t, proj_lat, proj_lon) = project_onto_segment(
-                            stop.lat, stop.lon, u.lat, u.lon, v.lat, v.lon,
-                        );
+                        let (t, proj_lat, proj_lon) =
+                            project_onto_segment(stop.lat, stop.lon, u.lat, u.lon, v.lat, v.lon);
                         let dist = haversine(stop.lat, stop.lon, proj_lat, proj_lon);
                         if dist < best_dist {
                             best_dist = dist;
@@ -598,9 +646,7 @@ pub fn snap_stops_to_nodes(stops: &[Stop], graph: &mut OsmGraph) -> Vec<(u32, u3
 
     for (edge_idx, mut snap_indices) in snaps_by_edge {
         // Sort snaps along the edge by t
-        snap_indices.sort_by(|&a, &b| {
-            snap_results[a].t.partial_cmp(&snap_results[b].t).unwrap()
-        });
+        snap_indices.sort_by(|&a, &b| snap_results[a].t.partial_cmp(&snap_results[b].t).unwrap());
 
         let orig_edge = &graph.edges[edge_idx];
         let orig_u = orig_edge.u;

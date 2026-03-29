@@ -1,0 +1,14 @@
+{
+    "id": "waterloo",
+    "prep_city": "Waterloo",
+    "feed_id": "mdb-721",
+    "name": "Waterloo, ON",
+    "file": "waterloo.bin",
+    "bbox": "-80.60,43.30,-80.20,43.60",
+    "center": [
+        43.46,
+        -80.52
+    ],
+    "zoom": 12,
+    "detail": "Grand River Transit (GRT)"
+}

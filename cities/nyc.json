@@ -1,0 +1,13 @@
+{
+    "id": "nyc",
+    "prep_city": "New York",
+    "name": "New York City, NY",
+    "file": "nyc.bin",
+    "bbox": "-74.25,40.50,-73.70,40.92",
+    "center": [
+        40.71,
+        -74.01
+    ],
+    "zoom": 11,
+    "detail": "Metropolitan Transportation Authority (MTA)"
+}

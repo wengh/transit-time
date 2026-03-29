@@ -1,12 +1,17 @@
-use anyhow::{Context, Result, bail};
-use std::path::{Path, PathBuf};
+use anyhow::{bail, Context, Result};
 use std::io::Write;
+use std::path::{Path, PathBuf};
 
 const MDB_TOKEN_URL: &str = "https://api.mobilitydatabase.org/v1/tokens";
 const MDB_FEEDS_URL: &str = "https://api.mobilitydatabase.org/v1/gtfs_feeds";
 
 /// Fetch a GTFS zip for the given city, caching the result.
-pub fn fetch_gtfs(city: &str, cache_dir: &Path, refresh_token: &str) -> Result<PathBuf> {
+pub fn fetch_gtfs(
+    city: &str,
+    feed_id: Option<&str>,
+    cache_dir: &Path,
+    refresh_token: &str,
+) -> Result<PathBuf> {
     let cache_path = cache_dir.join(format!("{}.gtfs.zip", sanitize_filename(city)));
     if cache_path.exists() {
         eprintln!("Using cached GTFS: {:?}", cache_path);
@@ -16,8 +21,8 @@ pub fn fetch_gtfs(city: &str, cache_dir: &Path, refresh_token: &str) -> Result<P
     // Get access token from MDB
     let access_token = get_access_token(refresh_token)?;
 
-    // Search for feeds matching the city
-    let feed_url = find_feed_url(city, &access_token)?;
+    // Search for feeds matching the city or use specific feed ID
+    let feed_url = find_feed_url(city, feed_id, &access_token)?;
     eprintln!("Downloading GTFS from: {}", feed_url);
 
     // Download the GTFS zip
@@ -52,8 +57,20 @@ fn get_access_token(refresh_token: &str) -> Result<String> {
     Ok(token)
 }
 
-fn find_feed_url(city: &str, access_token: &str) -> Result<String> {
+fn find_feed_url(city: &str, feed_id: Option<&str>, access_token: &str) -> Result<String> {
     let client = reqwest::blocking::Client::new();
+
+    if let Some(id) = feed_id {
+        let resp = client
+            .get(format!("{}/{}", MDB_FEEDS_URL, id))
+            .header("Authorization", format!("Bearer {}", access_token))
+            .send()?
+            .error_for_status()
+            .context(format!("Failed to fetch feed with ID {}", id))?;
+
+        let feed: serde_json::Value = resp.json()?;
+        return extract_download_url(&feed);
+    }
 
     // Search feeds by municipality (city name)
     let resp = client
@@ -93,7 +110,8 @@ fn find_feed_url(city: &str, access_token: &str) -> Result<String> {
 
         for feed in &all_feeds {
             let name = feed["provider"].as_str().unwrap_or("");
-            let municipality = feed.get("locations")
+            let municipality = feed
+                .get("locations")
                 .and_then(|l| l.as_array())
                 .and_then(|a| a.first())
                 .and_then(|l| l.get("municipality"))
@@ -132,6 +150,12 @@ fn extract_download_url(feed: &serde_json::Value) -> Result<String> {
 
 fn sanitize_filename(s: &str) -> String {
     s.chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }

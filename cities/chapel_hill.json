@@ -1,0 +1,13 @@
+{
+    "id": "chapel_hill",
+    "prep_city": "Chapel Hill",
+    "name": "Chapel Hill, NC",
+    "file": "chapel_hill.bin",
+    "bbox": "-79.18,35.84,-78.96,36.00",
+    "center": [
+        35.913,
+        -79.055
+    ],
+    "zoom": 14,
+    "detail": "Chapel Hill Transit"
+}

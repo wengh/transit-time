@@ -1,0 +1,13 @@
+{
+    "id": "chicago",
+    "prep_city": "Chicago",
+    "name": "Chicago, IL",
+    "file": "chicago.bin",
+    "bbox": "-87.94,41.64,-87.52,42.02",
+    "center": [
+        41.88,
+        -87.63
+    ],
+    "zoom": 12,
+    "detail": "CTA buses & rail, Metra, Pace"
+}

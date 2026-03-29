@@ -1,8 +1,8 @@
+mod binary;
+mod graph;
+mod gtfs;
 mod mdb;
 mod osm;
-mod gtfs;
-mod graph;
-mod binary;
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -13,9 +13,13 @@ use std::path::{Path, PathBuf};
 #[command(name = "transit-prep")]
 #[command(about = "Download and preprocess transit data for a city")]
 struct Cli {
-    /// City name (used for GTFS feed lookup)
+    /// City name (used for GTFS feed lookup and output naming)
     #[arg(long)]
     city: String,
+
+    /// MDB Feed ID (optional, bypasses city search)
+    #[arg(long)]
+    feed_id: Option<String>,
 
     /// Bounding box: min_lon,min_lat,max_lon,max_lat
     #[arg(long)]
@@ -35,8 +39,14 @@ struct Cli {
 }
 
 fn parse_bbox(s: &str) -> Result<(f64, f64, f64, f64)> {
-    let parts: Vec<f64> = s.split(',').map(|p| p.trim().parse()).collect::<std::result::Result<Vec<_>, _>>()?;
-    anyhow::ensure!(parts.len() == 4, "bbox must have 4 values: min_lon,min_lat,max_lon,max_lat");
+    let parts: Vec<f64> = s
+        .split(',')
+        .map(|p| p.trim().parse())
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    anyhow::ensure!(
+        parts.len() == 4,
+        "bbox must have 4 values: min_lon,min_lat,max_lon,max_lat"
+    );
     Ok((parts[0], parts[1], parts[2], parts[3]))
 }
 
@@ -52,11 +62,19 @@ fn main() -> Result<()> {
         .trim()
         .to_string();
 
-    run_prep(&cli.city, bbox, &cli.output, &cli.cache_dir, &refresh_token)
+    run_prep(
+        &cli.city,
+        cli.feed_id.as_deref(),
+        bbox,
+        &cli.output,
+        &cli.cache_dir,
+        &refresh_token,
+    )
 }
 
 pub fn run_prep(
     city: &str,
+    feed_id: Option<&str>,
     bbox: (f64, f64, f64, f64),
     output: &Path,
     cache_dir: &Path,
@@ -67,7 +85,7 @@ pub fn run_prep(
 
     // Step 1: Download GTFS data
     eprintln!("\n--- Fetching GTFS data ---");
-    let gtfs_path = mdb::fetch_gtfs(city, cache_dir, refresh_token)?;
+    let gtfs_path = mdb::fetch_gtfs(city, feed_id, cache_dir, refresh_token)?;
     eprintln!("GTFS data cached at: {:?}", gtfs_path);
 
     // Step 2: Download OSM data
@@ -136,7 +154,11 @@ pub fn run_prep(
     };
     binary::write_binary(&prepared, output)?;
     let size = std::fs::metadata(output)?.len();
-    eprintln!("Wrote {} ({:.2} MB)", output.display(), size as f64 / 1_048_576.0);
+    eprintln!(
+        "Wrote {} ({:.2} MB)",
+        output.display(),
+        size as f64 / 1_048_576.0
+    );
 
     eprintln!("\n=== Done ===");
     Ok(())

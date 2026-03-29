@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use serde::Deserialize;
-use std::collections::{HashMap, HashSet, BTreeMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Read;
 use std::path::Path;
 
@@ -78,7 +78,7 @@ pub struct GtfsData {
 #[derive(Debug, Clone)]
 pub struct ServicePattern {
     pub pattern_id: u32,
-    pub day_mask: u8,         // bit 0=Mon .. bit 6=Sun
+    pub day_mask: u8, // bit 0=Mon .. bit 6=Sun
     pub date_exceptions_add: Vec<u32>,
     pub date_exceptions_remove: Vec<u32>,
     pub events: Vec<Vec<Event>>, // indexed by second offset from min_time
@@ -112,10 +112,28 @@ pub struct FrequencyEntry {
 struct StopRecord {
     stop_id: String,
     stop_name: Option<String>,
+    #[serde(deserialize_with = "deserialize_f64_trim")]
     stop_lat: Option<f64>,
+    #[serde(deserialize_with = "deserialize_f64_trim")]
     stop_lon: Option<f64>,
     #[serde(default)]
     location_type: Option<String>,
+}
+
+fn deserialize_f64_trim<'de, D>(deserializer: D) -> Result<Option<f64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let s: Option<String> = Option::deserialize(deserializer)?;
+    match s {
+        Some(ref v) if v.trim().is_empty() => Ok(None),
+        Some(v) => v
+            .trim()
+            .parse::<f64>()
+            .map(Some)
+            .map_err(serde::de::Error::custom),
+        None => Ok(None),
+    }
 }
 
 #[derive(Deserialize)]
@@ -197,18 +215,20 @@ fn parse_time(s: &str) -> Option<u32> {
     Some(h * 3600 + m * 60 + sec)
 }
 
-fn read_file_from_zip(archive: &mut zip::ZipArchive<std::fs::File>, name: &str) -> Result<Option<String>> {
+fn read_file_from_zip(
+    archive: &mut zip::ZipArchive<std::fs::File>,
+    name: &str,
+) -> Result<Option<String>> {
     // Try to find the file (may be in a subdirectory)
     let target = name.to_lowercase();
-    let found = (0..archive.len())
-        .find(|&i| {
-            if let Ok(file) = archive.by_index(i) {
-                let fname = file.name().to_lowercase();
-                fname == target || fname.ends_with(&format!("/{}", target))
-            } else {
-                false
-            }
-        });
+    let found = (0..archive.len()).find(|&i| {
+        if let Ok(file) = archive.by_index(i) {
+            let fname = file.name().to_lowercase();
+            fname == target || fname.ends_with(&format!("/{}", target))
+        } else {
+            false
+        }
+    });
 
     match found {
         Some(idx) => {
@@ -226,12 +246,14 @@ pub fn parse_gtfs(path: &Path) -> Result<GtfsData> {
     let mut archive = zip::ZipArchive::new(file)?;
 
     // Parse stops
-    let stops_csv = read_file_from_zip(&mut archive, "stops.txt")?
-        .context("stops.txt not found in GTFS")?;
+    let stops_csv =
+        read_file_from_zip(&mut archive, "stops.txt")?.context("stops.txt not found in GTFS")?;
     let mut stops = Vec::new();
     let mut stop_id_to_index: HashMap<String, u32> = HashMap::new();
     {
-        let mut rdr = csv::ReaderBuilder::new().flexible(true).from_reader(stops_csv.as_bytes());
+        let mut rdr = csv::ReaderBuilder::new()
+            .flexible(true)
+            .from_reader(stops_csv.as_bytes());
         for result in rdr.deserialize::<StopRecord>() {
             let record = result?;
             // Skip non-stop locations (stations, entrances, etc.)
@@ -255,19 +277,22 @@ pub fn parse_gtfs(path: &Path) -> Result<GtfsData> {
     }
 
     // Parse routes
-    let routes_csv = read_file_from_zip(&mut archive, "routes.txt")?
-        .context("routes.txt not found in GTFS")?;
+    let routes_csv =
+        read_file_from_zip(&mut archive, "routes.txt")?.context("routes.txt not found in GTFS")?;
     let mut routes = Vec::new();
     let mut route_id_to_index: HashMap<String, u32> = HashMap::new();
     {
-        let mut rdr = csv::ReaderBuilder::new().flexible(true).from_reader(routes_csv.as_bytes());
+        let mut rdr = csv::ReaderBuilder::new()
+            .flexible(true)
+            .from_reader(routes_csv.as_bytes());
         for result in rdr.deserialize::<RouteRecord>() {
             let record = result?;
             let index = routes.len() as u32;
             route_id_to_index.insert(record.route_id.clone(), index);
             routes.push(Route {
                 id: record.route_id,
-                short_name: record.route_short_name
+                short_name: record
+                    .route_short_name
                     .or(record.route_long_name)
                     .unwrap_or_default(),
                 index,
@@ -276,12 +301,14 @@ pub fn parse_gtfs(path: &Path) -> Result<GtfsData> {
     }
 
     // Parse trips
-    let trips_csv = read_file_from_zip(&mut archive, "trips.txt")?
-        .context("trips.txt not found in GTFS")?;
+    let trips_csv =
+        read_file_from_zip(&mut archive, "trips.txt")?.context("trips.txt not found in GTFS")?;
     let mut trips = Vec::new();
     let mut trip_id_to_index: HashMap<String, u32> = HashMap::new();
     {
-        let mut rdr = csv::ReaderBuilder::new().flexible(true).from_reader(trips_csv.as_bytes());
+        let mut rdr = csv::ReaderBuilder::new()
+            .flexible(true)
+            .from_reader(trips_csv.as_bytes());
         for result in rdr.deserialize::<TripRecord>() {
             let record = result?;
             let index = trips.len() as u32;
@@ -300,7 +327,9 @@ pub fn parse_gtfs(path: &Path) -> Result<GtfsData> {
         .context("stop_times.txt not found in GTFS")?;
     let mut stop_times = Vec::new();
     {
-        let mut rdr = csv::ReaderBuilder::new().flexible(true).from_reader(stop_times_csv.as_bytes());
+        let mut rdr = csv::ReaderBuilder::new()
+            .flexible(true)
+            .from_reader(stop_times_csv.as_bytes());
         for result in rdr.deserialize::<StopTimeRecord>() {
             let record = result?;
             let arrival = record.arrival_time.as_deref().and_then(parse_time);
@@ -320,7 +349,9 @@ pub fn parse_gtfs(path: &Path) -> Result<GtfsData> {
     // Parse calendar
     let mut services: HashMap<String, Service> = HashMap::new();
     if let Some(cal_csv) = read_file_from_zip(&mut archive, "calendar.txt")? {
-        let mut rdr = csv::ReaderBuilder::new().flexible(true).from_reader(cal_csv.as_bytes());
+        let mut rdr = csv::ReaderBuilder::new()
+            .flexible(true)
+            .from_reader(cal_csv.as_bytes());
         for result in rdr.deserialize::<CalendarRecord>() {
             let record = result?;
             services.insert(
@@ -347,7 +378,9 @@ pub fn parse_gtfs(path: &Path) -> Result<GtfsData> {
 
     // Parse calendar_dates
     if let Some(cal_dates_csv) = read_file_from_zip(&mut archive, "calendar_dates.txt")? {
-        let mut rdr = csv::ReaderBuilder::new().flexible(true).from_reader(cal_dates_csv.as_bytes());
+        let mut rdr = csv::ReaderBuilder::new()
+            .flexible(true)
+            .from_reader(cal_dates_csv.as_bytes());
         for result in rdr.deserialize::<CalendarDateRecord>() {
             let record = result?;
             let date: u32 = record.date.parse().unwrap_or(0);
@@ -372,10 +405,14 @@ pub fn parse_gtfs(path: &Path) -> Result<GtfsData> {
     // Parse frequencies
     let mut frequencies = Vec::new();
     if let Some(freq_csv) = read_file_from_zip(&mut archive, "frequencies.txt")? {
-        let mut rdr = csv::ReaderBuilder::new().flexible(true).from_reader(freq_csv.as_bytes());
+        let mut rdr = csv::ReaderBuilder::new()
+            .flexible(true)
+            .from_reader(freq_csv.as_bytes());
         for result in rdr.deserialize::<FrequencyRecord>() {
             let record = result?;
-            if let (Some(start), Some(end)) = (parse_time(&record.start_time), parse_time(&record.end_time)) {
+            if let (Some(start), Some(end)) =
+                (parse_time(&record.start_time), parse_time(&record.end_time))
+            {
                 frequencies.push(Frequency {
                     trip_id: record.trip_id,
                     start_time: start,
@@ -389,7 +426,9 @@ pub fn parse_gtfs(path: &Path) -> Result<GtfsData> {
     // Parse shapes
     let mut shapes: HashMap<String, Vec<(f64, f64, u32)>> = HashMap::new();
     if let Some(shapes_csv) = read_file_from_zip(&mut archive, "shapes.txt")? {
-        let mut rdr = csv::ReaderBuilder::new().flexible(true).from_reader(shapes_csv.as_bytes());
+        let mut rdr = csv::ReaderBuilder::new()
+            .flexible(true)
+            .from_reader(shapes_csv.as_bytes());
         for result in rdr.deserialize::<ShapeRecord>() {
             if let Ok(record) = result {
                 if let (Ok(lat), Ok(lon), Ok(seq)) = (
@@ -397,7 +436,10 @@ pub fn parse_gtfs(path: &Path) -> Result<GtfsData> {
                     record.shape_pt_lon.parse::<f64>(),
                     record.shape_pt_sequence.parse::<u32>(),
                 ) {
-                    shapes.entry(record.shape_id).or_default().push((lat, lon, seq));
+                    shapes
+                        .entry(record.shape_id)
+                        .or_default()
+                        .push((lat, lon, seq));
                 }
             }
         }
@@ -408,7 +450,10 @@ pub fn parse_gtfs(path: &Path) -> Result<GtfsData> {
         .into_iter()
         .map(|(id, mut pts)| {
             pts.sort_by_key(|p| p.2);
-            (id, pts.into_iter().map(|(lat, lon, _)| (lat, lon)).collect())
+            (
+                id,
+                pts.into_iter().map(|(lat, lon, _)| (lat, lon)).collect(),
+            )
         })
         .collect();
 
@@ -443,9 +488,16 @@ pub fn build_service_patterns(data: &GtfsData) -> Vec<ServicePattern> {
     // Group service_ids by day mask
     let mut day_mask_groups: BTreeMap<u8, Vec<&Service>> = BTreeMap::new();
     for service in &data.services {
-        let mask = service.days.iter().enumerate().fold(0u8, |acc, (i, &d)| {
-            if d { acc | (1 << i) } else { acc }
-        });
+        let mask = service.days.iter().enumerate().fold(
+            0u8,
+            |acc, (i, &d)| {
+                if d {
+                    acc | (1 << i)
+                } else {
+                    acc
+                }
+            },
+        );
         day_mask_groups.entry(mask).or_default().push(service);
     }
 
@@ -479,7 +531,11 @@ pub fn build_service_patterns(data: &GtfsData) -> Vec<ServicePattern> {
     }
 
     // Frequency-based trip IDs
-    let freq_trip_ids: HashSet<&str> = data.frequencies.iter().map(|f| f.trip_id.as_str()).collect();
+    let freq_trip_ids: HashSet<&str> = data
+        .frequencies
+        .iter()
+        .map(|f| f.trip_id.as_str())
+        .collect();
 
     let mut patterns = Vec::new();
 

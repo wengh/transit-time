@@ -1,29 +1,47 @@
-.PHONY: dev wasm data-chicago clean
+.PHONY: dev wasm clean data-all
 
 # Source files for change detection
 ROUTER_SRC := $(shell find transit-router/src -name '*.rs')
 PREP_SRC := $(shell find transit-prep/src -name '*.rs')
 WASM_OUT := transit-viz/pkg/transit_router_bg.wasm
-CHICAGO_BIN := transit-viz/public/data/chicago.bin
+
+CITY_FILES := $(wildcard cities/*.json)
+CITY_IDS := $(patsubst cities/%.json,%,$(CITY_FILES))
+BIN_FILES := $(addprefix transit-viz/public/data/, $(addsuffix .bin, $(CITY_IDS)))
 
 # Build WASM (only when router source changes)
 wasm: $(WASM_OUT)
 $(WASM_OUT): $(ROUTER_SRC) transit-router/Cargo.toml
 	wasm-pack build transit-router --target web --out-dir ../transit-viz/pkg
 
-# Build Chicago data (only when prep source changes)
-data-chicago: $(CHICAGO_BIN)
-$(CHICAGO_BIN): $(PREP_SRC) transit-prep/Cargo.toml
-	cargo run --release -p transit-prep -- \
-		--city Chicago \
-		--bbox="-87.94,41.64,-87.52,42.02" \
-		--output $(CHICAGO_BIN) \
-		--cache-dir cache
+# Build all data
+data-all: $(BIN_FILES)
+
+transit-viz/public/data/%.bin: $(PREP_SRC) transit-prep/Cargo.toml cities/%.json
+	@echo "Building data for $*..."
+	@BBOX=$$(node -e "console.log(require('./cities/$*.json').bbox)"); \
+	PREP_CITY=$$(node -e "console.log(require('./cities/$*.json').prep_city)"); \
+	FEED_ID=$$(node -e "console.log(require('./cities/$*.json').feed_id || '')"); \
+	if [ -n "$$FEED_ID" ]; then \
+		cargo run --release -p transit-prep -- \
+			--city "$$PREP_CITY" \
+			--feed-id "$$FEED_ID" \
+			--bbox="$$BBOX" \
+			--output $@ \
+			--cache-dir cache; \
+	else \
+		cargo run --release -p transit-prep -- \
+			--city "$$PREP_CITY" \
+			--bbox="$$BBOX" \
+			--output $@ \
+			--cache-dir cache; \
+	fi
 
 # Full dev setup: build everything then start dev server
-dev: $(WASM_OUT) $(CHICAGO_BIN)
+dev: $(WASM_OUT) data-all
 	cd transit-viz && npm install --silent && npm run dev -- --port 5173
 
 clean:
 	cargo clean
 	rm -rf transit-viz/pkg
+	rm -f transit-viz/public/data/*.bin

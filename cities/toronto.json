@@ -1,0 +1,14 @@
+{
+    "id": "toronto",
+    "prep_city": "Toronto",
+    "feed_id": "mdb-2253",
+    "name": "Toronto, ON",
+    "file": "toronto.bin",
+    "bbox": "-79.63,43.58,-79.11,43.85",
+    "center": [
+        43.65,
+        -79.38
+    ],
+    "zoom": 11,
+    "detail": "Toronto Transit Commission (TTC)"
+}
