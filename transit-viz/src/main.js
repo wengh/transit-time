@@ -778,6 +778,69 @@ function initMap(city) {
   document.getElementById('slack-slider').addEventListener('input', updateSlackDisplay);
   document.getElementById('slack-slider').addEventListener('change', runQuery);
 
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'c' || e.ctrlKey || e.metaKey || e.altKey) return;
+    // Don't fire if typing in an input
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA') return;
+    if (!router || sourceNode === null) return;
+
+    const depTime = parseInt(document.getElementById('time-slider').value);
+    const slack = parseInt(document.getElementById('slack-slider').value);
+    const dateStr = document.getElementById('date-picker').value || 'N/A';
+    const dayNames = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+    const dayOfWeek = getSelectedDayOfWeek();
+
+    const srcLat = router.node_lat(sourceNode).toFixed(6);
+    const srcLon = router.node_lon(sourceNode).toFixed(6);
+
+    let lines = [];
+    lines.push(`Source: ${srcLat}, ${srcLon}`);
+
+    // If hovering a destination, include it + path
+    if (lastHoveredNode !== null && currentSsspList && currentSsspList.length > 0) {
+      const destLat = router.node_lat(lastHoveredNode).toFixed(6);
+      const destLon = router.node_lon(lastHoveredNode).toFixed(6);
+      lines.push(`Destination: ${destLat}, ${destLon}`);
+    }
+
+    lines.push(`Date: ${dateStr} (${dayNames[dayOfWeek]})`);
+    lines.push(`Departure: ${formatTime(depTime)}`);
+    lines.push(`Transfer slack: ${slack}s`);
+
+    if (lastHoveredNode !== null && currentSsspList && currentSsspList.length > 0) {
+      const sssp = currentSsspList[0];
+      const arrival = router.node_arrival_time(sssp, lastHoveredNode);
+      if (arrival < 0xFFFFFFFF) {
+        const dep = router.sssp_departure_time(sssp);
+        const tt = arrival - dep;
+        lines.push(`Travel time: ${Math.round(tt / 60)} min`);
+        lines.push('');
+        lines.push('Path:');
+
+        const pathArray = router.reconstruct_path(sssp, lastHoveredNode);
+        const segments = parsePathSegments(sssp, pathArray, dep);
+        for (const seg of segments) {
+          const durMin = Math.round(seg.duration / 60);
+          if (seg.edgeType === 0) {
+            lines.push(`  Walk ${durMin} min`);
+          } else {
+            const fromTo = (seg.startStopName && seg.endStopName)
+              ? ` ${seg.startStopName} → ${seg.endStopName}` : '';
+            lines.push(`  ${seg.routeName || 'Transit'}${fromTo} ${durMin} min`);
+          }
+        }
+      }
+    }
+
+    const text = lines.join('\n');
+    navigator.clipboard.writeText(text).then(() => {
+      const status = document.getElementById('status');
+      const prev = status.textContent;
+      status.textContent = 'Copied to clipboard!';
+      setTimeout(() => { status.textContent = prev; }, 1500);
+    });
+  });
+
   document.getElementById('change-city').addEventListener('click', () => {
     document.getElementById('controls').style.display = 'none';
     document.getElementById('legend').style.display = 'none';

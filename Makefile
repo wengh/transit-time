@@ -22,7 +22,7 @@ $(CHICAGO_BIN): $(PREP_SRC) transit-prep/Cargo.toml
 
 # Full dev setup: build everything then start dev server
 dev: $(WASM_OUT) $(CHICAGO_BIN)
-	cd transit-viz && npm install --silent && npm run dev
+	cd transit-viz && npm install --silent && npm run dev -- --port 5173
 
 clean:
 	cargo clean
