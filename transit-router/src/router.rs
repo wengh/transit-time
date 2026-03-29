@@ -198,7 +198,6 @@ fn scan_pattern_at_stop(
             let boarding_time = earliest + wait;
             let arrival = boarding_time + freq.travel_time;
             let dest_node = data.stop_node_map[freq.next_stop_index as usize];
-            // If first transit leg, compute leave_home = boarding - walk_to_stop
             let leave_home = if current_leave_home == 0 {
                 let walk_to_stop = t_current - departure_time;
                 boarding_time.saturating_sub(walk_to_stop)
@@ -225,8 +224,7 @@ fn scan_pattern_at_stop(
     let scan_start = (t_current - pat.min_time) as usize;
     let max_scan = 3600.min(pat.events.len().saturating_sub(scan_start));
 
-    let mut found_same: Vec<u32> = Vec::new();
-    let mut found_transfer: Vec<u32> = Vec::new();
+    let mut boarded_routes: Vec<u32> = Vec::new();
 
     for offset in 0..max_scan {
         let idx = scan_start + offset;
@@ -236,58 +234,96 @@ fn scan_pattern_at_stop(
             if event.stop_index != stop_idx || event.travel_time == 0 {
                 continue;
             }
+            if boarded_routes.contains(&event.route_index) {
+                continue;
+            }
 
             let is_same_route = current_route == event.route_index;
             let is_transfer = current_route != u32::MAX && !is_same_route;
 
-            if is_same_route {
-                if found_same.contains(&event.route_index) {
-                    continue;
-                }
-                found_same.push(event.route_index);
-                let arrival = dep_time + event.travel_time;
-                let dest_node = data.stop_node_map[event.next_stop_index as usize];
-                let leave_home = if current_leave_home == 0 {
-                    let walk_to_stop = t_current - departure_time;
-                    dep_time.saturating_sub(walk_to_stop)
-                } else {
-                    current_leave_home
-                };
-                let candidate = NodeResult {
-                    arrival_time: arrival, prev_node: node, edge_type: 1,
-                    route_index: event.route_index, leave_home,
-                };
-                if candidate.is_better_than(&result[dest_node as usize]) {
-                    result[dest_node as usize] = candidate;
-                    arrived_by_route[dest_node as usize] = event.route_index;
-                    pq.push(Reverse((arrival, dest_node)));
-                }
+            if is_transfer && dep_time < t_current + transfer_slack {
+                continue;
+            }
+
+            boarded_routes.push(event.route_index);
+
+            let leave_home = if current_leave_home == 0 {
+                let walk_to_stop = t_current - departure_time;
+                dep_time.saturating_sub(walk_to_stop)
             } else {
-                if found_transfer.contains(&event.route_index) {
-                    continue;
-                }
-                if is_transfer && dep_time < t_current + transfer_slack {
-                    continue;
-                }
-                found_transfer.push(event.route_index);
-                let arrival = dep_time + event.travel_time;
-                let dest_node = data.stop_node_map[event.next_stop_index as usize];
-                let leave_home = if current_leave_home == 0 {
-                    let walk_to_stop = t_current - departure_time;
-                    dep_time.saturating_sub(walk_to_stop)
-                } else {
-                    current_leave_home
-                };
-                let candidate = NodeResult {
-                    arrival_time: arrival, prev_node: node, edge_type: 1,
-                    route_index: event.route_index, leave_home,
-                };
-                if candidate.is_better_than(&result[dest_node as usize]) {
-                    result[dest_node as usize] = candidate;
-                    arrived_by_route[dest_node as usize] = event.route_index;
-                    pq.push(Reverse((arrival, dest_node)));
+                current_leave_home
+            };
+
+            // Board this trip and ride it through all downstream stops
+            ride_trip(
+                data, pat, event.trip_index, event.route_index, leave_home,
+                node, event.next_stop_index, dep_time + event.travel_time,
+                result, arrived_by_route, pq,
+            );
+        }
+    }
+}
+
+/// Follow a trip through all its downstream stops after boarding.
+fn ride_trip(
+    data: &PreparedData,
+    pat: &PatternData,
+    trip_index: u32,
+    route_index: u32,
+    leave_home: u32,
+    boarding_node: u32,
+    first_next_stop: u32,
+    first_arrival: u32,
+    result: &mut Vec<NodeResult>,
+    arrived_by_route: &mut Vec<u32>,
+    pq: &mut BinaryHeap<Reverse<(u32, u32)>>,
+) {
+    let mut current_stop = first_next_stop;
+    let mut current_time = first_arrival;
+
+    loop {
+        let dest_node = data.stop_node_map[current_stop as usize];
+        let candidate = NodeResult {
+            arrival_time: current_time,
+            // Always point back to boarding_node. Intermediate stops may be
+            // overwritten by other paths later, so we can't use them as
+            // stable predecessors. Path reconstruction shows the boarding
+            // stop (from the previous walk segment) and the alighting stop.
+            prev_node: boarding_node,
+            edge_type: 1,
+            route_index,
+            leave_home,
+        };
+        if candidate.is_better_than(&result[dest_node as usize]) {
+            result[dest_node as usize] = candidate;
+            arrived_by_route[dest_node as usize] = route_index;
+            pq.push(Reverse((current_time, dest_node)));
+        }
+
+        // Find continuation: same trip departing from current_stop
+        if current_time < pat.min_time {
+            break;
+        }
+        let base = (current_time - pat.min_time) as usize;
+        // Allow up to 120s dwell time at stop
+        let max_dwell = 120.min(pat.events.len().saturating_sub(base));
+        let mut found = false;
+        for dwell in 0..max_dwell {
+            let idx = base + dwell;
+            for event in &pat.events[idx] {
+                if event.trip_index == trip_index
+                    && event.stop_index == current_stop
+                    && event.travel_time > 0
+                {
+                    let dep_time = pat.min_time + idx as u32;
+                    current_time = dep_time + event.travel_time;
+                    current_stop = event.next_stop_index;
+                    found = true;
+                    break;
                 }
             }
+            if found { break; }
         }
+        if !found { break; }
     }
 }
