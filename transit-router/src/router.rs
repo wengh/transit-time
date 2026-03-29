@@ -143,7 +143,9 @@ fn run_tdd_inner(
             };
             if candidate.is_better_than(&result[neighbor as usize]) {
                 result[neighbor as usize] = candidate;
-                arrived_by_route[neighbor as usize] = u32::MAX;
+                // Propagate the route we arrived by so transfer slack is
+                // applied when boarding a *different* route after walking.
+                arrived_by_route[neighbor as usize] = current_route;
                 pq.push(Reverse((arrival, neighbor)));
             }
         }

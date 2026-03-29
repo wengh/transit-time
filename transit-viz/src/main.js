@@ -544,6 +544,16 @@ function initMap(city) {
         }
       }
 
+      // For transit segments, duration = ride time (arrival - boarding_time)
+      // since startNode == endNode (prev_node points to boarding_node).
+      let duration;
+      if (edgeType === 1 && waitTime >= 0) {
+        const boardingTime = router.node_boarding_time(sssp, startNode);
+        duration = boardingTime > 0 ? (endTime - boardingTime) : (endTime - startTime);
+      } else {
+        duration = endTime - startTime;
+      }
+
       const seg = {
         edgeType, // 0=walk, 1=transit
         routeIdx,
@@ -551,7 +561,7 @@ function initMap(city) {
         startStopName: edgeType === 1 ? boardStopName : router.node_stop_name(startNode),
         endStopName: router.node_stop_name(endNode),
         endNodeIdx: endNode,
-        duration: endTime - startTime,
+        duration,
         waitTime,
         coords: finalCoords,
       };
@@ -614,7 +624,7 @@ function initMap(city) {
     if (isSampled) {
       const avg = Math.round(travelTimes.reduce((a, b) => a + b, 0) / travelTimes.length / 60);
       const reachCount = travelTimes.length;
-      html += `<div style="font-weight:600;margin-bottom:6px">Avg travel time: ${avg} min (${reachCount}/${allPaths.length} departures)</div>`;
+      html += `<div style="font-weight:600;margin-bottom:6px">Avg travel time: ${avg} min (${reachCount}/${allPaths.length} reachable, showing median route)</div>`;
     } else {
       const minutes = Math.round(travelTimes[0] / 60);
       html += `<div style="font-weight:600;margin-bottom:6px">Travel time: ${minutes} min</div>`;
