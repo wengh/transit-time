@@ -232,6 +232,10 @@ impl TransitRouter {
         sssp.inner.results[node as usize].leave_home
     }
 
+    pub fn node_boarding_time(&self, sssp: &WasmSsspResult, node: u32) -> u32 {
+        sssp.inner.results[node as usize].boarding_time
+    }
+
     pub fn sssp_departure_time(&self, sssp: &WasmSsspResult) -> u32 {
         sssp.inner.departure_time
     }

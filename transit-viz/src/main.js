@@ -543,6 +543,22 @@ function initMap(city) {
         }
       }
 
+      // Compute wait time for transit segments
+      let waitTime = 0;
+      if (edgeType === 1) {
+        const boardingTime = router.node_boarding_time(sssp, startNode);
+        if (boardingTime > 0 && segments.length > 0) {
+          // Transfer wait: boarding_time - arrival at boarding stop
+          const prev = segments[segments.length - 1];
+          const arrivalAtBoardStop = router.node_arrival_time(sssp, prev.endNodeIdx);
+          waitTime = boardingTime - arrivalAtBoardStop;
+        } else if (boardingTime > 0) {
+          // Initial wait: boarding_time - arrival at first transit stop (walked there)
+          const arrivalAtStop = router.node_arrival_time(sssp, boardNode);
+          waitTime = boardingTime - arrivalAtStop;
+        }
+      }
+
       const seg = {
         edgeType, // 0=walk, 1=transit
         routeIdx,
@@ -551,6 +567,7 @@ function initMap(city) {
         endStopName: router.node_stop_name(endNode),
         endNodeIdx: endNode,
         duration: endTime - startTime,
+        waitTime,
         coords: finalCoords,
       };
       segments.push(seg);
@@ -624,11 +641,18 @@ function initMap(city) {
     if (medianPath.length > 0) {
       const mid = medianPath[Math.floor(medianPath.length / 2)];
       html += '<div style="border-top:1px solid #ddd;padding-top:6px;margin-top:2px">';
-      for (const seg of mid.segments) {
+      for (let si = 0; si < mid.segments.length; si++) {
+        const seg = mid.segments[si];
         const durMin = Math.round(seg.duration / 60);
         if (seg.edgeType === 0) {
           html += `<div style="font-size:12px;color:#666;padding:2px 0">Walk ${durMin} min</div>`;
         } else {
+          // Show wait time before transit segment
+          if (seg.waitTime > 0) {
+            const waitMin = (seg.waitTime / 60).toFixed(1);
+            const label = si <= 1 ? 'Initial wait' : 'Transfer wait';
+            html += `<div style="font-size:11px;color:#999;padding:1px 0;font-style:italic">${label}: ${waitMin} min</div>`;
+          }
           const fromTo = (seg.startStopName && seg.endStopName)
             ? ` · ${seg.startStopName} → ${seg.endStopName}` : '';
           html += `<div style="font-size:12px;padding:2px 0"><b>${seg.routeName || 'Transit'}</b>${fromTo}  ${durMin} min</div>`;

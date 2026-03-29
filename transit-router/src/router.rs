@@ -16,6 +16,9 @@ pub struct NodeResult {
     /// Computed as first_transit_departure - walk_to_first_stop when boarding transit.
     /// 0 means no transit taken yet (still walking from source).
     pub leave_home: u32,
+    /// Time the transit vehicle departed from the boarding stop.
+    /// 0 for walk edges. Used to compute wait times.
+    pub boarding_time: u32,
 }
 
 impl NodeResult {
@@ -25,6 +28,7 @@ impl NodeResult {
         edge_type: 0,
         route_index: u32::MAX,
         leave_home: 0,
+        boarding_time: 0,
     };
 
     /// Returns true if `self` is a strictly better path than `other`.
@@ -109,7 +113,7 @@ fn run_tdd_inner(
     let mut result = vec![NodeResult::UNREACHED; n];
     result[source_node as usize] = NodeResult {
         arrival_time: departure_time, prev_node: u32::MAX, edge_type: 0, route_index: u32::MAX,
-        leave_home: 0,
+        leave_home: 0, boarding_time: 0,
     };
 
     let mut arrived_by_route = vec![u32::MAX; n];
@@ -135,7 +139,7 @@ fn run_tdd_inner(
             let arrival = t_current + wt;
             let candidate = NodeResult {
                 arrival_time: arrival, prev_node: node, edge_type: 0, route_index: u32::MAX,
-                leave_home: current_leave_home,
+                leave_home: current_leave_home, boarding_time: 0,
             };
             if candidate.is_better_than(&result[neighbor as usize]) {
                 result[neighbor as usize] = candidate;
@@ -207,6 +211,7 @@ fn scan_pattern_at_stop(
             let candidate = NodeResult {
                 arrival_time: arrival, prev_node: node, edge_type: 1,
                 route_index: freq.route_index, leave_home,
+                boarding_time,
             };
             if candidate.is_better_than(&result[dest_node as usize]) {
                 result[dest_node as usize] = candidate;
@@ -258,7 +263,7 @@ fn scan_pattern_at_stop(
             ride_trip(
                 data, pat, event.trip_index, event.route_index, leave_home,
                 node, event.next_stop_index, dep_time + event.travel_time,
-                result, arrived_by_route, pq,
+                dep_time, result, arrived_by_route, pq,
             );
         }
     }
@@ -274,6 +279,7 @@ fn ride_trip(
     boarding_node: u32,
     first_next_stop: u32,
     first_arrival: u32,
+    boarding_time: u32,
     result: &mut Vec<NodeResult>,
     arrived_by_route: &mut Vec<u32>,
     pq: &mut BinaryHeap<Reverse<(u32, u32)>>,
@@ -293,6 +299,7 @@ fn ride_trip(
             edge_type: 1,
             route_index,
             leave_home,
+            boarding_time,
         };
         if candidate.is_better_than(&result[dest_node as usize]) {
             result[dest_node as usize] = candidate;
