@@ -127,7 +127,7 @@ pub fn load(compressed: &[u8]) -> Result<PreparedData, String> {
     }
 
     // Stop-to-node mapping
-    let mut stop_node_map = vec![0u32; num_stops];
+    let mut stop_node_map = vec![u32::MAX; num_stops];
     let mut node_is_stop = vec![false; num_nodes];
     let mut node_stop_indices: Vec<Vec<u32>> = vec![Vec::new(); num_nodes];
     for _ in 0..num_stop_to_node {

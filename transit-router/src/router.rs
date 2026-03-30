@@ -204,21 +204,23 @@ fn scan_pattern_at_stop(
             let boarding_time = earliest + wait;
             let arrival = boarding_time + freq.travel_time;
             let dest_node = data.stop_node_map[freq.next_stop_index as usize];
-            let leave_home = if current_leave_home == 0 {
-                let walk_to_stop = t_current - departure_time;
-                boarding_time.saturating_sub(walk_to_stop)
-            } else {
-                current_leave_home
-            };
-            let candidate = NodeResult {
-                arrival_time: arrival, prev_node: node, edge_type: 1,
-                route_index: freq.route_index, leave_home,
-                boarding_time,
-            };
-            if candidate.is_better_than(&result[dest_node as usize]) {
-                result[dest_node as usize] = candidate;
-                arrived_by_route[dest_node as usize] = freq.route_index;
-                pq.push(Reverse((arrival, dest_node)));
+            if dest_node != u32::MAX {
+                let leave_home = if current_leave_home == 0 {
+                    let walk_to_stop = t_current - departure_time;
+                    boarding_time.saturating_sub(walk_to_stop)
+                } else {
+                    current_leave_home
+                };
+                let candidate = NodeResult {
+                    arrival_time: arrival, prev_node: node, edge_type: 1,
+                    route_index: freq.route_index, leave_home,
+                    boarding_time,
+                };
+                if candidate.is_better_than(&result[dest_node as usize]) {
+                    result[dest_node as usize] = candidate;
+                    arrived_by_route[dest_node as usize] = freq.route_index;
+                    pq.push(Reverse((arrival, dest_node)));
+                }
             }
         }
     }
@@ -291,22 +293,24 @@ fn ride_trip(
 
     loop {
         let dest_node = data.stop_node_map[current_stop as usize];
-        let candidate = NodeResult {
-            arrival_time: current_time,
-            // Always point back to boarding_node. Intermediate stops may be
-            // overwritten by other paths later, so we can't use them as
-            // stable predecessors. Path reconstruction shows the boarding
-            // stop (from the previous walk segment) and the alighting stop.
-            prev_node: boarding_node,
-            edge_type: 1,
-            route_index,
-            leave_home,
-            boarding_time,
-        };
-        if candidate.is_better_than(&result[dest_node as usize]) {
-            result[dest_node as usize] = candidate;
-            arrived_by_route[dest_node as usize] = route_index;
-            pq.push(Reverse((current_time, dest_node)));
+        if dest_node != u32::MAX {
+            let candidate = NodeResult {
+                arrival_time: current_time,
+                // Always point back to boarding_node. Intermediate stops may be
+                // overwritten by other paths later, so we can't use them as
+                // stable predecessors. Path reconstruction shows the boarding
+                // stop (from the previous walk segment) and the alighting stop.
+                prev_node: boarding_node,
+                edge_type: 1,
+                route_index,
+                leave_home,
+                boarding_time,
+            };
+            if candidate.is_better_than(&result[dest_node as usize]) {
+                result[dest_node as usize] = candidate;
+                arrived_by_route[dest_node as usize] = route_index;
+                pq.push(Reverse((current_time, dest_node)));
+            }
         }
 
         // Find continuation: same trip departing from current_stop
