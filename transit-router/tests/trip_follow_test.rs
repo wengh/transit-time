@@ -137,7 +137,7 @@ fn build_test_data() -> PreparedData {
         node_is_stop,
         node_stop_indices,
         shapes: HashMap::new(),
-        route_shapes: vec![String::new(); 2],
+        route_shapes: vec![Vec::new(); 2],
     }
 }
 

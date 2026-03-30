@@ -64,8 +64,8 @@ pub struct PreparedData {
     pub node_stop_indices: Vec<Vec<u32>>,
     /// shape_id -> [(lat, lon)]
     pub shapes: std::collections::HashMap<String, Vec<(f64, f64)>>,
-    /// route_index -> shape_id (empty string if no shape)
-    pub route_shapes: Vec<String>,
+    /// route_index -> [shape_ids] (all shapes for that route)
+    pub route_shapes: Vec<Vec<String>>,
 }
 
 pub fn load(compressed: &[u8]) -> Result<PreparedData, String> {
@@ -228,15 +228,22 @@ pub fn load(compressed: &[u8]) -> Result<PreparedData, String> {
     }
 
     // Route-to-shape mapping (may not be present in older binaries)
-    let mut route_shapes = vec![String::new(); num_route_names];
+    let mut route_shapes: Vec<Vec<String>> = vec![Vec::new(); num_route_names];
     if pos < buf.len() {
         let num_route_shapes = read_u32(&buf, &mut pos) as usize;
         for i in 0..num_route_shapes {
-            let id_len = read_u32(&buf, &mut pos) as usize;
-            if id_len > 0 {
-                route_shapes[i] = String::from_utf8_lossy(&buf[pos..pos + id_len]).to_string();
+            let num_shapes = read_u32(&buf, &mut pos) as usize;
+            let mut shapes_for_route = Vec::with_capacity(num_shapes);
+            for _ in 0..num_shapes {
+                let id_len = read_u32(&buf, &mut pos) as usize;
+                if id_len > 0 {
+                    shapes_for_route.push(
+                        String::from_utf8_lossy(&buf[pos..pos + id_len]).to_string(),
+                    );
+                }
+                pos += id_len;
             }
-            pos += id_len;
+            route_shapes[i] = shapes_for_route;
         }
     }
 

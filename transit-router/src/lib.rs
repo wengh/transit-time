@@ -251,44 +251,57 @@ impl TransitRouter {
         if ri >= self.data.route_shapes.len() {
             return Vec::new();
         }
-        let shape_id = &self.data.route_shapes[ri];
-        if shape_id.is_empty() {
+        let shape_ids = &self.data.route_shapes[ri];
+        if shape_ids.is_empty() {
             return Vec::new();
         }
-        let points = match self.data.shapes.get(shape_id) {
-            Some(p) if p.len() >= 2 => p,
-            _ => return Vec::new(),
-        };
 
         let from_lat = self.data.nodes[from_node as usize].lat;
         let from_lon = self.data.nodes[from_node as usize].lon;
         let to_lat = self.data.nodes[to_node as usize].lat;
         let to_lon = self.data.nodes[to_node as usize].lon;
 
-        // Find closest point on shape to each stop
-        let mut best_from = 0usize;
-        let mut best_from_d = f64::MAX;
-        let mut best_to = 0usize;
-        let mut best_to_d = f64::MAX;
-        for (i, &(lat, lon)) in points.iter().enumerate() {
-            let df = (lat - from_lat).powi(2) + (lon - from_lon).powi(2);
-            let dt = (lat - to_lat).powi(2) + (lon - to_lon).powi(2);
-            if df < best_from_d { best_from_d = df; best_from = i; }
-            if dt < best_to_d { best_to_d = dt; best_to = i; }
+        // Try all shapes for this route; pick the one where both stops are closest
+        let mut best_result: Vec<f64> = Vec::new();
+        let mut best_worst_d = f64::MAX;
+
+        for shape_id in shape_ids {
+            let points = match self.data.shapes.get(shape_id) {
+                Some(p) if p.len() >= 2 => p,
+                _ => continue,
+            };
+
+            let mut best_from = 0usize;
+            let mut best_from_d = f64::MAX;
+            let mut best_to = 0usize;
+            let mut best_to_d = f64::MAX;
+            for (i, &(lat, lon)) in points.iter().enumerate() {
+                let df = (lat - from_lat).powi(2) + (lon - from_lon).powi(2);
+                let dt = (lat - to_lat).powi(2) + (lon - to_lon).powi(2);
+                if df < best_from_d { best_from_d = df; best_from = i; }
+                if dt < best_to_d { best_to_d = dt; best_to = i; }
+            }
+
+            // Score: the worse of the two distances (both stops must be well-covered)
+            let worst_d = best_from_d.max(best_to_d);
+            if worst_d < best_worst_d {
+                best_worst_d = worst_d;
+
+                let (start, end) = if best_from <= best_to {
+                    (best_from, best_to)
+                } else {
+                    (best_to, best_from)
+                };
+
+                let mut result = Vec::with_capacity((end - start + 1) * 2);
+                for i in start..=end {
+                    result.push(points[i].0);
+                    result.push(points[i].1);
+                }
+                best_result = result;
+            }
         }
 
-        // Ensure from < to along shape (swap if reversed)
-        let (start, end) = if best_from <= best_to {
-            (best_from, best_to)
-        } else {
-            (best_to, best_from)
-        };
-
-        let mut result = Vec::with_capacity((end - start + 1) * 2);
-        for i in start..=end {
-            result.push(points[i].0);
-            result.push(points[i].1);
-        }
-        result
+        best_result
     }
 }

@@ -164,21 +164,22 @@ pub fn run_prep(
     let patterns = gtfs::build_service_patterns(&gtfs_data);
     eprintln!("Built {} service patterns", patterns.len());
 
-    // Build route_index -> shape_id mapping (pick first shape per route from trips)
+    // Build route_index -> shape_id mapping
     let mut route_id_to_index: HashMap<String, u32> = HashMap::new();
     for route in &gtfs_data.routes {
         route_id_to_index.insert(route.id.clone(), route.index);
     }
-    let mut route_shapes: Vec<String> = vec![String::new(); gtfs_data.routes.len()];
+    let mut route_shapes_set: Vec<std::collections::HashSet<String>> = vec![std::collections::HashSet::new(); gtfs_data.routes.len()];
     for trip in &gtfs_data.trips {
         if let Some(ref shape_id) = trip.shape_id {
             if let Some(&ridx) = route_id_to_index.get(&trip.route_id) {
-                if route_shapes[ridx as usize].is_empty() {
-                    route_shapes[ridx as usize] = shape_id.clone();
-                }
+                route_shapes_set[ridx as usize].insert(shape_id.clone());
             }
         }
     }
+    let route_shapes: Vec<Vec<String>> = route_shapes_set.into_iter()
+        .map(|s| s.into_iter().collect())
+        .collect();
 
     // Step 7: Serialize to binary
     eprintln!("\n--- Writing binary output ---");

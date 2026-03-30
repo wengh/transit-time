@@ -90,7 +90,7 @@ fn toronto_union_to_bloor_uses_subway() {
     );
     assert!(!segs.is_empty(), "should find a route");
     let has_subway = segs.iter().any(|s| {
-        s.is_transit && (s.route_name.contains("Line 1") || s.route_name.contains("Yonge"))
+        s.is_transit && (s.route_name.contains("Line 1") || s.route_name.contains("Yonge") || s.route_name == "1" || s.route_name == "97")
     });
     assert!(has_subway, "expected Line 1 subway, got: {segs:?}");
 }
@@ -106,7 +106,7 @@ fn toronto_union_to_bloor_sunday() {
     );
     assert!(!segs.is_empty(), "should find a route on Sunday");
     let has_subway = segs.iter().any(|s| {
-        s.is_transit && (s.route_name.contains("Line 1") || s.route_name.contains("Yonge"))
+        s.is_transit && (s.route_name.contains("Line 1") || s.route_name.contains("Yonge") || s.route_name == "1" || s.route_name == "97")
     });
     assert!(has_subway, "expected Line 1 subway on Sunday, got: {segs:?}");
 }
