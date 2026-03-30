@@ -1,6 +1,7 @@
 {
     "id": "nyc",
     "prep_city": "New York",
+    "feed_id": "mdb-516",
     "name": "New York City, NY",
     "file": "nyc.bin",
     "bbox": "-74.25,40.50,-73.70,40.92",

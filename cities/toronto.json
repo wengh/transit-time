@@ -1,7 +1,7 @@
 {
     "id": "toronto",
     "prep_city": "Toronto",
-    "feed_id": "mdb-2253",
+    "feed_id": "mdb-732",
     "name": "Toronto, ON",
     "file": "toronto.bin",
     "bbox": "-79.63,43.58,-79.11,43.85",

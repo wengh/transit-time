@@ -468,6 +468,27 @@ pub fn parse_gtfs(path: &Path) -> Result<GtfsData> {
     })
 }
 
+/// Derive a day_mask (bit 0=Mon..6=Sun) from a list of YYYYMMDD date integers.
+fn day_mask_from_dates(dates: &[u32]) -> u8 {
+    let mut mask = 0u8;
+    for &d in dates {
+        let y = (d / 10000) as i32;
+        let m = ((d % 10000) / 100) as u32;
+        let day = (d % 100) as u32;
+        // Tomohiko Sakamoto's algorithm: returns 0=Sun..6=Sat
+        let t = [0i32, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4];
+        let yy = if m < 3 { y - 1 } else { y };
+        let dow_sun0 = ((yy + yy / 4 - yy / 100 + yy / 400
+            + t[(m - 1) as usize]
+            + day as i32)
+            % 7) as u8;
+        // Convert 0=Sun..6=Sat → 0=Mon..6=Sun
+        let dow = if dow_sun0 == 0 { 6 } else { dow_sun0 - 1 };
+        mask |= 1 << dow;
+    }
+    mask
+}
+
 pub fn build_service_patterns(data: &GtfsData) -> Vec<ServicePattern> {
     // Build mappings
     let mut trip_id_to_idx: HashMap<&str, u32> = HashMap::new();
@@ -488,7 +509,7 @@ pub fn build_service_patterns(data: &GtfsData) -> Vec<ServicePattern> {
     // Group service_ids by day mask
     let mut day_mask_groups: BTreeMap<u8, Vec<&Service>> = BTreeMap::new();
     for service in &data.services {
-        let mask = service.days.iter().enumerate().fold(
+        let mut mask = service.days.iter().enumerate().fold(
             0u8,
             |acc, (i, &d)| {
                 if d {
@@ -498,18 +519,22 @@ pub fn build_service_patterns(data: &GtfsData) -> Vec<ServicePattern> {
                 }
             },
         );
+        // For services defined only via calendar_dates (mask=0), derive the
+        // day mask from their added_dates so they get included in the right
+        // day-of-week patterns.
+        if mask == 0 && !service.added_dates.is_empty() {
+            mask = day_mask_from_dates(&service.added_dates);
+        }
         day_mask_groups.entry(mask).or_default().push(service);
     }
 
-    // For feeds that only use calendar_dates (no calendar.txt), all services have mask 0.
-    // In that case, merge them into a single "all days" pattern with date exceptions.
+    // For feeds that only use calendar_dates (no calendar.txt), all services may
+    // still have mask 0 if date parsing failed. Merge into all-days as a fallback.
     if day_mask_groups.len() == 1 && day_mask_groups.contains_key(&0) {
-        // Check if all services only have added_dates
         let all_date_based = day_mask_groups[&0]
             .iter()
             .all(|s| !s.added_dates.is_empty() || !s.removed_dates.is_empty());
         if all_date_based {
-            // Use mask 0x7F (all days) and keep the date exceptions
             let services = day_mask_groups.remove(&0).unwrap();
             day_mask_groups.insert(0x7F, services);
         }
@@ -679,4 +704,45 @@ pub fn build_service_patterns(data: &GtfsData) -> Vec<ServicePattern> {
     }
 
     patterns
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn day_mask_from_dates_known_days() {
+        // 2026-03-29 is a Sunday (bit 6)
+        assert_eq!(day_mask_from_dates(&[20260329]), 1 << 6);
+        // 2026-03-30 is a Monday (bit 0)
+        assert_eq!(day_mask_from_dates(&[20260330]), 1 << 0);
+        // 2026-04-01 is a Wednesday (bit 2)
+        assert_eq!(day_mask_from_dates(&[20260401]), 1 << 2);
+        // 2025-01-01 is a Wednesday (bit 2)
+        assert_eq!(day_mask_from_dates(&[20250101]), 1 << 2);
+    }
+
+    #[test]
+    fn day_mask_from_dates_combines_days() {
+        // Mon + Wed + Fri = bits 0,2,4 = 0b0010101 = 21
+        assert_eq!(
+            day_mask_from_dates(&[20260330, 20260401, 20260403]),
+            (1 << 0) | (1 << 2) | (1 << 4),
+        );
+    }
+
+    #[test]
+    fn day_mask_from_dates_all_week() {
+        // Mon 2026-03-30 through Sun 2026-04-05
+        let dates: Vec<u32> = (30..=31)
+            .map(|d| 20260300 + d)
+            .chain((1..=5).map(|d| 20260400 + d))
+            .collect();
+        assert_eq!(day_mask_from_dates(&dates), 0x7F);
+    }
+
+    #[test]
+    fn day_mask_from_dates_empty() {
+        assert_eq!(day_mask_from_dates(&[]), 0);
+    }
 }
