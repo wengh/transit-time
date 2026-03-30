@@ -1,7 +1,11 @@
 {
     "id": "nyc",
     "prep_city": "New York",
-    "feed_id": "mdb-516",
+    "feed_ids": [
+        "mdb-513",
+        "mdb-516",
+        "mdb-517"
+    ],
     "name": "New York City, NY",
     "file": "nyc.bin",
     "bbox": "-74.25,40.50,-73.70,40.92",
@@ -10,5 +14,5 @@
         -74.01
     ],
     "zoom": 11,
-    "detail": "Metropolitan Transportation Authority (MTA)"
+    "detail": "MTA, PATH"
 }

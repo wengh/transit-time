@@ -17,9 +17,13 @@ struct Cli {
     #[arg(long)]
     city: String,
 
-    /// MDB Feed ID (optional, bypasses city search)
+    /// MDB Feed ID(s), comma-separated for multiple feeds (e.g. "mdb-516,mdb-1234")
     #[arg(long)]
     feed_id: Option<String>,
+
+    /// Additional MDB Feed IDs (alternative to comma-separated --feed-id)
+    #[arg(long = "feed-ids", value_delimiter = ',')]
+    feed_ids: Vec<String>,
 
     /// Bounding box: min_lon,min_lat,max_lon,max_lat
     #[arg(long)]
@@ -62,9 +66,18 @@ fn main() -> Result<()> {
         .trim()
         .to_string();
 
+    // Collect feed IDs: combine --feed-id (comma-separated) and --feed-ids
+    let mut all_feed_ids: Vec<String> = Vec::new();
+    if let Some(ref fid) = cli.feed_id {
+        all_feed_ids.extend(fid.split(',').map(|s| s.trim().to_string()));
+    }
+    all_feed_ids.extend(cli.feed_ids);
+
+    let feed_ids: Vec<&str> = all_feed_ids.iter().map(|s| s.as_str()).collect();
+
     run_prep(
         &cli.city,
-        cli.feed_id.as_deref(),
+        &feed_ids,
         bbox,
         &cli.output,
         &cli.cache_dir,
@@ -74,7 +87,7 @@ fn main() -> Result<()> {
 
 pub fn run_prep(
     city: &str,
-    feed_id: Option<&str>,
+    feed_ids: &[&str],
     bbox: (f64, f64, f64, f64),
     output: &Path,
     cache_dir: &Path,
@@ -85,8 +98,36 @@ pub fn run_prep(
 
     // Step 1: Download GTFS data
     eprintln!("\n--- Fetching GTFS data ---");
-    let gtfs_path = mdb::fetch_gtfs(city, feed_id, cache_dir, refresh_token)?;
-    eprintln!("GTFS data cached at: {:?}", gtfs_path);
+    let feed_id_opt = if feed_ids.len() == 1 {
+        Some(feed_ids[0])
+    } else {
+        None
+    };
+
+    // Fetch and parse all feeds, then merge
+    let gtfs_data = if feed_ids.len() > 1 {
+        let mut merged: Option<gtfs::GtfsData> = None;
+        for fid in feed_ids {
+            let path = mdb::fetch_gtfs(fid, Some(fid), cache_dir, refresh_token)?;
+            eprintln!("GTFS feed {} cached at: {:?}", fid, path);
+            let data = gtfs::parse_gtfs(&path)?;
+            eprintln!(
+                "  {} stops, {} routes, {} trips",
+                data.stops.len(),
+                data.routes.len(),
+                data.trips.len()
+            );
+            match merged {
+                Some(ref mut m) => m.merge(data),
+                None => merged = Some(data),
+            }
+        }
+        merged.unwrap()
+    } else {
+        let path = mdb::fetch_gtfs(city, feed_id_opt, cache_dir, refresh_token)?;
+        eprintln!("GTFS data cached at: {:?}", path);
+        gtfs::parse_gtfs(&path)?
+    };
 
     // Step 2: Download OSM data
     eprintln!("\n--- Fetching OSM pedestrian data ---");
@@ -95,7 +136,6 @@ pub fn run_prep(
 
     // Step 3: Parse GTFS
     eprintln!("\n--- Parsing GTFS ---");
-    let gtfs_data = gtfs::parse_gtfs(&gtfs_path)?;
     eprintln!(
         "Parsed {} stops, {} routes, {} trips, {} stop_times, {} services",
         gtfs_data.stops.len(),

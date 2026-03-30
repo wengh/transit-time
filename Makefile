@@ -21,11 +21,11 @@ transit-viz/public/data/%.bin: $(PREP_SRC) transit-prep/Cargo.toml cities/%.json
 	@echo "Building data for $*..."
 	@BBOX=$$(node -e "console.log(require('./cities/$*.json').bbox)"); \
 	PREP_CITY=$$(node -e "console.log(require('./cities/$*.json').prep_city)"); \
-	FEED_ID=$$(node -e "console.log(require('./cities/$*.json').feed_id || '')"); \
-	if [ -n "$$FEED_ID" ]; then \
+	FEED_IDS=$$(node -e "console.log((require('./cities/$*.json').feed_ids || []).join(','))"); \
+	if [ -n "$$FEED_IDS" ]; then \
 		cargo run --release -p transit-prep -- \
 			--city "$$PREP_CITY" \
-			--feed-id "$$FEED_ID" \
+			--feed-ids "$$FEED_IDS" \
 			--bbox="$$BBOX" \
 			--output $@ \
 			--cache-dir cache; \

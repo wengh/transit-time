@@ -1,6 +1,11 @@
 {
     "id": "chicago",
     "prep_city": "Chicago",
+    "feed_ids": [
+        "mdb-389",
+        "mdb-306",
+        "mdb-2347"
+    ],
     "name": "Chicago, IL",
     "file": "chicago.bin",
     "bbox": "-87.94,41.64,-87.52,42.02",
@@ -9,5 +14,5 @@
         -87.63
     ],
     "zoom": 12,
-    "detail": "CTA buses & rail, Metra, Pace"
+    "detail": "CTA, Pace, Water Taxi"
 }

@@ -74,6 +74,52 @@ pub struct GtfsData {
     pub shapes: HashMap<String, Vec<(f64, f64)>>, // shape_id -> [(lat, lon)]
 }
 
+impl GtfsData {
+    /// Merge another feed into this one, offsetting numeric indices.
+    /// String-based references (trip_id, route_id, stop_id, service_id) are
+    /// kept as-is — collisions across feeds are unlikely and harmless for
+    /// build_service_patterns which resolves everything by string.
+    pub fn merge(&mut self, other: GtfsData) {
+        let stop_offset = self.stops.len() as u32;
+        let route_offset = self.routes.len() as u32;
+
+        for mut stop in other.stops {
+            stop.index += stop_offset;
+            self.stops.push(stop);
+        }
+        for mut route in other.routes {
+            route.index += route_offset;
+            self.routes.push(route);
+        }
+        self.trips.extend(other.trips);
+        self.stop_times.extend(other.stop_times);
+
+        // Merge services: if same service_id exists, combine date exceptions
+        let existing: HashMap<String, usize> = self
+            .services
+            .iter()
+            .enumerate()
+            .map(|(i, s)| (s.id.clone(), i))
+            .collect();
+        for svc in other.services {
+            if let Some(&idx) = existing.get(&svc.id) {
+                self.services[idx].added_dates.extend(svc.added_dates);
+                self.services[idx].removed_dates.extend(svc.removed_dates);
+                for (i, &d) in svc.days.iter().enumerate() {
+                    if d {
+                        self.services[idx].days[i] = true;
+                    }
+                }
+            } else {
+                self.services.push(svc);
+            }
+        }
+
+        self.frequencies.extend(other.frequencies);
+        self.shapes.extend(other.shapes);
+    }
+}
+
 /// A service pattern groups service_ids that share the same day-of-week mask.
 #[derive(Debug, Clone)]
 pub struct ServicePattern {
@@ -744,5 +790,111 @@ mod tests {
     #[test]
     fn day_mask_from_dates_empty() {
         assert_eq!(day_mask_from_dates(&[]), 0);
+    }
+
+    fn make_gtfs(
+        n_stops: u32,
+        routes: &[&str],
+        services: &[&str],
+        n_trips: u32,
+    ) -> GtfsData {
+        GtfsData {
+            stops: (0..n_stops)
+                .map(|i| Stop {
+                    id: format!("s{i}"),
+                    name: format!("Stop {i}"),
+                    lat: 43.0 + i as f64 * 0.001,
+                    lon: -79.0 + i as f64 * 0.001,
+                    index: i,
+                })
+                .collect(),
+            routes: routes
+                .iter()
+                .enumerate()
+                .map(|(i, &name)| Route {
+                    id: name.to_string(),
+                    short_name: name.to_string(),
+                    index: i as u32,
+                })
+                .collect(),
+            trips: (0..n_trips)
+                .map(|i| Trip {
+                    id: format!("t{i}"),
+                    route_id: routes[0].to_string(),
+                    service_id: services[0].to_string(),
+                    shape_id: None,
+                })
+                .collect(),
+            stop_times: vec![],
+            services: services
+                .iter()
+                .map(|&id| Service {
+                    id: id.to_string(),
+                    days: [true, true, true, true, true, false, false],
+                    start_date: 20260101,
+                    end_date: 20261231,
+                    added_dates: vec![],
+                    removed_dates: vec![],
+                })
+                .collect(),
+            frequencies: vec![],
+            shapes: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn merge_offsets_indices() {
+        let mut a = make_gtfs(3, &["BusA"], &["weekday"], 2);
+        let b = make_gtfs(2, &["BusB"], &["weekday"], 1);
+
+        a.merge(b);
+
+        assert_eq!(a.stops.len(), 5);
+        assert_eq!(a.routes.len(), 2);
+        assert_eq!(a.trips.len(), 3);
+        // Stop indices should be offset
+        assert_eq!(a.stops[3].index, 3);
+        assert_eq!(a.stops[4].index, 4);
+        // Route indices should be offset
+        assert_eq!(a.routes[1].index, 1);
+    }
+
+    #[test]
+    fn merge_deduplicates_services() {
+        let mut a = make_gtfs(1, &["A"], &["weekday"], 1);
+        let mut b = make_gtfs(1, &["B"], &["weekend"], 1);
+        // Add a service to b with same id as a's
+        b.services.push(Service {
+            id: "weekday".to_string(),
+            days: [false; 7],
+            start_date: 20260101,
+            end_date: 20261231,
+            added_dates: vec![20260401],
+            removed_dates: vec![],
+        });
+
+        a.merge(b);
+
+        // "weekday" should be deduped, "weekend" added
+        assert_eq!(a.services.len(), 2);
+        let weekday = a.services.iter().find(|s| s.id == "weekday").unwrap();
+        assert_eq!(weekday.added_dates, vec![20260401]);
+    }
+
+    #[test]
+    fn merge_empty_into_populated() {
+        let mut a = make_gtfs(3, &["Bus"], &["daily"], 5);
+        let b = GtfsData {
+            stops: vec![],
+            routes: vec![],
+            trips: vec![],
+            stop_times: vec![],
+            services: vec![],
+            frequencies: vec![],
+            shapes: HashMap::new(),
+        };
+        a.merge(b);
+        assert_eq!(a.stops.len(), 3);
+        assert_eq!(a.trips.len(), 5);
     }
 }

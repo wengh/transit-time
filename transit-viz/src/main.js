@@ -669,7 +669,7 @@ function initMap(city) {
       html += '<div style="border-top:1px solid #ddd;padding-top:6px;margin-top:6px">';
       html += '<canvas id="time-dist" height="32" style="width:100%;height:32px;display:block"></canvas>';
       html += `<div style="display:flex;justify-content:space-between;font-size:10px;color:#888;margin-top:2px">`;
-      html += `<span>${minMin} min</span><span>${avgMin} avg</span><span>${maxMin} min</span></div>`;
+      html += `<span>min ${minMin}</span><span>avg ${avgMin}</span><span>max ${maxMin}</span></div>`;
       html += '</div>';
 
       hoverInfo.innerHTML = html;

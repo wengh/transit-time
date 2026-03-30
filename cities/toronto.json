@@ -1,7 +1,11 @@
 {
     "id": "toronto",
     "prep_city": "Toronto",
-    "feed_id": "mdb-732",
+    "feed_ids": [
+        "mdb-732",
+        "mdb-1993",
+        "mdb-1995"
+    ],
     "name": "Toronto, ON",
     "file": "toronto.bin",
     "bbox": "-79.63,43.58,-79.11,43.85",
@@ -10,5 +14,5 @@
         -79.38
     ],
     "zoom": 11,
-    "detail": "Toronto Transit Commission (TTC)"
+    "detail": "TTC, Go Transit, UP Express"
 }
