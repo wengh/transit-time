@@ -14,11 +14,6 @@ pub struct SsspResult {
 
 /// Reconstruct path from source to destination.
 /// Returns flat array: [node_index, edge_type, route_index, ...]
-/// Each node is labeled with the *outgoing* edge (edge to next node),
-/// so a boarding stop gets the transit edge type, not walk.
-/// The final node keeps its incoming edge type.
-/// Reconstruct path from source to destination.
-/// Returns flat array: [node_index, edge_type, route_index, ...]
 /// Each node is labeled with the *incoming* edge (how we arrived at it).
 /// For transit segments, the boarding stop is the last node of the
 /// preceding walk segment — callers should use that for display.
