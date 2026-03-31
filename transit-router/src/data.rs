@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::io::Read;
 
 #[derive(Debug, Clone)]
@@ -41,12 +42,23 @@ pub struct FreqData {
 }
 
 #[derive(Debug, Clone)]
+pub struct StopEventRef {
+    pub time_offset: u32,
+    pub event_index: u32,
+}
+
+pub struct PatternStopIndex {
+    pub freq_by_stop: HashMap<u32, Vec<u32>>,
+    pub events_by_stop: HashMap<u32, Vec<StopEventRef>>,
+}
+
 pub struct PatternData {
     pub day_mask: u8,
     pub min_time: u32,
     pub max_time: u32,
     pub events: Vec<Vec<EventData>>,
     pub frequency_routes: Vec<FreqData>,
+    pub stop_index: PatternStopIndex,
 }
 
 pub struct PreparedData {
@@ -202,12 +214,38 @@ pub fn load(compressed: &[u8]) -> Result<PreparedData, String> {
                 travel_time,
             });
         }
+        // Build per-stop index
+        let mut freq_by_stop: HashMap<u32, Vec<u32>> = HashMap::new();
+        for (i, freq) in freq_entries.iter().enumerate() {
+            freq_by_stop
+                .entry(freq.stop_index)
+                .or_default()
+                .push(i as u32);
+        }
+
+        let mut events_by_stop: HashMap<u32, Vec<StopEventRef>> = HashMap::new();
+        for (time_offset, slot) in events.iter().enumerate() {
+            for (event_index, event) in slot.iter().enumerate() {
+                events_by_stop
+                    .entry(event.stop_index)
+                    .or_default()
+                    .push(StopEventRef {
+                        time_offset: time_offset as u32,
+                        event_index: event_index as u32,
+                    });
+            }
+        }
+
         patterns.push(PatternData {
             day_mask,
             min_time,
             max_time,
             events,
             frequency_routes: freq_entries,
+            stop_index: PatternStopIndex {
+                freq_by_stop,
+                events_by_stop,
+            },
         });
     }
 
@@ -237,9 +275,8 @@ pub fn load(compressed: &[u8]) -> Result<PreparedData, String> {
             for _ in 0..num_shapes {
                 let id_len = read_u32(&buf, &mut pos) as usize;
                 if id_len > 0 {
-                    shapes_for_route.push(
-                        String::from_utf8_lossy(&buf[pos..pos + id_len]).to_string(),
-                    );
+                    shapes_for_route
+                        .push(String::from_utf8_lossy(&buf[pos..pos + id_len]).to_string());
                 }
                 pos += id_len;
             }

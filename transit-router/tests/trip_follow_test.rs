@@ -99,12 +99,27 @@ fn build_test_data() -> PreparedData {
         travel_time: 120,
     });
 
+    // Build per-stop index
+    let mut events_by_stop: HashMap<u32, Vec<StopEventRef>> = HashMap::new();
+    for (time_offset, slot) in events.iter().enumerate() {
+        for (event_index, event) in slot.iter().enumerate() {
+            events_by_stop
+                .entry(event.stop_index)
+                .or_default()
+                .push(StopEventRef { time_offset: time_offset as u32, event_index: event_index as u32 });
+        }
+    }
+
     let pattern = PatternData {
         day_mask: 0xFF, // every day
         min_time,
         max_time: min_time + 500,
         events,
         frequency_routes: vec![],
+        stop_index: PatternStopIndex {
+            freq_by_stop: HashMap::new(),
+            events_by_stop,
+        },
     };
 
     let num_nodes = 5;
