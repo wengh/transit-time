@@ -9,5 +9,4 @@ bytemuck = { version = "1", features = ["derive"] }
 
 [profile.release]
 opt-level = "z"
-lto = false
-debug = true
+lto = "fat"
