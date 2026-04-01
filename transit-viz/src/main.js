@@ -1,4 +1,4 @@
-import init, { TransitRouter } from '../pkg/transit_router.js';
+import init, { initThreadPool, TransitRouter, __markRayonReady } from '../pkg/transit_router.js';
 
 const cityModules = import.meta.glob('../../cities/*.json', { eager: true });
 const CITIES = Object.values(cityModules)
@@ -302,17 +302,19 @@ function runQuery() {
         }
       } else {
         const nSamples = parseInt(document.getElementById('samples-slider').value);
-        const interval = Math.floor(3600 / nSamples);
-        currentSsspList = [];
+        const windowEnd = depTime + 3600;
+
+        currentSsspList = router.run_tdd_sampled_full_for_day(
+          sourceNode, depTime, windowEnd, nSamples, dayOfWeek, transferSlack, maxTime
+        );
+
         const numNodes = router.num_nodes();
         const sumTimes = new Float64Array(numNodes);
         const counts = new Uint32Array(numNodes);
-        for (let s = 0; s < nSamples; s++) {
-          const t = depTime + s * interval;
-          const sssp = router.run_tdd_full_for_day(
-            sourceNode, t, dayOfWeek, transferSlack, maxTime
-          );
-          currentSsspList.push(sssp);
+
+        for (let s = 0; s < currentSsspList.length; s++) {
+          const sssp = currentSsspList[s];
+          const t = router.sssp_departure_time(sssp);
           for (let i = 0; i < numNodes; i++) {
             const arr = router.node_arrival_time(sssp, i);
             if (arr < 0xFFFFFFFF) {
@@ -443,6 +445,7 @@ function initMap(city) {
     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/">CARTO</a>',
     maxZoom: 20,
     subdomains: 'abcd',
+    crossOrigin: true,
   }).addTo(map);
 
   setupCanvas();
@@ -874,6 +877,12 @@ function initMap(city) {
 
 async function main() {
   await init();
+  try {
+    await initThreadPool(navigator.hardwareConcurrency || 4);
+    __markRayonReady();
+  } catch (e) {
+    console.warn('WASM thread pool unavailable, using single-threaded mode:', e);
+  }
   populateCityList();
 
   // Check URL for direct city link

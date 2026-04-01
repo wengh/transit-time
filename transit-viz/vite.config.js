@@ -8,6 +8,10 @@ export default defineConfig({
   },
   server: {
     port: 3000,
+    headers: {
+      'Cross-Origin-Opener-Policy': 'same-origin',
+      'Cross-Origin-Embedder-Policy': 'require-corp',
+    },
   },
   // SPA fallback: serve index.html for city routes like /chicago, /chapel_hill
   appType: 'spa',

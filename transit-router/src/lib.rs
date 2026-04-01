@@ -1,10 +1,40 @@
 pub mod data;
 pub mod router;
 
-use wasm_bindgen::prelude::*;
 use data::PreparedData;
+use wasm_bindgen::prelude::*;
+
+use rayon::prelude::*;
+pub use wasm_bindgen_rayon::init_thread_pool;
 
 use router::NodeResult;
+
+/// Whether the rayon thread pool has been initialized (via `initThreadPool` from JS).
+/// When false, we fall back to sequential iteration.
+static RAYON_INITIALIZED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Called from the JS-side `initThreadPool` wrapper to mark rayon as ready.
+#[wasm_bindgen(js_name = "__markRayonReady")]
+pub fn mark_rayon_ready() {
+    RAYON_INITIALIZED.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn rayon_available() -> bool {
+    RAYON_INITIALIZED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Map + collect, using par_iter when rayon is available, plain iter otherwise.
+fn par_map_collect<R: Send>(
+    range: std::ops::Range<u32>,
+    f: impl Fn(u32) -> R + Sync + Send,
+) -> Vec<R> {
+    if rayon_available() {
+        range.into_par_iter().map(f).collect()
+    } else {
+        range.into_iter().map(f).collect()
+    }
+}
 
 /// SSSP result from a TDD query. Usable from both WASM and native code.
 pub struct SsspResult {
@@ -136,12 +166,22 @@ impl TransitRouter {
         transfer_slack: u32,
     ) -> Vec<f64> {
         let result = router::run_tdd(
-            &self.data, source_node, departure_time,
-            pattern_index as usize, transfer_slack,
+            &self.data,
+            source_node,
+            departure_time,
+            pattern_index as usize,
+            transfer_slack,
         );
-        result.iter().map(|r| {
-            if r.arrival_time == u32::MAX { f64::NAN } else { (r.arrival_time - departure_time) as f64 }
-        }).collect()
+        result
+            .iter()
+            .map(|r| {
+                if r.arrival_time == u32::MAX {
+                    f64::NAN
+                } else {
+                    (r.arrival_time - departure_time) as f64
+                }
+            })
+            .collect()
     }
 
     /// Run TDD for a specific day of week. Returns travel times (NaN for unreached).
@@ -155,12 +195,23 @@ impl TransitRouter {
     ) -> Vec<f64> {
         let pattern_indices = router::patterns_for_day(&self.data, day_of_week);
         let result = router::run_tdd_multi(
-            &self.data, source_node, departure_time,
-            &pattern_indices, transfer_slack, max_time,
+            &self.data,
+            source_node,
+            departure_time,
+            &pattern_indices,
+            transfer_slack,
+            max_time,
         );
-        result.iter().map(|r| {
-            if r.arrival_time == u32::MAX { f64::NAN } else { (r.arrival_time - departure_time) as f64 }
-        }).collect()
+        result
+            .iter()
+            .map(|r| {
+                if r.arrival_time == u32::MAX {
+                    f64::NAN
+                } else {
+                    (r.arrival_time - departure_time) as f64
+                }
+            })
+            .collect()
     }
 
     /// Run sampled TDD over a time window. Returns averaged travel times.
@@ -176,30 +227,89 @@ impl TransitRouter {
     ) -> Vec<f64> {
         let pattern_indices = router::patterns_for_day(&self.data, day_of_week);
         let num_nodes = self.data.num_nodes;
-        let mut sum_times = vec![0.0f64; num_nodes];
-        let mut count = vec![0u32; num_nodes];
 
         let step = if n_samples > 1 {
             (window_end - window_start) / (n_samples - 1)
-        } else { 0 };
+        } else {
+            0
+        };
 
-        for i in 0..n_samples {
+        let per_sample = par_map_collect(0..n_samples, |i| {
             let dep_time = window_start + i * step;
             let result = router::run_tdd_multi(
-                &self.data, source_node, dep_time,
-                &pattern_indices, transfer_slack, max_time,
+                &self.data,
+                source_node,
+                dep_time,
+                &pattern_indices,
+                transfer_slack,
+                max_time,
             );
+
+            let mut sum_times = vec![0u32; num_nodes];
+            let mut count = vec![0u32; num_nodes];
+
             for (j, r) in result.iter().enumerate() {
                 if r.arrival_time != u32::MAX {
-                    sum_times[j] += (r.arrival_time - dep_time) as f64;
+                    sum_times[j] += r.arrival_time - dep_time;
                     count[j] += 1;
                 }
             }
+
+            (sum_times, count)
+        });
+
+        // Reduce across samples
+        let mut total_sum = vec![0u32; num_nodes];
+        let mut total_count = vec![0u32; num_nodes];
+        for (sum_times, count) in &per_sample {
+            for j in 0..num_nodes {
+                total_sum[j] += sum_times[j];
+                total_count[j] += count[j];
+            }
         }
 
-        sum_times.iter().zip(count.iter())
-            .map(|(&s, &c)| if c > 0 { s / c as f64 } else { f64::NAN })
+        total_sum
+            .iter()
+            .zip(total_count.iter())
+            .map(|(&s, &c)| if c > 0 { s as f64 / c as f64 } else { f64::NAN })
             .collect()
+    }
+
+    /// Run sampled TDD over a time window. Returns individual full results.
+    pub fn run_tdd_sampled_full_for_day(
+        &self,
+        source_node: u32,
+        window_start: u32,
+        window_end: u32,
+        n_samples: u32,
+        day_of_week: u8,
+        transfer_slack: u32,
+        max_time: u32,
+    ) -> Vec<WasmSsspResult> {
+        let pattern_indices = router::patterns_for_day(&self.data, day_of_week);
+        let step = if n_samples > 1 {
+            (window_end - window_start) / (n_samples - 1)
+        } else {
+            0
+        };
+
+        par_map_collect(0..n_samples, |i| {
+            let dep_time = window_start + i * step;
+            let results = router::run_tdd_multi(
+                &self.data,
+                source_node,
+                dep_time,
+                &pattern_indices,
+                transfer_slack,
+                max_time,
+            );
+            WasmSsspResult {
+                inner: SsspResult {
+                    results,
+                    departure_time: dep_time,
+                },
+            }
+        })
     }
 
     /// Run TDD and return full SSSP result for path reconstruction.
@@ -213,10 +323,19 @@ impl TransitRouter {
     ) -> WasmSsspResult {
         let pat_indices = router::patterns_for_day(&self.data, day_of_week);
         let results = router::run_tdd_multi(
-            &self.data, source_node, departure_time,
-            &pat_indices, transfer_slack, max_time,
+            &self.data,
+            source_node,
+            departure_time,
+            &pat_indices,
+            transfer_slack,
+            max_time,
         );
-        WasmSsspResult { inner: SsspResult { results, departure_time } }
+        WasmSsspResult {
+            inner: SsspResult {
+                results,
+                departure_time,
+            },
+        }
     }
 
     pub fn node_arrival_time(&self, sssp: &WasmSsspResult, node: u32) -> u32 {
@@ -273,8 +392,14 @@ impl TransitRouter {
             for (i, &(lat, lon)) in points.iter().enumerate() {
                 let df = (lat - from_lat).powi(2) + (lon - from_lon).powi(2);
                 let dt = (lat - to_lat).powi(2) + (lon - to_lon).powi(2);
-                if df < best_from_d { best_from_d = df; best_from = i; }
-                if dt < best_to_d { best_to_d = dt; best_to = i; }
+                if df < best_from_d {
+                    best_from_d = df;
+                    best_from = i;
+                }
+                if dt < best_to_d {
+                    best_to_d = dt;
+                    best_to = i;
+                }
             }
 
             // Score: the worse of the two distances (both stops must be well-covered)
