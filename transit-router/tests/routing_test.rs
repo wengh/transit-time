@@ -27,13 +27,13 @@ fn route(
     data: &data::PreparedData,
     src: (f64, f64),
     dst: (f64, f64),
-    day: u8, // 0=Mon..6=Sun
+    date: u32, // YYYYMMDD
     departure_secs: u32,
     transfer_slack: u32,
 ) -> Vec<Segment> {
     let src_node = router::snap_to_node(data, src.0, src.1);
     let dst_node = router::snap_to_node(data, dst.0, dst.1);
-    let patterns = router::patterns_for_day(data, day);
+    let patterns = router::patterns_for_date(data, date);
     let max_time = 7200;
     let results = router::run_tdd_multi(
         data,
@@ -92,7 +92,7 @@ fn toronto_union_to_bloor_uses_subway() {
         &data,
         (43.645673, -79.380542), // Union Station area
         (43.670678, -79.386178), // Bloor-Yonge area
-        0,
+        20260406,
         hhmm(8, 0),
         60, // Monday 08:00, 60s slack
     );
@@ -116,7 +116,7 @@ fn toronto_union_to_bloor_sunday() {
         &data,
         (43.645153, -79.380605),
         (43.664838, -79.384622),
-        6,
+        20260405,
         hhmm(8, 0),
         60, // Sunday 08:00
     );

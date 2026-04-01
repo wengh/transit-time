@@ -153,6 +153,10 @@ impl TransitRouter {
         self.data.patterns[idx as usize].day_mask
     }
 
+    pub fn num_patterns_for_date(&self, date: u32) -> u32 {
+        router::patterns_for_date(&self.data, date).len() as u32
+    }
+
     pub fn snap_to_node(&self, lat: f64, lon: f64) -> u32 {
         router::snap_to_node(&self.data, lat, lon)
     }
@@ -184,16 +188,16 @@ impl TransitRouter {
             .collect()
     }
 
-    /// Run TDD for a specific day of week. Returns travel times (NaN for unreached).
-    pub fn run_tdd_for_day(
+    /// Run TDD for a specific date (YYYYMMDD). Returns travel times (NaN for unreached).
+    pub fn run_tdd_for_date(
         &self,
         source_node: u32,
         departure_time: u32,
-        day_of_week: u8,
+        date: u32,
         transfer_slack: u32,
         max_time: u32,
     ) -> Vec<f64> {
-        let pattern_indices = router::patterns_for_day(&self.data, day_of_week);
+        let pattern_indices = router::patterns_for_date(&self.data, date);
         let result = router::run_tdd_multi(
             &self.data,
             source_node,
@@ -215,17 +219,17 @@ impl TransitRouter {
     }
 
     /// Run sampled TDD over a time window. Returns averaged travel times.
-    pub fn run_tdd_sampled_for_day(
+    pub fn run_tdd_sampled_for_date(
         &self,
         source_node: u32,
         window_start: u32,
         window_end: u32,
         n_samples: u32,
-        day_of_week: u8,
+        date: u32,
         transfer_slack: u32,
         max_time: u32,
     ) -> Vec<f64> {
-        let pattern_indices = router::patterns_for_day(&self.data, day_of_week);
+        let pattern_indices = router::patterns_for_date(&self.data, date);
         let num_nodes = self.data.num_nodes;
 
         let step = if n_samples > 1 {
@@ -276,17 +280,17 @@ impl TransitRouter {
     }
 
     /// Run sampled TDD over a time window. Returns individual full results.
-    pub fn run_tdd_sampled_full_for_day(
+    pub fn run_tdd_sampled_full_for_date(
         &self,
         source_node: u32,
         window_start: u32,
         window_end: u32,
         n_samples: u32,
-        day_of_week: u8,
+        date: u32,
         transfer_slack: u32,
         max_time: u32,
     ) -> Vec<WasmSsspResult> {
-        let pattern_indices = router::patterns_for_day(&self.data, day_of_week);
+        let pattern_indices = router::patterns_for_date(&self.data, date);
         let step = if n_samples > 1 {
             (window_end - window_start) / (n_samples - 1)
         } else {
@@ -313,15 +317,15 @@ impl TransitRouter {
     }
 
     /// Run TDD and return full SSSP result for path reconstruction.
-    pub fn run_tdd_full_for_day(
+    pub fn run_tdd_full_for_date(
         &self,
         source_node: u32,
         departure_time: u32,
-        day_of_week: u8,
+        date: u32,
         transfer_slack: u32,
         max_time: u32,
     ) -> WasmSsspResult {
-        let pat_indices = router::patterns_for_day(&self.data, day_of_week);
+        let pat_indices = router::patterns_for_date(&self.data, date);
         let results = router::run_tdd_multi(
             &self.data,
             source_node,

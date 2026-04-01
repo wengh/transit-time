@@ -37,8 +37,8 @@ fn profile_hour_window() {
         prepared.nodes[source as usize].lat,
         prepared.nodes[source as usize].lon);
 
-    // Monday = 0
-    let mon_patterns = transit_router::router::patterns_for_day(&prepared, 0);
+    // Monday
+    let mon_patterns = transit_router::router::patterns_for_date(&prepared, 20260406);
     eprintln!("Monday patterns: {} total", mon_patterns.len());
 
     let samples = 10;

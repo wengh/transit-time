@@ -115,6 +115,8 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
     for pattern in &data.patterns {
         write_u32(&mut buf, pattern.pattern_id);
         buf.push(pattern.day_mask);
+        write_u32(&mut buf, pattern.start_date);
+        write_u32(&mut buf, pattern.end_date);
         write_u32(&mut buf, pattern.date_exceptions_add.len() as u32);
         for &d in &pattern.date_exceptions_add {
             write_u32(&mut buf, d);

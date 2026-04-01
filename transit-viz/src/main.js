@@ -50,13 +50,11 @@ function formatTime(seconds) {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
 }
 
-function getSelectedDayOfWeek() {
+function getSelectedDate() {
   const dateStr = document.getElementById('date-picker').value;
-  if (!dateStr) return 0; // Monday default
-  // JS Date: 0=Sun, we need 0=Mon
-  const d = new Date(dateStr + 'T12:00:00');
-  const jsDay = d.getDay(); // 0=Sun
-  return jsDay === 0 ? 6 : jsDay - 1; // Convert to 0=Mon..6=Sun
+  if (!dateStr) return 20260406; // Monday default
+  // Convert "YYYY-MM-DD" to YYYYMMDD integer
+  return parseInt(dateStr.replace(/-/g, ''), 10);
 }
 
 function updateTimeDisplay() {
@@ -97,21 +95,11 @@ function updateLegend() {
 
 function updatePatternInfo() {
   if (!router) return;
-  const dayOfWeek = getSelectedDayOfWeek();
-  const dayNames = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-
-  let matchCount = 0;
-  let totalEvents = 0;
-  for (let i = 0; i < router.num_patterns(); i++) {
-    const mask = router.pattern_day_mask(i);
-    if (mask & (1 << dayOfWeek)) {
-      matchCount++;
-      // We can't easily get event counts from WASM, just count patterns
-    }
-  }
-
+  const date = getSelectedDate();
+  const dateStr = document.getElementById('date-picker').value;
+  const matchCount = router.num_patterns_for_date(date);
   document.getElementById('pattern-info').textContent =
-    `${dayNames[dayOfWeek]}: ${matchCount} service pattern${matchCount !== 1 ? 's' : ''} active`;
+    `${dateStr}: ${matchCount} service pattern${matchCount !== 1 ? 's' : ''} active`;
 }
 
 let isoOverlay = null;
@@ -280,7 +268,7 @@ function runQuery() {
   const mode = document.getElementById('mode').value;
   const depTime = parseInt(document.getElementById('time-slider').value);
   const transferSlack = parseInt(document.getElementById('slack-slider').value);
-  const dayOfWeek = getSelectedDayOfWeek();
+  const date = getSelectedDate();
   const maxTime = parseInt(document.getElementById('maxtime-slider').value) * 60;
 
   const status = document.getElementById('status');
@@ -289,8 +277,8 @@ function runQuery() {
   setTimeout(() => {
     try {
       if (mode === 'single') {
-        const sssp = router.run_tdd_full_for_day(
-          sourceNode, depTime, dayOfWeek, transferSlack, maxTime
+        const sssp = router.run_tdd_full_for_date(
+          sourceNode, depTime, date, transferSlack, maxTime
         );
         currentSsspList = [sssp];
         // Derive travel times from SSSP
@@ -304,8 +292,8 @@ function runQuery() {
         const nSamples = parseInt(document.getElementById('samples-slider').value);
         const windowEnd = depTime + 3600;
 
-        currentSsspList = router.run_tdd_sampled_full_for_day(
-          sourceNode, depTime, windowEnd, nSamples, dayOfWeek, transferSlack, maxTime
+        currentSsspList = router.run_tdd_sampled_full_for_date(
+          sourceNode, depTime, windowEnd, nSamples, date, transferSlack, maxTime
         );
 
         const numNodes = router.num_nodes();
@@ -809,8 +797,6 @@ function initMap(city) {
     const depTime = parseInt(document.getElementById('time-slider').value);
     const slack = parseInt(document.getElementById('slack-slider').value);
     const dateStr = document.getElementById('date-picker').value || 'N/A';
-    const dayNames = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
-    const dayOfWeek = getSelectedDayOfWeek();
 
     const srcLat = router.node_lat(sourceNode).toFixed(6);
     const srcLon = router.node_lon(sourceNode).toFixed(6);
@@ -825,7 +811,7 @@ function initMap(city) {
       lines.push(`Destination: ${destLat}, ${destLon}`);
     }
 
-    lines.push(`Date: ${dateStr} (${dayNames[dayOfWeek]})`);
+    lines.push(`Date: ${dateStr}`);
     lines.push(`Departure: ${formatTime(depTime)}`);
     lines.push(`Transfer slack: ${slack}s`);
 

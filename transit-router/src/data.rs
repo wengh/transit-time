@@ -95,6 +95,10 @@ pub struct PatternStopIndex {
 
 pub struct PatternData {
     pub day_mask: u8,
+    pub start_date: u32, // YYYYMMDD, 0 = unbounded
+    pub end_date: u32,   // YYYYMMDD, 0 = unbounded
+    pub date_exceptions_add: Vec<u32>,
+    pub date_exceptions_remove: Vec<u32>,
     pub min_time: u32,
     pub max_time: u32,
     pub frequency_routes: Vec<FreqData>,
@@ -207,10 +211,18 @@ pub fn load(compressed: &[u8]) -> Result<PreparedData, String> {
         let _pattern_id = read_u32(&buf, &mut pos);
         let day_mask = buf[pos];
         pos += 1;
+        let start_date = read_u32(&buf, &mut pos);
+        let end_date = read_u32(&buf, &mut pos);
         let num_add = read_u32(&buf, &mut pos) as usize;
-        pos += num_add * 4; // skip date exceptions for now
+        let mut date_exceptions_add = Vec::with_capacity(num_add);
+        for _ in 0..num_add {
+            date_exceptions_add.push(read_u32(&buf, &mut pos));
+        }
         let num_remove = read_u32(&buf, &mut pos) as usize;
-        pos += num_remove * 4;
+        let mut date_exceptions_remove = Vec::with_capacity(num_remove);
+        for _ in 0..num_remove {
+            date_exceptions_remove.push(read_u32(&buf, &mut pos));
+        }
         let min_time = read_u32(&buf, &mut pos);
         let max_time = read_u32(&buf, &mut pos);
 
@@ -332,6 +344,10 @@ pub fn load(compressed: &[u8]) -> Result<PreparedData, String> {
 
         patterns.push(PatternData {
             day_mask,
+            start_date,
+            end_date,
+            date_exceptions_add,
+            date_exceptions_remove,
             min_time,
             max_time,
             frequency_routes: freq_entries,

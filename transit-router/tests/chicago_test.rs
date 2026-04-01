@@ -38,8 +38,8 @@ fn test_chicago_route() {
         }
     }
 
-    // Use patterns_for_day to find all Thursday patterns (matches what the web UI does)
-    let thu_patterns = transit_router::router::patterns_for_day(&prepared, 3); // 3 = Thursday
+    // Use patterns_for_date to find all patterns active on a Thursday
+    let thu_patterns = transit_router::router::patterns_for_date(&prepared, 20260402); // Thursday
     eprintln!("All Thursday patterns: {:?}", thu_patterns);
 
     // Snap origin and destination
@@ -189,8 +189,8 @@ fn test_green_line_no_pink_transfer() {
     let source = transit_router::router::snap_to_node(&prepared, 41.884400, -87.629347);
     let dest = transit_router::router::snap_to_node(&prepared, 41.884695, -87.677346);
 
-    // Saturday (day_of_week = 5)
-    let sat_patterns = transit_router::router::patterns_for_day(&prepared, 5);
+    // Saturday
+    let sat_patterns = transit_router::router::patterns_for_date(&prepared, 20260404);
     eprintln!("Saturday patterns: {:?}", sat_patterns);
 
     let departure_time = 28800u32; // 8:00 AM

@@ -56,13 +56,52 @@ pub fn snap_to_node(data: &PreparedData, lat: f64, lon: f64) -> u32 {
     best
 }
 
-/// Find pattern indices matching a given day of week (0=Mon..6=Sun).
-pub fn patterns_for_day(data: &PreparedData, day_of_week: u8) -> Vec<usize> {
+/// Convert a YYYYMMDD date to day of week (0=Mon..6=Sun).
+fn date_to_day_of_week(date: u32) -> u8 {
+    let y = (date / 10000) as i32;
+    let m = ((date / 100) % 100) as i32;
+    let d = (date % 100) as i32;
+    // Tomohiko Sakamoto's algorithm (returns 0=Sun..6=Sat)
+    let t = [0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4];
+    let y = if m < 3 { y - 1 } else { y };
+    let dow = (y + y / 4 - y / 100 + y / 400 + t[(m - 1) as usize] + d) % 7;
+    // Convert from 0=Sun..6=Sat to 0=Mon..6=Sun
+    ((dow + 6) % 7) as u8
+}
+
+/// Find pattern indices active on a given date (YYYYMMDD).
+/// Checks day-of-week mask, start/end date range, and date exceptions.
+pub fn patterns_for_date(data: &PreparedData, date: u32) -> Vec<usize> {
+    let day_of_week = date_to_day_of_week(date);
     let bit = 1u8 << day_of_week;
     data.patterns
         .iter()
         .enumerate()
-        .filter(|(_, p)| p.day_mask & bit != 0 && !p.stop_index.events_by_stop.is_empty())
+        .filter(|(_, p)| {
+            if p.stop_index.events_by_stop.is_empty() {
+                return false;
+            }
+            // Explicitly removed on this date
+            if p.date_exceptions_remove.contains(&date) {
+                return false;
+            }
+            // Explicitly added on this date
+            if p.date_exceptions_add.contains(&date) {
+                return true;
+            }
+            // Check day-of-week mask
+            if p.day_mask & bit == 0 {
+                return false;
+            }
+            // Check date range (0 means unbounded)
+            if p.start_date != 0 && date < p.start_date {
+                return false;
+            }
+            if p.end_date != 0 && date > p.end_date {
+                return false;
+            }
+            true
+        })
         .map(|(i, _)| i)
         .collect()
 }

@@ -41,9 +41,7 @@ pub struct StopTime {
 pub struct Service {
     pub id: String,
     pub days: [bool; 7], // mon-sun
-    #[allow(dead_code)]
     pub start_date: u32, // YYYYMMDD
-    #[allow(dead_code)]
     pub end_date: u32,
     pub added_dates: Vec<u32>,
     pub removed_dates: Vec<u32>,
@@ -119,6 +117,8 @@ impl GtfsData {
 pub struct ServicePattern {
     pub pattern_id: u32,
     pub day_mask: u8, // bit 0=Mon .. bit 6=Sun
+    pub start_date: u32, // YYYYMMDD, 0 = unbounded
+    pub end_date: u32,   // YYYYMMDD, 0 = unbounded
     pub date_exceptions_add: Vec<u32>,
     pub date_exceptions_remove: Vec<u32>,
     pub events: Vec<Vec<Event>>, // indexed by second offset from min_time
@@ -606,12 +606,20 @@ pub fn build_service_patterns(data: &GtfsData) -> Vec<ServicePattern> {
     for (mask, services) in &day_mask_groups {
         let service_ids: HashSet<&str> = services.iter().map(|s| s.id.as_str()).collect();
 
-        // Collect date exceptions
+        // Collect date exceptions and compute validity range
         let mut adds = Vec::new();
         let mut removes = Vec::new();
+        let mut start_date = 0u32;
+        let mut end_date = 0u32;
         for svc in services {
             adds.extend_from_slice(&svc.added_dates);
             removes.extend_from_slice(&svc.removed_dates);
+            if svc.start_date != 0 {
+                start_date = if start_date == 0 { svc.start_date } else { start_date.min(svc.start_date) };
+            }
+            if svc.end_date != 0 {
+                end_date = if end_date == 0 { svc.end_date } else { end_date.max(svc.end_date) };
+            }
         }
 
         // Find min/max departure times for trips in this pattern
@@ -733,6 +741,8 @@ pub fn build_service_patterns(data: &GtfsData) -> Vec<ServicePattern> {
         patterns.push(ServicePattern {
             pattern_id: patterns.len() as u32,
             day_mask: *mask,
+            start_date,
+            end_date,
             date_exceptions_add: adds,
             date_exceptions_remove: removes,
             events,

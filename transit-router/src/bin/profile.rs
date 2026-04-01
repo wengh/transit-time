@@ -12,7 +12,7 @@ fn main() {
     let prepared = transit_router::data::load(&data).expect("Failed to load data");
 
     let source = transit_router::router::snap_to_node(&prepared, 41.884400, -87.629347);
-    let mon_patterns = transit_router::router::patterns_for_day(&prepared, 0);
+    let mon_patterns = transit_router::router::patterns_for_date(&prepared, 20260406); // Monday
 
     let samples = 10;
     let window_start = 9 * 3600u32;
