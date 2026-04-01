@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::io::Read;
 
 #[derive(Debug, Clone)]
@@ -23,11 +22,12 @@ pub struct StopData {
 
 #[derive(Debug, Clone)]
 pub struct EventData {
+    pub time_offset: u32,
     pub stop_index: u32,
     pub route_index: u32,
     pub trip_index: u32,
-    pub next_stop_index: u32,
     pub travel_time: u32,
+    pub next_event_index: u32, // u32::MAX if it's the last event in the trip
 }
 
 #[derive(Debug, Clone)]
@@ -42,21 +42,61 @@ pub struct FreqData {
 }
 
 #[derive(Debug, Clone)]
-pub struct StopEventRef {
-    pub time_offset: u32,
-    pub event_index: u32,
+pub struct JaggedArray<T> {
+    pub offsets: Vec<u32>,
+    pub data: Vec<T>,
+}
+
+impl<T> std::ops::Index<u32> for JaggedArray<T> {
+    type Output = [T];
+
+    fn index(&self, index: u32) -> &Self::Output {
+        let start = self.offsets[index as usize] as usize;
+        let end = self.offsets[index as usize + 1] as usize;
+        &self.data[start..end]
+    }
+}
+
+impl<T> JaggedArray<T> {
+    pub fn is_empty(&self) -> bool {
+        self.data.is_empty()
+    }
+
+    pub fn build(items: Vec<T>, key_fn: impl Fn(&T) -> u32, len: u32) -> Self {
+        let mut buckets: Vec<Vec<T>> = std::iter::repeat_with(Vec::new)
+            .take(len as usize)
+            .collect();
+        let total_items = items.len();
+
+        for item in items {
+            let bucket = key_fn(&item) as usize;
+            if bucket < len as usize {
+                buckets[bucket].push(item);
+            }
+        }
+
+        let mut offsets = Vec::with_capacity(buckets.len() + 1);
+        let mut data = Vec::with_capacity(total_items);
+
+        for mut bucket in buckets {
+            offsets.push(data.len() as u32);
+            data.append(&mut bucket);
+        }
+        offsets.push(data.len() as u32);
+
+        Self { offsets, data }
+    }
 }
 
 pub struct PatternStopIndex {
-    pub freq_by_stop: HashMap<u32, Vec<u32>>,
-    pub events_by_stop: HashMap<u32, Vec<StopEventRef>>,
+    pub freq_by_stop: JaggedArray<u32>,
+    pub events_by_stop: JaggedArray<EventData>,
 }
 
 pub struct PatternData {
     pub day_mask: u8,
     pub min_time: u32,
     pub max_time: u32,
-    pub events: Vec<Vec<EventData>>,
     pub frequency_routes: Vec<FreqData>,
     pub stop_index: PatternStopIndex,
 }
@@ -173,30 +213,97 @@ pub fn load(compressed: &[u8]) -> Result<PreparedData, String> {
         pos += num_remove * 4;
         let min_time = read_u32(&buf, &mut pos);
         let max_time = read_u32(&buf, &mut pos);
-        let event_array_len = read_u32(&buf, &mut pos) as usize;
-        let mut events = Vec::with_capacity(event_array_len);
-        for _ in 0..event_array_len {
-            let n = read_u16(&buf, &mut pos) as usize;
-            let mut second_events = Vec::with_capacity(n);
-            for _ in 0..n {
-                let stop_index = read_u32(&buf, &mut pos);
-                let route_index = read_u32(&buf, &mut pos);
-                let trip_index = read_u32(&buf, &mut pos);
-                let next_stop_index = read_u32(&buf, &mut pos);
-                let travel_time = read_u32(&buf, &mut pos);
-                second_events.push(EventData {
-                    stop_index,
-                    route_index,
-                    trip_index,
-                    next_stop_index,
-                    travel_time,
+
+        let num_flat_events = read_u32(&buf, &mut pos) as usize;
+        let _target_len = (max_time.saturating_sub(min_time) + 1) as usize;
+
+        struct RawEvent {
+            time_offset: u32,
+            stop_index: u32,
+            route_index: u32,
+            trip_index: u32,
+            next_stop_index: u32,
+            travel_time: u32,
+        }
+
+        let mut raw_events = Vec::with_capacity(num_flat_events);
+
+        for _ in 0..num_flat_events {
+            let time_offset = read_u32(&buf, &mut pos);
+            let stop_index = read_u32(&buf, &mut pos);
+            let route_index = read_u32(&buf, &mut pos);
+            let trip_index = read_u32(&buf, &mut pos);
+            let next_stop_index = read_u32(&buf, &mut pos);
+            let travel_time = read_u32(&buf, &mut pos);
+
+            raw_events.push(RawEvent {
+                time_offset,
+                stop_index,
+                route_index,
+                trip_index,
+                next_stop_index,
+                travel_time,
+            });
+        }
+
+        // Sort by trip to identify the end of each trip and attach sentinels
+        raw_events.sort_unstable_by_key(|e| (e.trip_index, e.time_offset));
+
+        let mut events_pre = Vec::with_capacity(num_flat_events + (num_flat_events / 10));
+
+        for i in 0..num_flat_events {
+            let r = &raw_events[i];
+            events_pre.push(EventData {
+                time_offset: r.time_offset,
+                stop_index: r.stop_index,
+                route_index: r.route_index,
+                trip_index: r.trip_index,
+                travel_time: r.travel_time,
+                next_event_index: u32::MAX, // Set after bucketing
+            });
+
+            let is_last = i + 1 == num_flat_events || raw_events[i + 1].trip_index != r.trip_index;
+            if is_last && r.travel_time > 0 {
+                // Append sentinel arrival event for the final stop
+                events_pre.push(EventData {
+                    time_offset: r.time_offset + r.travel_time,
+                    stop_index: r.next_stop_index,
+                    route_index: r.route_index,
+                    trip_index: r.trip_index,
+                    travel_time: 0,
+                    next_event_index: u32::MAX,
                 });
             }
-            events.push(second_events);
         }
+
+        // Must sort by time_offset so events_by_stop buckets naturally provide binary search ordered arrays
+        events_pre.sort_unstable_by_key(|e| e.time_offset);
+
+        let mut events_by_stop = JaggedArray::build(events_pre, |e| e.stop_index, num_stops as u32);
+
+        // Dynamically link next_event_index for O(1) trip following!
+        // We know its precise globally bucketted flat index.
+        let mut links: Vec<(u32, u32, u32)> = events_by_stop
+            .data
+            .iter()
+            .enumerate()
+            .map(|(i, e)| (e.trip_index, e.time_offset, i as u32))
+            .collect();
+
+        // Sort just the tuples by Trip then Time!
+        links.sort_unstable();
+
+        for w in links.windows(2) {
+            if w[0].0 == w[1].0 {
+                events_by_stop.data[w[0].2 as usize].next_event_index = w[1].2;
+            }
+        }
+
         let num_freq = read_u32(&buf, &mut pos) as usize;
         let mut freq_entries = Vec::with_capacity(num_freq);
-        for _ in 0..num_freq {
+        let mut freq_indices = Vec::with_capacity(num_freq);
+
+        for i in 0..num_freq {
             let route_index = read_u32(&buf, &mut pos);
             let stop_index = read_u32(&buf, &mut pos);
             let start_time = read_u32(&buf, &mut pos);
@@ -204,6 +311,7 @@ pub fn load(compressed: &[u8]) -> Result<PreparedData, String> {
             let headway_secs = read_u32(&buf, &mut pos);
             let next_stop_index = read_u32(&buf, &mut pos);
             let travel_time = read_u32(&buf, &mut pos);
+
             freq_entries.push(FreqData {
                 route_index,
                 stop_index,
@@ -213,34 +321,19 @@ pub fn load(compressed: &[u8]) -> Result<PreparedData, String> {
                 next_stop_index,
                 travel_time,
             });
-        }
-        // Build per-stop index
-        let mut freq_by_stop: HashMap<u32, Vec<u32>> = HashMap::new();
-        for (i, freq) in freq_entries.iter().enumerate() {
-            freq_by_stop
-                .entry(freq.stop_index)
-                .or_default()
-                .push(i as u32);
+            freq_indices.push(i as u32);
         }
 
-        let mut events_by_stop: HashMap<u32, Vec<StopEventRef>> = HashMap::new();
-        for (time_offset, slot) in events.iter().enumerate() {
-            for (event_index, event) in slot.iter().enumerate() {
-                events_by_stop
-                    .entry(event.stop_index)
-                    .or_default()
-                    .push(StopEventRef {
-                        time_offset: time_offset as u32,
-                        event_index: event_index as u32,
-                    });
-            }
-        }
+        let freq_by_stop = JaggedArray::build(
+            freq_indices,
+            |&i| freq_entries[i as usize].stop_index,
+            num_stops as u32,
+        );
 
         patterns.push(PatternData {
             day_mask,
             min_time,
             max_time,
-            events,
             frequency_routes: freq_entries,
             stop_index: PatternStopIndex {
                 freq_by_stop,
@@ -312,12 +405,6 @@ pub fn load(compressed: &[u8]) -> Result<PreparedData, String> {
 fn read_u32(buf: &[u8], pos: &mut usize) -> u32 {
     let v = u32::from_le_bytes(buf[*pos..*pos + 4].try_into().unwrap());
     *pos += 4;
-    v
-}
-
-fn read_u16(buf: &[u8], pos: &mut usize) -> u16 {
-    let v = u16::from_le_bytes(buf[*pos..*pos + 2].try_into().unwrap());
-    *pos += 2;
     v
 }
 

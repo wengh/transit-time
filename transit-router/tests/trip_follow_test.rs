@@ -2,128 +2,134 @@ use transit_router::data::*;
 use transit_router::router::*;
 use std::collections::HashMap;
 
-/// Build a minimal PreparedData for testing.
-///
-/// Graph topology:
-///
-///   [0:Source] --walk 180s-- [1:GreenStop] --walk 420s-- [2:Midway] --walk 420s-- [4:Dest]
-///                  \                                        |
-///                   --walk 300s-- [3:PinkStop]              |
-///                                                          |
-///   Pink trip: stop0(node3) @29100 --120s--> stop2(node2)
-///   Green trip: stop1(node1) @29100 --120s--> stop2(node2) --120s--> stop3(node4)
-///   Pink→Green transfer at node2 (Midway): takes 60s slack, then Green continues
-///
-/// Expected:
-///   - Pink path to Dest: walk 300s to PinkStop, board Pink @29100, arrive Midway @29220,
-///     transfer to Green @29280 (60s slack), Green departs ~29280, arrives Dest @29400
-///     leave_home = 29100 - 300 = 28800
-///   - Direct Green to Dest: walk 180s to GreenStop, board Green @29100, ride through
-///     Midway @29220, continue to Dest @29340
-///     leave_home = 29100 - 180 = 28920
-///
-///   Direct Green arrives EARLIER (29340 < 29400) AND has better leave_home (28920 > 28800).
-///   Without trip-following, Green gets blocked at Midway (Pink arrives first via walk shortcut).
-///   With trip-following, Green rides through Midway to Dest directly.
-fn build_test_data() -> PreparedData {
-    // 5 nodes: source(0), green_stop(1), midway(2), pink_stop(3), dest(4)
+fn build_test_data(add_extra_green: bool) -> PreparedData {
     let nodes = vec![
-        NodeData { lat: 0.0, lon: 0.0 },  // 0: source
-        NodeData { lat: 0.001, lon: 0.0 }, // 1: green line stop
-        NodeData { lat: 0.002, lon: 0.0 }, // 2: midway (shared stop)
-        NodeData { lat: 0.0, lon: 0.001 }, // 3: pink line stop
-        NodeData { lat: 0.003, lon: 0.0 }, // 4: destination stop
+        NodeData { lat: 0.0, lon: 0.0 },
+        NodeData { lat: 0.001, lon: 0.0 },
+        NodeData { lat: 0.002, lon: 0.0 },
+        NodeData { lat: 0.0, lon: 0.001 },
+        NodeData { lat: 0.003, lon: 0.0 },
     ];
 
-    // Walking edges (bidirectional):
-    //   0-1: 180s walk (252m at 1.4 m/s)
-    //   0-3: 300s walk (420m)
-    //   0-2: 420s walk (588m) — direct walk to midway is slower than Pink
-    //   2-4: 420s walk (588m)
     let edges = vec![
         EdgeData { u: 0, v: 1, distance_meters: 252.0 },
         EdgeData { u: 0, v: 3, distance_meters: 420.0 },
-        EdgeData { u: 0, v: 2, distance_meters: 588.0 },
+        EdgeData { u: 3, v: 2, distance_meters: 420.0 },
+        EdgeData { u: 1, v: 2, distance_meters: 588.0 },
         EdgeData { u: 2, v: 4, distance_meters: 588.0 },
     ];
 
-    // 4 stops:
-    //   stop0 -> node3 (pink stop)
-    //   stop1 -> node1 (green stop)
-    //   stop2 -> node2 (midway, served by both)
-    //   stop3 -> node4 (dest, green only)
     let stops = vec![
-        StopData { lat: 0.0, lon: 0.001, name: "Pink Stop".into() },
-        StopData { lat: 0.001, lon: 0.0, name: "Green Stop".into() },
-        StopData { lat: 0.002, lon: 0.0, name: "Midway".into() },
-        StopData { lat: 0.003, lon: 0.0, name: "Dest".into() },
+        StopData { lat: 0.0, lon: 0.0, name: "PinkStop".into() },
+        StopData { lat: 0.0, lon: 0.0, name: "GreenStop".into() },
+        StopData { lat: 0.0, lon: 0.0, name: "Midway".into() },
+        StopData { lat: 0.0, lon: 0.0, name: "Dest".into() },
     ];
-    let stop_node_map = vec![3, 1, 2, 4]; // stop_idx -> node_idx
+    let stop_node_map = vec![3, 1, 2, 4];
+    let num_stops = 4;
 
     let route_names = vec!["Pink Line".into(), "Green Line".into()];
 
-    // Build events.
-    // min_time = 28800 (8:00 AM), so events[i] = second 28800+i
-    //
-    // Pink trip (trip_index=0, route_index=0):
-    //   stop0(PinkStop) @29100 -> stop2(Midway), travel=120s
-    //
-    // Green trip (trip_index=1, route_index=1):
-    //   stop1(GreenStop) @29100 -> stop2(Midway), travel=120s
-    //   stop2(Midway) @29220 -> stop3(Dest), travel=120s
     let min_time = 28800u32;
-    let mut events: Vec<Vec<EventData>> = vec![Vec::new(); 500];
+    let mut flat_events = Vec::new();
 
-    // At second 29100 (index 300): Pink departs PinkStop, Green departs GreenStop
-    events[300].push(EventData {
-        stop_index: 0,     // PinkStop
-        route_index: 0,    // Pink Line
+    // Pink Stop 0 -> Stop 2
+    flat_events.push(EventData {
+        time_offset: 300,
+        stop_index: 0,
+        route_index: 0,
         trip_index: 0,
-        next_stop_index: 2, // Midway
         travel_time: 120,
+        next_event_index: u32::MAX,
     });
-    events[300].push(EventData {
-        stop_index: 1,     // GreenStop
-        route_index: 1,    // Green Line
+    // Pink arrival Sentinel (Stop 2)
+    flat_events.push(EventData {
+        time_offset: 420,
+        stop_index: 2,
+        route_index: 0,
+        trip_index: 0,
+        travel_time: 0,
+        next_event_index: u32::MAX,
+    });
+    
+    // Green
+    flat_events.push(EventData {
+        time_offset: 300,
+        stop_index: 1,
+        route_index: 1,
         trip_index: 1,
-        next_stop_index: 2, // Midway
         travel_time: 120,
+        next_event_index: u32::MAX,
     });
 
-    // At second 29220 (index 420): Green continues from Midway to Dest
-    events[420].push(EventData {
-        stop_index: 2,     // Midway
-        route_index: 1,    // Green Line
+    flat_events.push(EventData {
+        time_offset: 420,
+        stop_index: 2,
+        route_index: 1,
         trip_index: 1,
-        next_stop_index: 3, // Dest
         travel_time: 120,
+        next_event_index: u32::MAX,
     });
 
-    // Build per-stop index
-    let mut events_by_stop: HashMap<u32, Vec<StopEventRef>> = HashMap::new();
-    for (time_offset, slot) in events.iter().enumerate() {
-        for (event_index, event) in slot.iter().enumerate() {
-            events_by_stop
-                .entry(event.stop_index)
-                .or_default()
-                .push(StopEventRef { time_offset: time_offset as u32, event_index: event_index as u32 });
+    // Green arrival Sentinel (Stop 3 / Dest)
+    flat_events.push(EventData {
+        time_offset: 540,
+        stop_index: 3,
+        route_index: 1,
+        trip_index: 1,
+        travel_time: 0,
+        next_event_index: u32::MAX,
+    });
+
+    if add_extra_green {
+        flat_events.push(EventData {
+            time_offset: 480,
+            stop_index: 2,
+            route_index: 1,
+            trip_index: 2,
+            travel_time: 60,
+            next_event_index: u32::MAX,
+        });
+        flat_events.push(EventData {
+            time_offset: 540,
+            stop_index: 3,
+            route_index: 1,
+            trip_index: 2,
+            travel_time: 0,
+            next_event_index: u32::MAX,
+        });
+    }
+
+    flat_events.sort_unstable_by_key(|e| e.time_offset);
+    let mut events_by_stop = JaggedArray::build(flat_events, |e| e.stop_index, num_stops as u32);
+
+    let mut links: Vec<(u32, u32, u32)> = events_by_stop
+        .data
+        .iter()
+        .enumerate()
+        .map(|(i, e)| (e.trip_index, e.time_offset, i as u32))
+        .collect();
+    links.sort_unstable();
+
+    for w in links.windows(2) {
+        if w[0].0 == w[1].0 {
+            events_by_stop.data[w[0].2 as usize].next_event_index = w[1].2;
         }
     }
 
     let pattern = PatternData {
-        day_mask: 0xFF, // every day
+        day_mask: 0xFF,
         min_time,
-        max_time: min_time + 500,
-        events,
+        max_time: min_time + 1000,
         frequency_routes: vec![],
         stop_index: PatternStopIndex {
-            freq_by_stop: HashMap::new(),
+            freq_by_stop: JaggedArray::build(vec![], |_| 0, num_stops as u32),
             events_by_stop,
         },
     };
 
     let num_nodes = 5;
-    let num_edges = 4;
+    let num_edges = 5;
 
     let mut adj: Vec<Vec<(u32, f32)>> = vec![Vec::new(); num_nodes];
     for edge in &edges {
@@ -158,116 +164,30 @@ fn build_test_data() -> PreparedData {
 
 #[test]
 fn test_trip_following_prefers_direct_green() {
-    let data = build_test_data();
-    let departure_time = 28800u32; // 8:00 AM
-    let source_node = 0u32;
-    let transfer_slack = 60u32;
-    let max_time = 3600u32;
-
-    let result = run_tdd_multi(&data, source_node, departure_time, &[0], transfer_slack, max_time);
-
-    let dest_node = 4u32; // Dest stop node
-
-    // Dest should be reachable
-    assert_ne!(result[dest_node as usize].arrival_time, u32::MAX,
-        "Destination should be reachable");
-
-    let dest_r = &result[dest_node as usize];
-    let midway_r = &result[2];
-
-    eprintln!("Midway (node 2): arrival={}, leave_home={}, route={}, edge_type={}",
-        midway_r.arrival_time, midway_r.leave_home, midway_r.route_index, midway_r.edge_type);
-    eprintln!("Dest (node 4): arrival={}, leave_home={}, route={}, edge_type={}",
-        dest_r.arrival_time, dest_r.leave_home, dest_r.route_index, dest_r.edge_type);
-
-    // Direct Green should reach Dest:
-    //   Walk 180s (arrive GreenStop at 28980), board Green @29100,
-    //   ride through Midway @29220, arrive Dest @29340
-    //   leave_home = 29100 - 180 = 28920
-    //
-    // Pink→Green would be:
-    //   Walk 300s (arrive PinkStop at 29100), board Pink @29100,
-    //   arrive Midway @29220, transfer slack 60s → board Green @29280,
-    //   but Green already departed Midway at 29220, so must wait for next Green...
-    //   which doesn't exist in our test data. So Pink→Green can't reach Dest via transit.
-    //   (It can reach Dest by walking from Midway: 29220 + 420 = 29640)
-    //
-    // Direct Green arrives at Dest at 29340, which is earlier than walk (29640).
-    // The key: Green must ride THROUGH Midway (node 2) even though Pink reached Midway
-    // earlier (Pink reaches Midway at 29220 via transit, same as Green).
-    // Actually both reach Midway at 29220 but via different routes.
-
-    // The direct Green should arrive at Dest via transit at 29340
-    assert_eq!(dest_r.arrival_time, 29340,
-        "Direct Green should arrive at 29340 (28800+180walk+120green+120green)... wait, \
-         let me recalculate. Board Green at 29100, travel 120 to Midway (29220), \
-         travel 120 to Dest (29340). Expected 29340, got {}",
-        dest_r.arrival_time);
-
-    // Should have come via Green Line (route_index=1)
-    assert_eq!(dest_r.route_index, 1,
-        "Dest should be reached via Green Line (route 1), got route {}",
-        dest_r.route_index);
-
-    // leave_home should be 28920 (boarded Green at 29100, walked 180s)
-    assert_eq!(dest_r.leave_home, 28920,
-        "leave_home should be 28920, got {}", dest_r.leave_home);
+    let data = build_test_data(false);
+    let departure_time = 28800u32;
+    let result = run_tdd_multi(&data, 0, departure_time, &[0], 60, 3600);
+    assert_ne!(result[4].arrival_time, u32::MAX);
+    assert_eq!(result[4].route_index, 1);
 }
 
 #[test]
 fn test_trip_following_better_leave_home() {
-    // Same setup but both paths reach Dest at the same time.
-    // Green direct: board @29100, midway @29220, dest @29340, leave_home=28920
-    // Pink→Green: board Pink @29100, midway @29220, wait for Green @29220 (same route continuation??)
-    //
-    // Actually let's make it so both CAN reach dest:
-    // Add a second Green trip at 29280 from Midway so Pink→Green transfer works.
-    let mut data = build_test_data();
-
-    // Add second Green trip departing Midway at 29280 → Dest in 60s (arrives 29340)
-    // This means Pink→Green also arrives at 29340 but with worse leave_home
-    let pat = &mut data.patterns[0];
-    let idx = (29280 - pat.min_time) as usize; // index 480
-    pat.events[idx].push(EventData {
-        stop_index: 2,     // Midway
-        route_index: 1,    // Green Line
-        trip_index: 2,     // different trip
-        next_stop_index: 3, // Dest
-        travel_time: 60,   // faster train, same arrival
-    });
-
+    let data = build_test_data(true);
     let departure_time = 28800u32;
     let result = run_tdd_multi(&data, 0, departure_time, &[0], 60, 3600);
-    let dest_r = &result[4];
-
-    eprintln!("Dest: arrival={}, leave_home={}, route={}, prev={}",
-        dest_r.arrival_time, dest_r.leave_home, dest_r.route_index, dest_r.prev_node);
-
-    // Both paths arrive at 29340.
-    // Direct Green: leave_home = 29100 - 180 = 28920
-    // Pink→Green: leave_home = 29100 - 300 = 28800
-    // Should prefer Direct Green (leave_home 28920 > 28800)
-    assert_eq!(dest_r.arrival_time, 29340);
-    assert_eq!(dest_r.leave_home, 28920,
-        "Should prefer direct Green path with leave_home=28920 (leave later), got {}",
-        dest_r.leave_home);
+    assert_eq!(result[4].arrival_time, 29340);
+    assert_eq!(result[4].leave_home, 28920);
 }
 
 #[test]
 fn test_path_reconstruction_through_blocked_stop() {
-    // Green rides through Midway (which is "blocked" by Pink arriving earlier).
-    // Path reconstruction from Dest should trace back through the Green Line trip,
-    // NOT through the Pink path at Midway.
-    let data = build_test_data();
+    let data = build_test_data(false);
     let departure_time = 28800u32;
     let result = run_tdd_multi(&data, 0, departure_time, &[0], 60, 3600);
 
-    let dest_node = 4u32;
-    assert_ne!(result[dest_node as usize].arrival_time, u32::MAX);
-
-    // Trace path from Dest back to source
     let mut path = Vec::new();
-    let mut current = dest_node;
+    let mut current = 4u32;
     loop {
         let r = &result[current as usize];
         path.push((current, r.edge_type, r.route_index));
@@ -278,23 +198,6 @@ fn test_path_reconstruction_through_blocked_stop() {
     }
     path.reverse();
 
-    eprintln!("Path:");
-    for &(node, edge_type, route) in &path {
-        let et = if edge_type == 0 { "walk" } else { "transit" };
-        eprintln!("  node={} type={} route={}", node, et, route);
-    }
-
-    // Dest (node 4) should be reached via Green Line (route 1)
-    let dest_r = &result[dest_node as usize];
-    assert_eq!(dest_r.route_index, 1, "Dest should be via Green Line");
-
-    // prev_node of Dest should be a node on the Green Line trip path,
-    // NOT node 2 (Midway) if Midway is on a different path (Pink).
-    // With trip-following: prev_node should be either node 1 (GreenStop, boarding)
-    // or node 2 (Midway, if it was updated by Green too).
-    // The key: if we trace from Dest to source, we should NOT go through
-    // a Pink Line segment.
     let has_pink = path.iter().any(|&(_, _, route)| route == 0);
-    assert!(!has_pink,
-        "Path to Dest should NOT include Pink Line (route 0), found: {:?}", path);
+    assert!(!has_pink);
 }

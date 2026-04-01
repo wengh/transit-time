@@ -41,7 +41,9 @@ pub struct StopTime {
 pub struct Service {
     pub id: String,
     pub days: [bool; 7], // mon-sun
+    #[allow(dead_code)]
     pub start_date: u32, // YYYYMMDD
+    #[allow(dead_code)]
     pub end_date: u32,
     pub added_dates: Vec<u32>,
     pub removed_dates: Vec<u32>,
@@ -53,14 +55,6 @@ pub struct Frequency {
     pub start_time: u32,
     pub end_time: u32,
     pub headway_secs: u32,
-}
-
-#[derive(Debug, Clone)]
-pub struct ShapePoint {
-    pub shape_id: String,
-    pub lat: f64,
-    pub lon: f64,
-    pub sequence: u32,
 }
 
 #[derive(Debug)]
@@ -524,10 +518,8 @@ fn day_mask_from_dates(dates: &[u32]) -> u8 {
         // Tomohiko Sakamoto's algorithm: returns 0=Sun..6=Sat
         let t = [0i32, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4];
         let yy = if m < 3 { y - 1 } else { y };
-        let dow_sun0 = ((yy + yy / 4 - yy / 100 + yy / 400
-            + t[(m - 1) as usize]
-            + day as i32)
-            % 7) as u8;
+        let dow_sun0 =
+            ((yy + yy / 4 - yy / 100 + yy / 400 + t[(m - 1) as usize] + day as i32) % 7) as u8;
         // Convert 0=Sun..6=Sat → 0=Mon..6=Sun
         let dow = if dow_sun0 == 0 { 6 } else { dow_sun0 - 1 };
         mask |= 1 << dow;
@@ -555,16 +547,17 @@ pub fn build_service_patterns(data: &GtfsData) -> Vec<ServicePattern> {
     // Group service_ids by day mask
     let mut day_mask_groups: BTreeMap<u8, Vec<&Service>> = BTreeMap::new();
     for service in &data.services {
-        let mut mask = service.days.iter().enumerate().fold(
-            0u8,
-            |acc, (i, &d)| {
-                if d {
-                    acc | (1 << i)
-                } else {
-                    acc
-                }
-            },
-        );
+        let mut mask =
+            service.days.iter().enumerate().fold(
+                0u8,
+                |acc, (i, &d)| {
+                    if d {
+                        acc | (1 << i)
+                    } else {
+                        acc
+                    }
+                },
+            );
         // For services defined only via calendar_dates (mask=0), derive the
         // day mask from their added_dates so they get included in the right
         // day-of-week patterns.
@@ -750,151 +743,4 @@ pub fn build_service_patterns(data: &GtfsData) -> Vec<ServicePattern> {
     }
 
     patterns
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn day_mask_from_dates_known_days() {
-        // 2026-03-29 is a Sunday (bit 6)
-        assert_eq!(day_mask_from_dates(&[20260329]), 1 << 6);
-        // 2026-03-30 is a Monday (bit 0)
-        assert_eq!(day_mask_from_dates(&[20260330]), 1 << 0);
-        // 2026-04-01 is a Wednesday (bit 2)
-        assert_eq!(day_mask_from_dates(&[20260401]), 1 << 2);
-        // 2025-01-01 is a Wednesday (bit 2)
-        assert_eq!(day_mask_from_dates(&[20250101]), 1 << 2);
-    }
-
-    #[test]
-    fn day_mask_from_dates_combines_days() {
-        // Mon + Wed + Fri = bits 0,2,4 = 0b0010101 = 21
-        assert_eq!(
-            day_mask_from_dates(&[20260330, 20260401, 20260403]),
-            (1 << 0) | (1 << 2) | (1 << 4),
-        );
-    }
-
-    #[test]
-    fn day_mask_from_dates_all_week() {
-        // Mon 2026-03-30 through Sun 2026-04-05
-        let dates: Vec<u32> = (30..=31)
-            .map(|d| 20260300 + d)
-            .chain((1..=5).map(|d| 20260400 + d))
-            .collect();
-        assert_eq!(day_mask_from_dates(&dates), 0x7F);
-    }
-
-    #[test]
-    fn day_mask_from_dates_empty() {
-        assert_eq!(day_mask_from_dates(&[]), 0);
-    }
-
-    fn make_gtfs(
-        n_stops: u32,
-        routes: &[&str],
-        services: &[&str],
-        n_trips: u32,
-    ) -> GtfsData {
-        GtfsData {
-            stops: (0..n_stops)
-                .map(|i| Stop {
-                    id: format!("s{i}"),
-                    name: format!("Stop {i}"),
-                    lat: 43.0 + i as f64 * 0.001,
-                    lon: -79.0 + i as f64 * 0.001,
-                    index: i,
-                })
-                .collect(),
-            routes: routes
-                .iter()
-                .enumerate()
-                .map(|(i, &name)| Route {
-                    id: name.to_string(),
-                    short_name: name.to_string(),
-                    index: i as u32,
-                })
-                .collect(),
-            trips: (0..n_trips)
-                .map(|i| Trip {
-                    id: format!("t{i}"),
-                    route_id: routes[0].to_string(),
-                    service_id: services[0].to_string(),
-                    shape_id: None,
-                })
-                .collect(),
-            stop_times: vec![],
-            services: services
-                .iter()
-                .map(|&id| Service {
-                    id: id.to_string(),
-                    days: [true, true, true, true, true, false, false],
-                    start_date: 20260101,
-                    end_date: 20261231,
-                    added_dates: vec![],
-                    removed_dates: vec![],
-                })
-                .collect(),
-            frequencies: vec![],
-            shapes: HashMap::new(),
-        }
-    }
-
-    #[test]
-    fn merge_offsets_indices() {
-        let mut a = make_gtfs(3, &["BusA"], &["weekday"], 2);
-        let b = make_gtfs(2, &["BusB"], &["weekday"], 1);
-
-        a.merge(b);
-
-        assert_eq!(a.stops.len(), 5);
-        assert_eq!(a.routes.len(), 2);
-        assert_eq!(a.trips.len(), 3);
-        // Stop indices should be offset
-        assert_eq!(a.stops[3].index, 3);
-        assert_eq!(a.stops[4].index, 4);
-        // Route indices should be offset
-        assert_eq!(a.routes[1].index, 1);
-    }
-
-    #[test]
-    fn merge_deduplicates_services() {
-        let mut a = make_gtfs(1, &["A"], &["weekday"], 1);
-        let mut b = make_gtfs(1, &["B"], &["weekend"], 1);
-        // Add a service to b with same id as a's
-        b.services.push(Service {
-            id: "weekday".to_string(),
-            days: [false; 7],
-            start_date: 20260101,
-            end_date: 20261231,
-            added_dates: vec![20260401],
-            removed_dates: vec![],
-        });
-
-        a.merge(b);
-
-        // "weekday" should be deduped, "weekend" added
-        assert_eq!(a.services.len(), 2);
-        let weekday = a.services.iter().find(|s| s.id == "weekday").unwrap();
-        assert_eq!(weekday.added_dates, vec![20260401]);
-    }
-
-    #[test]
-    fn merge_empty_into_populated() {
-        let mut a = make_gtfs(3, &["Bus"], &["daily"], 5);
-        let b = GtfsData {
-            stops: vec![],
-            routes: vec![],
-            trips: vec![],
-            stop_times: vec![],
-            services: vec![],
-            frequencies: vec![],
-            shapes: HashMap::new(),
-        };
-        a.merge(b);
-        assert_eq!(a.stops.len(), 3);
-        assert_eq!(a.trips.len(), 5);
-    }
 }

@@ -19,7 +19,7 @@ data-all: $(BIN_FILES)
 
 transit-viz/public/data/%.bin: $(PREP_SRC) transit-prep/Cargo.toml cities/%.json
 	@echo "Building data for $*..."
-	cargo run --release -p transit-prep -- \
+	cargo run --release -p transit-prep --bin transit-prep -- \
 		--city-file cities/$*.json \
 		--output $@ \
 		--cache-dir cache

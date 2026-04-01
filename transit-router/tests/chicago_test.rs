@@ -30,7 +30,7 @@ fn test_chicago_route() {
     for (i, p) in prepared.patterns.iter().enumerate() {
         if p.day_mask & thu_bit != 0 {
             eprintln!("Pattern {} has Thursday (day_mask={:07b}, events={}, min_time={}, max_time={})",
-                i, p.day_mask, p.events.len(), p.min_time, p.max_time);
+                i, p.day_mask, p.stop_index.events_by_stop.data.len(), p.min_time, p.max_time);
             if pattern_idx.is_none() {
                 // Pick the pattern with the most events (likely the main weekday pattern)
                 pattern_idx = Some(i);
