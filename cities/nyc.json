@@ -1,6 +1,6 @@
 {
     "id": "nyc",
-    "prep_city": "New York",
+    "bbbike_name": "New_York",
     "feed_ids": [
         "mdb-513",
         "mdb-516",

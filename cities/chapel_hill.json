@@ -1,6 +1,8 @@
 {
     "id": "chapel_hill",
-    "prep_city": "Chapel Hill",
+    "feed_ids": [
+        "tld-89"
+    ],
     "name": "Chapel Hill, NC",
     "file": "chapel_hill.bin",
     "bbox": "-79.18,35.84,-78.96,36.00",

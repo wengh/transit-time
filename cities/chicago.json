@@ -1,6 +1,6 @@
 {
     "id": "chicago",
-    "prep_city": "Chicago",
+    "bbbike_name": "Chicago",
     "feed_ids": [
         "mdb-389",
         "mdb-306",

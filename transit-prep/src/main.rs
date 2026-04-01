@@ -13,21 +13,9 @@ use std::path::{Path, PathBuf};
 #[command(name = "transit-prep")]
 #[command(about = "Download and preprocess transit data for a city")]
 struct Cli {
-    /// City name (used for GTFS feed lookup and output naming)
+    /// Path to city JSON file (e.g. cities/chicago.json)
     #[arg(long)]
-    city: String,
-
-    /// MDB Feed ID(s), comma-separated for multiple feeds (e.g. "mdb-516,mdb-1234")
-    #[arg(long)]
-    feed_id: Option<String>,
-
-    /// Additional MDB Feed IDs (alternative to comma-separated --feed-id)
-    #[arg(long = "feed-ids", value_delimiter = ',')]
-    feed_ids: Vec<String>,
-
-    /// Bounding box: min_lon,min_lat,max_lon,max_lat
-    #[arg(long)]
-    bbox: String,
+    city_file: PathBuf,
 
     /// Output binary file path
     #[arg(long, default_value = "city.bin")]
@@ -40,6 +28,14 @@ struct Cli {
     /// MDB refresh token file path
     #[arg(long, default_value = ".mdb_refresh_token")]
     token_file: PathBuf,
+}
+
+#[derive(serde::Deserialize)]
+struct CityConfig {
+    id: String,
+    feed_ids: Vec<String>,
+    bbox: String,
+    bbbike_name: Option<String>,
 }
 
 fn parse_bbox(s: &str) -> Result<(f64, f64, f64, f64)> {
@@ -56,28 +52,27 @@ fn parse_bbox(s: &str) -> Result<(f64, f64, f64, f64)> {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let bbox = parse_bbox(&cli.bbox)?;
+
+    let city_json = std::fs::read_to_string(&cli.city_file)
+        .with_context(|| format!("Failed to read city file: {:?}", cli.city_file))?;
+    let city: CityConfig = serde_json::from_str(&city_json)
+        .with_context(|| format!("Failed to parse city file: {:?}", cli.city_file))?;
+
+    anyhow::ensure!(!city.feed_ids.is_empty(), "feed_ids must not be empty in {:?}", cli.city_file);
+
+    let bbox = parse_bbox(&city.bbox)?;
 
     std::fs::create_dir_all(&cli.cache_dir)?;
 
-    // Read MDB refresh token
     let refresh_token = std::fs::read_to_string(&cli.token_file)
         .context("Failed to read MDB refresh token file")?
         .trim()
         .to_string();
 
-    // Collect feed IDs: combine --feed-id (comma-separated) and --feed-ids
-    let mut all_feed_ids: Vec<String> = Vec::new();
-    if let Some(ref fid) = cli.feed_id {
-        all_feed_ids.extend(fid.split(',').map(|s| s.trim().to_string()));
-    }
-    all_feed_ids.extend(cli.feed_ids);
-
-    let feed_ids: Vec<&str> = all_feed_ids.iter().map(|s| s.as_str()).collect();
-
     run_prep(
-        &cli.city,
-        &feed_ids,
+        &city.id,
+        &city.feed_ids,
+        city.bbbike_name.as_deref(),
         bbox,
         &cli.output,
         &cli.cache_dir,
@@ -87,7 +82,8 @@ fn main() -> Result<()> {
 
 pub fn run_prep(
     city: &str,
-    feed_ids: &[&str],
+    feed_ids: &[String],
+    bbbike_name: Option<&str>,
     bbox: (f64, f64, f64, f64),
     output: &Path,
     cache_dir: &Path,
@@ -98,40 +94,28 @@ pub fn run_prep(
 
     // Step 1: Download GTFS data
     eprintln!("\n--- Fetching GTFS data ---");
-    let feed_id_opt = if feed_ids.len() == 1 {
-        Some(feed_ids[0])
-    } else {
-        None
-    };
 
-    // Fetch and parse all feeds, then merge
-    let gtfs_data = if feed_ids.len() > 1 {
-        let mut merged: Option<gtfs::GtfsData> = None;
-        for fid in feed_ids {
-            let path = mdb::fetch_gtfs(fid, Some(fid), cache_dir, refresh_token)?;
-            eprintln!("GTFS feed {} cached at: {:?}", fid, path);
-            let data = gtfs::parse_gtfs(&path)?;
-            eprintln!(
-                "  {} stops, {} routes, {} trips",
-                data.stops.len(),
-                data.routes.len(),
-                data.trips.len()
-            );
-            match merged {
-                Some(ref mut m) => m.merge(data),
-                None => merged = Some(data),
-            }
+    let mut merged: Option<gtfs::GtfsData> = None;
+    for fid in feed_ids {
+        let path = mdb::fetch_gtfs(fid, cache_dir, refresh_token)?;
+        eprintln!("GTFS feed {} cached at: {:?}", fid, path);
+        let data = gtfs::parse_gtfs(&path)?;
+        eprintln!(
+            "  {} stops, {} routes, {} trips",
+            data.stops.len(),
+            data.routes.len(),
+            data.trips.len()
+        );
+        match merged {
+            Some(ref mut m) => m.merge(data),
+            None => merged = Some(data),
         }
-        merged.unwrap()
-    } else {
-        let path = mdb::fetch_gtfs(city, feed_id_opt, cache_dir, refresh_token)?;
-        eprintln!("GTFS data cached at: {:?}", path);
-        gtfs::parse_gtfs(&path)?
-    };
+    }
+    let gtfs_data = merged.unwrap();
 
     // Step 2: Download OSM data
     eprintln!("\n--- Fetching OSM pedestrian data ---");
-    let osm_path = osm::fetch_osm(bbox, cache_dir, city)?;
+    let osm_path = osm::fetch_osm(bbox, cache_dir, city, bbbike_name)?;
     eprintln!("OSM data cached at: {:?}", osm_path);
 
     // Step 3: Parse GTFS

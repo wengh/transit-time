@@ -1,6 +1,6 @@
 {
     "id": "toronto",
-    "prep_city": "Toronto",
+    "bbbike_name": "Toronto",
     "feed_ids": [
         "mdb-732",
         "mdb-1993",

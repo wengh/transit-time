@@ -5,24 +5,20 @@ use std::path::{Path, PathBuf};
 const MDB_TOKEN_URL: &str = "https://api.mobilitydatabase.org/v1/tokens";
 const MDB_FEEDS_URL: &str = "https://api.mobilitydatabase.org/v1/gtfs_feeds";
 
-/// Fetch a GTFS zip for the given city, caching the result.
+/// Fetch a GTFS zip for the given feed ID, caching the result.
 pub fn fetch_gtfs(
-    city: &str,
-    feed_id: Option<&str>,
+    feed_id: &str,
     cache_dir: &Path,
     refresh_token: &str,
 ) -> Result<PathBuf> {
-    let cache_path = cache_dir.join(format!("{}.gtfs.zip", sanitize_filename(city)));
+    let cache_path = cache_dir.join(format!("{}.gtfs.zip", sanitize_filename(feed_id)));
     if cache_path.exists() {
         eprintln!("Using cached GTFS: {:?}", cache_path);
         return Ok(cache_path);
     }
 
-    // Get access token from MDB
     let access_token = get_access_token(refresh_token)?;
-
-    // Search for feeds matching the city or use specific feed ID
-    let feed_url = find_feed_url(city, feed_id, &access_token)?;
+    let feed_url = find_feed_url(feed_id, &access_token)?;
     eprintln!("Downloading GTFS from: {}", feed_url);
 
     // Download the GTFS zip
@@ -57,76 +53,17 @@ fn get_access_token(refresh_token: &str) -> Result<String> {
     Ok(token)
 }
 
-fn find_feed_url(city: &str, feed_id: Option<&str>, access_token: &str) -> Result<String> {
+fn find_feed_url(feed_id: &str, access_token: &str) -> Result<String> {
     let client = reqwest::blocking::Client::new();
-
-    if let Some(id) = feed_id {
-        let resp = client
-            .get(format!("{}/{}", MDB_FEEDS_URL, id))
-            .header("Authorization", format!("Bearer {}", access_token))
-            .send()?
-            .error_for_status()
-            .context(format!("Failed to fetch feed with ID {}", id))?;
-
-        let feed: serde_json::Value = resp.json()?;
-        return extract_download_url(&feed);
-    }
-
-    // Search feeds by municipality (city name)
     let resp = client
-        .get(MDB_FEEDS_URL)
-        .query(&[("municipality", city), ("limit", "5")])
+        .get(format!("{}/{}", MDB_FEEDS_URL, feed_id))
         .header("Authorization", format!("Bearer {}", access_token))
         .send()?
         .error_for_status()
-        .context("Failed to search MDB feeds")?;
+        .with_context(|| format!("Failed to fetch feed with ID {}", feed_id))?;
 
-    let feeds: Vec<serde_json::Value> = resp.json()?;
-
-    // Prefer active feeds
-    let active_feeds: Vec<&serde_json::Value> = feeds
-        .iter()
-        .filter(|f| f.get("status").and_then(|s| s.as_str()) == Some("active"))
-        .collect();
-
-    if let Some(feed) = active_feeds.first() {
-        return extract_download_url(feed);
-    }
-    if !feeds.is_empty() {
-        return extract_download_url(&feeds[0]);
-    }
-
-    if feeds.is_empty() {
-        // Try with location search
-        let resp = client
-            .get(MDB_FEEDS_URL)
-            .query(&[("country_code", "US"), ("limit", "100")])
-            .header("Authorization", format!("Bearer {}", access_token))
-            .send()?
-            .error_for_status()?;
-
-        let all_feeds: Vec<serde_json::Value> = resp.json()?;
-        let city_lower = city.to_lowercase();
-
-        for feed in &all_feeds {
-            let name = feed["provider"].as_str().unwrap_or("");
-            let municipality = feed
-                .get("locations")
-                .and_then(|l| l.as_array())
-                .and_then(|a| a.first())
-                .and_then(|l| l.get("municipality"))
-                .and_then(|m| m.as_str())
-                .unwrap_or("");
-            if name.to_lowercase().contains(&city_lower)
-                || municipality.to_lowercase().contains(&city_lower)
-            {
-                return extract_download_url(feed);
-            }
-        }
-        bail!("No GTFS feed found for city '{}'", city);
-    }
-
-    extract_download_url(&feeds[0])
+    let feed: serde_json::Value = resp.json()?;
+    extract_download_url(&feed)
 }
 
 fn extract_download_url(feed: &serde_json::Value) -> Result<String> {

@@ -54,24 +54,21 @@ The web app loads the WASM router and binary data, then:
 ```bash
 # Chapel Hill, NC (small city, quick test)
 cargo run --release -p transit-prep -- \
-  --city "Chapel Hill" \
-  --bbox="-79.06,35.90,-79.03,35.93" \
-  --output transit-viz/public/data/chicago.bin \
+  --city-file cities/chapel_hill.json \
+  --output transit-viz/public/data/chapel_hill.bin \
   --cache-dir cache
 
 # Chicago, IL (large city — downloads ~94 MB PBF)
 cargo run --release -p transit-prep -- \
-  --city Chicago \
-  --bbox="-87.94,41.64,-87.52,42.02" \
-  --output transit-viz/public/data/chapel_hill.bin \
+  --city-file cities/chicago.json \
+  --output transit-viz/public/data/chicago.bin \
   --cache-dir cache
 ```
 
 Options:
 | Flag | Description |
 |------|-------------|
-| `--city` | City name (used for GTFS feed lookup and BBBike PBF download) |
-| `--bbox` | Bounding box as `min_lon,min_lat,max_lon,max_lat` |
+| `--city-file` | Path to city JSON config (e.g. `cities/chicago.json`) |
 | `--output` | Output binary file path (default: `city.bin`) |
 | `--cache-dir` | Directory to cache downloaded GTFS/OSM files (default: `cache`) |
 | `--token-file` | Path to MDB refresh token file (default: `.mdb_refresh_token`) |

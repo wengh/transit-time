@@ -19,23 +19,10 @@ data-all: $(BIN_FILES)
 
 transit-viz/public/data/%.bin: $(PREP_SRC) transit-prep/Cargo.toml cities/%.json
 	@echo "Building data for $*..."
-	@BBOX=$$(node -e "console.log(require('./cities/$*.json').bbox)"); \
-	PREP_CITY=$$(node -e "console.log(require('./cities/$*.json').prep_city)"); \
-	FEED_IDS=$$(node -e "console.log((require('./cities/$*.json').feed_ids || []).join(','))"); \
-	if [ -n "$$FEED_IDS" ]; then \
-		cargo run --release -p transit-prep -- \
-			--city "$$PREP_CITY" \
-			--feed-ids "$$FEED_IDS" \
-			--bbox="$$BBOX" \
-			--output $@ \
-			--cache-dir cache; \
-	else \
-		cargo run --release -p transit-prep -- \
-			--city "$$PREP_CITY" \
-			--bbox="$$BBOX" \
-			--output $@ \
-			--cache-dir cache; \
-	fi
+	cargo run --release -p transit-prep -- \
+		--city-file cities/$*.json \
+		--output $@ \
+		--cache-dir cache
 
 # Full dev setup: build everything then start dev server
 dev: $(WASM_OUT) data-all

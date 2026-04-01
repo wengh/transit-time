@@ -1,6 +1,6 @@
 {
     "id": "waterloo",
-    "prep_city": "Waterloo",
+    "bbbike_name": "Waterloo",
     "feed_ids": [
         "mdb-721",
         "mdb-1993"

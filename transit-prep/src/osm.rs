@@ -18,6 +18,7 @@ pub fn fetch_osm(
     bbox: (f64, f64, f64, f64),
     cache_dir: &Path,
     city: &str,
+    bbbike_name: Option<&str>,
 ) -> Result<PathBuf> {
     let (min_lon, min_lat, max_lon, max_lat) = bbox;
 
@@ -38,15 +39,11 @@ pub fn fetch_osm(
         return Ok(xml_cache);
     }
 
-    // Estimate area size (degrees)
-    let area_deg = (max_lat - min_lat) * (max_lon - min_lon);
-
-    // For large areas, try BBBike PBF extract first
-    if area_deg > 0.02 {
-        if let Ok(path) = try_bbbike_download(city, &pbf_cache) {
+    if let Some(name) = bbbike_name {
+        if let Ok(path) = try_bbbike_download(name, &pbf_cache) {
             return Ok(path);
         }
-        eprintln!("No BBBike extract available, falling back to Overpass...");
+        eprintln!("BBBike extract not available, falling back to Overpass...");
     }
 
     // Overpass for smaller areas
@@ -54,10 +51,8 @@ pub fn fetch_osm(
 }
 
 /// Try to download a city PBF extract from BBBike.
-fn try_bbbike_download(city: &str, cache_path: &Path) -> Result<PathBuf> {
-    // BBBike uses CamelCase city names
-    let bbbike_city = to_bbbike_name(city);
-    let url = format!("{}/{}/{}.osm.pbf", BBBIKE_BASE, bbbike_city, bbbike_city);
+fn try_bbbike_download(bbbike_name: &str, cache_path: &Path) -> Result<PathBuf> {
+    let url = format!("{}/{}/{}.osm.pbf", BBBIKE_BASE, bbbike_name, bbbike_name);
 
     eprintln!("Trying BBBike extract: {} ...", url);
 
@@ -65,9 +60,7 @@ fn try_bbbike_download(city: &str, cache_path: &Path) -> Result<PathBuf> {
         .timeout(std::time::Duration::from_secs(600))
         .build()?;
 
-    let resp = client
-        .get(&url)
-        .send()?;
+    let resp = client.get(&url).send()?;
 
     if !resp.status().is_success() {
         bail!("BBBike returned {}", resp.status());
@@ -80,20 +73,6 @@ fn try_bbbike_download(city: &str, cache_path: &Path) -> Result<PathBuf> {
     file.write_all(&bytes)?;
 
     Ok(cache_path.to_path_buf())
-}
-
-/// Convert city name to BBBike naming convention.
-fn to_bbbike_name(city: &str) -> String {
-    // BBBike uses names like "Chicago", "NewYork", "LosAngeles"
-    city.split_whitespace()
-        .map(|w| {
-            let mut chars = w.chars();
-            match chars.next() {
-                None => String::new(),
-                Some(c) => c.to_uppercase().to_string() + &chars.as_str().to_lowercase(),
-            }
-        })
-        .collect()
 }
 
 fn fetch_overpass(bbox: (f64, f64, f64, f64), cache_path: &Path) -> Result<PathBuf> {
@@ -148,7 +127,13 @@ out body;"#,
 
 fn sanitize(s: &str) -> String {
     s.chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 
