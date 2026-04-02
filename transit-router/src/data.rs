@@ -122,6 +122,8 @@ pub struct PreparedData {
     pub shapes: std::collections::HashMap<String, Vec<(f64, f64)>>,
     /// route_index -> [shape_ids] (all shapes for that route)
     pub route_shapes: Vec<Vec<String>>,
+    /// Spatial grid index: (lat_cell, lon_cell) -> [node_indices]
+    pub node_grid: std::collections::HashMap<(i32, i32), Vec<u32>>,
 }
 
 pub fn load(compressed: &[u8]) -> Result<PreparedData, String> {
@@ -400,6 +402,19 @@ pub fn load(compressed: &[u8]) -> Result<PreparedData, String> {
         adj[edge.v as usize].push((edge.u, edge.distance_meters));
     }
 
+    // Build spatial grid index for snap_to_node
+    const CELL_SIZE_LAT: f64 = 0.0045;
+    const CELL_SIZE_LON: f64 = 0.006;
+    let mut node_grid: std::collections::HashMap<(i32, i32), Vec<u32>> =
+        std::collections::HashMap::new();
+    for (i, node) in nodes.iter().enumerate() {
+        let cell = (
+            (node.lat / CELL_SIZE_LAT).floor() as i32,
+            (node.lon / CELL_SIZE_LON).floor() as i32,
+        );
+        node_grid.entry(cell).or_default().push(i as u32);
+    }
+
     Ok(PreparedData {
         nodes,
         edges,
@@ -415,6 +430,7 @@ pub fn load(compressed: &[u8]) -> Result<PreparedData, String> {
         node_stop_indices,
         shapes,
         route_shapes,
+        node_grid,
     })
 }
 

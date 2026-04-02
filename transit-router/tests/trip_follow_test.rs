@@ -1,29 +1,77 @@
+use std::collections::HashMap;
 use transit_router::data::*;
 use transit_router::router::*;
-use std::collections::HashMap;
 
 fn build_test_data(add_extra_green: bool) -> PreparedData {
     let nodes = vec![
         NodeData { lat: 0.0, lon: 0.0 },
-        NodeData { lat: 0.001, lon: 0.0 },
-        NodeData { lat: 0.002, lon: 0.0 },
-        NodeData { lat: 0.0, lon: 0.001 },
-        NodeData { lat: 0.003, lon: 0.0 },
+        NodeData {
+            lat: 0.001,
+            lon: 0.0,
+        },
+        NodeData {
+            lat: 0.002,
+            lon: 0.0,
+        },
+        NodeData {
+            lat: 0.0,
+            lon: 0.001,
+        },
+        NodeData {
+            lat: 0.003,
+            lon: 0.0,
+        },
     ];
 
     let edges = vec![
-        EdgeData { u: 0, v: 1, distance_meters: 252.0 },
-        EdgeData { u: 0, v: 3, distance_meters: 420.0 },
-        EdgeData { u: 3, v: 2, distance_meters: 420.0 },
-        EdgeData { u: 1, v: 2, distance_meters: 588.0 },
-        EdgeData { u: 2, v: 4, distance_meters: 588.0 },
+        EdgeData {
+            u: 0,
+            v: 1,
+            distance_meters: 252.0,
+        },
+        EdgeData {
+            u: 0,
+            v: 3,
+            distance_meters: 420.0,
+        },
+        EdgeData {
+            u: 3,
+            v: 2,
+            distance_meters: 420.0,
+        },
+        EdgeData {
+            u: 1,
+            v: 2,
+            distance_meters: 588.0,
+        },
+        EdgeData {
+            u: 2,
+            v: 4,
+            distance_meters: 588.0,
+        },
     ];
 
     let stops = vec![
-        StopData { lat: 0.0, lon: 0.0, name: "PinkStop".into() },
-        StopData { lat: 0.0, lon: 0.0, name: "GreenStop".into() },
-        StopData { lat: 0.0, lon: 0.0, name: "Midway".into() },
-        StopData { lat: 0.0, lon: 0.0, name: "Dest".into() },
+        StopData {
+            lat: 0.0,
+            lon: 0.0,
+            name: "PinkStop".into(),
+        },
+        StopData {
+            lat: 0.0,
+            lon: 0.0,
+            name: "GreenStop".into(),
+        },
+        StopData {
+            lat: 0.0,
+            lon: 0.0,
+            name: "Midway".into(),
+        },
+        StopData {
+            lat: 0.0,
+            lon: 0.0,
+            name: "Dest".into(),
+        },
     ];
     let stop_node_map = vec![3, 1, 2, 4];
     let num_stops = 4;
@@ -51,7 +99,7 @@ fn build_test_data(add_extra_green: bool) -> PreparedData {
         travel_time: 0,
         next_event_index: u32::MAX,
     });
-    
+
     // Green
     flat_events.push(EventData {
         time_offset: 300,
@@ -119,6 +167,10 @@ fn build_test_data(add_extra_green: bool) -> PreparedData {
 
     let pattern = PatternData {
         day_mask: 0xFF,
+        start_date: 0,
+        end_date: 0,
+        date_exceptions_add: vec![],
+        date_exceptions_remove: vec![],
         min_time,
         max_time: min_time + 1000,
         frequency_routes: vec![],
@@ -144,6 +196,18 @@ fn build_test_data(add_extra_green: bool) -> PreparedData {
         node_stop_indices[ni as usize].push(si as u32);
     }
 
+    // Build node_grid for snap_to_node
+    const CELL_SIZE_LAT: f64 = 0.0045;
+    const CELL_SIZE_LON: f64 = 0.006;
+    let mut node_grid: HashMap<(i32, i32), Vec<u32>> = HashMap::new();
+    for (i, node) in nodes.iter().enumerate() {
+        let cell = (
+            (node.lat / CELL_SIZE_LAT).floor() as i32,
+            (node.lon / CELL_SIZE_LON).floor() as i32,
+        );
+        node_grid.entry(cell).or_default().push(i as u32);
+    }
+
     PreparedData {
         nodes,
         edges,
@@ -159,6 +223,7 @@ fn build_test_data(add_extra_green: bool) -> PreparedData {
         node_stop_indices,
         shapes: HashMap::new(),
         route_shapes: vec![Vec::new(); 2],
+        node_grid,
     }
 }
 

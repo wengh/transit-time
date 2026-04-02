@@ -40,19 +40,35 @@ impl NodeResult {
     }
 }
 
-/// Snap lat/lon to nearest OSM node.
+/// Snap lat/lon to nearest OSM node using spatial grid index.
 pub fn snap_to_node(data: &PreparedData, lat: f64, lon: f64) -> u32 {
+    const CELL_SIZE_LAT: f64 = 0.0045;
+    const CELL_SIZE_LON: f64 = 0.006;
+
+    let cell_lat = (lat / CELL_SIZE_LAT).floor() as i32;
+    let cell_lon = (lon / CELL_SIZE_LON).floor() as i32;
+
     let mut best = 0u32;
     let mut best_dist = f64::MAX;
-    for (i, node) in data.nodes.iter().enumerate() {
-        let dlat = node.lat - lat;
-        let dlon = node.lon - lon;
-        let dist = dlat * dlat + dlon * dlon;
-        if dist < best_dist {
-            best_dist = dist;
-            best = i as u32;
+
+    // Search 3x3 neighborhood of cells
+    for dlat in -1..=1 {
+        for dlon in -1..=1 {
+            if let Some(indices) = data.node_grid.get(&(cell_lat + dlat, cell_lon + dlon)) {
+                for &i in indices {
+                    let node = &data.nodes[i as usize];
+                    let dlat = node.lat - lat;
+                    let dlon = node.lon - lon;
+                    let dist = dlat * dlat + dlon * dlon;
+                    if dist < best_dist {
+                        best_dist = dist;
+                        best = i;
+                    }
+                }
+            }
         }
     }
+
     best
 }
 
