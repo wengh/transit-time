@@ -116,7 +116,7 @@ impl GtfsData {
 #[derive(Debug, Clone)]
 pub struct ServicePattern {
     pub pattern_id: u32,
-    pub day_mask: u8, // bit 0=Mon .. bit 6=Sun
+    pub day_mask: u8,    // bit 0=Mon .. bit 6=Sun
     pub start_date: u32, // YYYYMMDD, 0 = unbounded
     pub end_date: u32,   // YYYYMMDD, 0 = unbounded
     pub date_exceptions_add: Vec<u32>,
@@ -544,39 +544,54 @@ pub fn build_service_patterns(data: &GtfsData) -> Vec<ServicePattern> {
         route_id_to_idx.insert(&route.id, route.index);
     }
 
-    // Group service_ids by day mask
-    let mut day_mask_groups: BTreeMap<u8, Vec<&Service>> = BTreeMap::new();
+    #[derive(PartialEq, Eq, Hash, PartialOrd, Ord)]
+    struct ServiceKey {
+        mask: u8,
+        start_date: u32,
+        end_date: u32,
+        added_dates: Vec<u32>,
+        removed_dates: Vec<u32>,
+    }
+
+    let mut service_masks: Vec<(u8, &Service)> = Vec::new();
     for service in &data.services {
         let mut mask =
-            service.days.iter().enumerate().fold(
-                0u8,
-                |acc, (i, &d)| {
-                    if d {
-                        acc | (1 << i)
-                    } else {
-                        acc
-                    }
-                },
-            );
-        // For services defined only via calendar_dates (mask=0), derive the
-        // day mask from their added_dates so they get included in the right
-        // day-of-week patterns.
+            service
+                .days
+                .iter()
+                .enumerate()
+                .fold(0u8, |acc, (i, &d)| if d { acc | (1 << i) } else { acc });
         if mask == 0 && !service.added_dates.is_empty() {
             mask = day_mask_from_dates(&service.added_dates);
         }
-        day_mask_groups.entry(mask).or_default().push(service);
+        service_masks.push((mask, service));
     }
 
-    // For feeds that only use calendar_dates (no calendar.txt), all services may
-    // still have mask 0 if date parsing failed. Merge into all-days as a fallback.
-    if day_mask_groups.len() == 1 && day_mask_groups.contains_key(&0) {
-        let all_date_based = day_mask_groups[&0]
-            .iter()
-            .all(|s| !s.added_dates.is_empty() || !s.removed_dates.is_empty());
-        if all_date_based {
-            let services = day_mask_groups.remove(&0).unwrap();
-            day_mask_groups.insert(0x7F, services);
+    let all_mask_zero = service_masks.iter().all(|(m, _)| *m == 0);
+    let all_date_based = service_masks
+        .iter()
+        .all(|(_, s)| !s.added_dates.is_empty() || !s.removed_dates.is_empty());
+    if all_mask_zero && all_date_based {
+        for (m, _) in &mut service_masks {
+            *m = 0x7F;
         }
+    }
+
+    let mut day_mask_groups: BTreeMap<ServiceKey, Vec<&Service>> = BTreeMap::new();
+    for (mask, service) in service_masks {
+        let mut added_dates = service.added_dates.clone();
+        added_dates.sort_unstable();
+        let mut removed_dates = service.removed_dates.clone();
+        removed_dates.sort_unstable();
+
+        let key = ServiceKey {
+            mask,
+            start_date: service.start_date,
+            end_date: service.end_date,
+            added_dates,
+            removed_dates,
+        };
+        day_mask_groups.entry(key).or_default().push(service);
     }
 
     // Sort stop_times by trip_id and stop_sequence
@@ -603,7 +618,8 @@ pub fn build_service_patterns(data: &GtfsData) -> Vec<ServicePattern> {
 
     let mut patterns = Vec::new();
 
-    for (mask, services) in &day_mask_groups {
+    for (key, services) in &day_mask_groups {
+        let mask = key.mask;
         let service_ids: HashSet<&str> = services.iter().map(|s| s.id.as_str()).collect();
 
         // Collect date exceptions and compute validity range
@@ -615,10 +631,18 @@ pub fn build_service_patterns(data: &GtfsData) -> Vec<ServicePattern> {
             adds.extend_from_slice(&svc.added_dates);
             removes.extend_from_slice(&svc.removed_dates);
             if svc.start_date != 0 {
-                start_date = if start_date == 0 { svc.start_date } else { start_date.min(svc.start_date) };
+                start_date = if start_date == 0 {
+                    svc.start_date
+                } else {
+                    start_date.min(svc.start_date)
+                };
             }
             if svc.end_date != 0 {
-                end_date = if end_date == 0 { svc.end_date } else { end_date.max(svc.end_date) };
+                end_date = if end_date == 0 {
+                    svc.end_date
+                } else {
+                    end_date.max(svc.end_date)
+                };
             }
         }
 
@@ -740,7 +764,7 @@ pub fn build_service_patterns(data: &GtfsData) -> Vec<ServicePattern> {
 
         patterns.push(ServicePattern {
             pattern_id: patterns.len() as u32,
-            day_mask: *mask,
+            day_mask: mask,
             start_date,
             end_date,
             date_exceptions_add: adds,
