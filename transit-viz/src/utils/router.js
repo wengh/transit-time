@@ -41,7 +41,16 @@ export async function loadRouter(cityFile, onProgress) {
   return new TransitRouter(dataBytes);
 }
 
-export function runQuery(router, { sourceNode, mode, departureTime, date, nSamples, transferSlack, maxTime }) {
+export function freeSsspList(ssspList) {
+  if (!ssspList) return;
+  for (const sssp of ssspList) {
+    try { sssp.free(); } catch (_) {}
+  }
+}
+
+export function runQuery(router, { sourceNode, mode, departureTime, date, nSamples, transferSlack, maxTime, prevSsspList }) {
+  // Free previous results before allocating new ones to avoid WASM OOM
+  freeSsspList(prevSsspList);
   const numNodes = router.num_nodes();
 
   if (mode === 'single') {

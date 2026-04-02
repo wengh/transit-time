@@ -45,17 +45,9 @@ export default function MapView() {
     if (!map) return;
 
     function snapToNode(lat, lon) {
-      const coords = stateRef.current.nodeCoords;
-      if (!coords) return null;
-      let bestDist = Infinity;
-      let bestNode = 0;
-      for (let i = 0; i < coords.length; i += 2) {
-        const dlat = coords[i] - lat;
-        const dlon = coords[i + 1] - lon;
-        const d = dlat * dlat + dlon * dlon;
-        if (d < bestDist) { bestDist = d; bestNode = i / 2; }
-      }
-      return bestNode;
+      const router = stateRef.current.router;
+      if (!router) return null;
+      return router.snap_to_node(lat, lon);
     }
 
     function getNodeLatLng(node) {

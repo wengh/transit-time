@@ -58,6 +58,7 @@ function AppInner() {
       nSamples: overrides.nSamples ?? s.nSamples,
       transferSlack: overrides.transferSlack ?? s.transferSlack,
       maxTime: (overrides.maxTimeMin ?? s.maxTimeMin) * 60,
+      prevSsspList: s.ssspList,
     };
 
     dispatch({ type: 'COMPUTING' });
@@ -99,7 +100,7 @@ function AppInner() {
       }
 
       lines.push(`Date: ${s.date}`);
-      lines.push(`Departure: ${new Date(s.departureTime * 1000).toISOString().substr(11, 5)}`);
+      lines.push(`Departure: ${new Date(s.departureTime * 1000).toISOString().substring(11, 16)}`);
       lines.push(`Transfer slack: ${s.transferSlack}s`);
 
       if (s.pinnedNode !== null && s.ssspList?.length > 0) {
