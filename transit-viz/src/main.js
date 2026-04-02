@@ -275,6 +275,7 @@ function runQuery() {
   status.textContent = 'Computing...';
 
   setTimeout(() => {
+    const start = performance.now();
     try {
       if (mode === 'single') {
         const sssp = router.run_tdd_full_for_date(
@@ -317,8 +318,8 @@ function runQuery() {
         }
       }
       renderIsochrone();
-      const reached = currentTravelTimes.filter(t => !isNaN(t) && t <= maxTime).length;
-      status.textContent = `Done. ${reached.toLocaleString()} nodes within ${maxTime / 60} min.`;
+      const end = performance.now();
+      status.textContent = `Done. Spent ${Math.round(end - start)} ms.`;
     } catch (e) {
       status.textContent = `Error: ${e}`;
       console.error(e);

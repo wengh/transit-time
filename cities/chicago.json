@@ -3,7 +3,6 @@
     "bbbike_name": "Chicago",
     "feed_ids": [
         "mdb-389",
-        "mdb-306",
         "mdb-2347"
     ],
     "name": "Chicago, IL",
@@ -14,5 +13,5 @@
         -87.63
     ],
     "zoom": 12,
-    "detail": "CTA, Pace, Water Taxi"
+    "detail": "CTA, Pace"
 }
