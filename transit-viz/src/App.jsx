@@ -105,10 +105,16 @@ function AppInner() {
 
       if (s.pinnedNode !== null && s.ssspList?.length > 0) {
         const sssp = s.ssspList[0];
-        const arrival = s.router.node_arrival_time(sssp, s.pinnedNode);
-        if (arrival < 0xFFFFFFFF) {
-          const dep = s.router.sssp_departure_time(sssp);
-          lines.push(`Travel time: ${Math.round((arrival - dep) / 60)} min`);
+        if (sssp.__wbg_ptr !== 0) {
+          try {
+            const arrival = s.router.node_arrival_time(sssp, s.pinnedNode);
+            if (arrival < 0xFFFFFFFF) {
+              const dep = s.router.sssp_departure_time(sssp);
+              lines.push(`Travel time: ${Math.round((arrival - dep) / 60)} min`);
+            }
+          } catch (e) {
+            if (!e.message || !e.message.includes('null pointer')) throw e;
+          }
         }
       }
 

@@ -91,15 +91,22 @@ export function runQuery(router, { sourceNode, mode, departureTime, date, nSampl
 export function getHoverData(router, ssspList, node) {
   const allPaths = [];
   for (const sssp of ssspList) {
-    const depTime = router.sssp_departure_time(sssp);
-    const arrival = router.node_arrival_time(sssp, node);
-    if (arrival >= 0xFFFFFFFF) {
-      allPaths.push({ segments: [], totalTime: null });
-      continue;
+    if (sssp.__wbg_ptr === 0) continue; // Skip freed wasm objects
+    try {
+      const depTime = router.sssp_departure_time(sssp);
+      const arrival = router.node_arrival_time(sssp, node);
+      if (arrival >= 0xFFFFFFFF) {
+        allPaths.push({ segments: [], totalTime: null });
+        continue;
+      }
+      const pathArray = router.reconstruct_path(sssp, node);
+      const segments = parsePathSegments(router, sssp, pathArray, depTime);
+      allPaths.push({ segments, totalTime: arrival - depTime });
+    } catch (e) {
+      // In case of any Wasm errors about null pointers, skip safely
+      if (e.message && e.message.includes('null pointer')) continue;
+      throw e;
     }
-    const pathArray = router.reconstruct_path(sssp, node);
-    const segments = parsePathSegments(router, sssp, pathArray, depTime);
-    allPaths.push({ segments, totalTime: arrival - depTime });
   }
   return allPaths;
 }
