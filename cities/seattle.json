@@ -1,0 +1,16 @@
+{
+    "id": "seattle",
+    "bbbike_name": "Seattle",
+    "feed_ids": [
+        "mdb-1080"
+    ],
+    "name": "Seattle, WA",
+    "file": "seattle.bin",
+    "bbox": "-122.46,47.40,-122.01,47.82",
+    "center": [
+        47.60,
+        -122.33
+    ],
+    "zoom": 12,
+    "detail": "Sound Transit"
+}
