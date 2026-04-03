@@ -145,7 +145,7 @@ pub fn run_prep(
 
     // Step 6: Build service patterns and event arrays
     eprintln!("\n--- Building service patterns ---");
-    let patterns = gtfs::build_service_patterns(&gtfs_data);
+    let patterns = gtfs::build_service_patterns(&gtfs_data, bbox);
     eprintln!("Built {} service patterns", patterns.len());
 
     // Build route_index -> shape_id mapping

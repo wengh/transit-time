@@ -8,10 +8,8 @@
         "mdb-512",
         "mdb-513",
         "mdb-514",
-        "mdb-515",
         "mdb-516",
         "mdb-517",
-        "mdb-518",
         "mdb-519",
         "mdb-520",
         "mdb-528"
@@ -24,5 +22,5 @@
         -74.01
     ],
     "zoom": 11,
-    "detail": "MTA, PATH, Ferry"
+    "detail": "MTA, PATH"
 }
