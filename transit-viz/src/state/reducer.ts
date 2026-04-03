@@ -1,7 +1,78 @@
-export const initialState = {
+import type { Router, SsspList, HoverPath } from '../utils/router';
+import type { City } from '../cities';
+
+export interface AppState {
+  // City loading
+  currentCity: City | null;
+  loadingState: 'idle' | 'loading' | 'initializing' | 'ready';
+  loadingProgress: number;
+
+  // Controls
+  mode: 'single' | 'sampled';
+  departureTime: number;
+  date: string;
+  nSamples: number;
+  maxTimeMin: number;
+  transferSlack: number;
+
+  // Router state
+  router: Router | null;
+  nodeCoords: Float32Array | null;
+  sourceNode: number | null;
+  sourceLatLng: [number, number] | null;
+
+  // Query results
+  travelTimes: Float64Array | null;
+  ssspList: SsspList | null;
+  computeStatus: 'idle' | 'computing' | 'done' | 'error';
+  computeTimeMs: number;
+  patternCount: number;
+  nodeCount: number;
+  stopCount: number;
+
+  // Destination
+  pinnedNode: number | null;
+  pinnedLatLng: [number, number] | null;
+  hoverData: HoverData | null;
+
+  // UI feedback
+  showCopiedMessage: boolean;
+}
+
+export interface HoverData {
+  allPaths: HoverPath[];
+  travelTimes: number[];
+}
+
+export type Action =
+  | { type: 'START_LOADING'; city: City }
+  | { type: 'LOADING_PROGRESS'; progress: number }
+  | { type: 'START_INITIALIZING' }
+  | { type: 'CITY_LOADED'; router: Router; nodeCoords: Float32Array; nodeCount: number; stopCount: number }
+  | { type: 'LOAD_ERROR' }
+  | { type: 'CHANGE_CITY' }
+  | { type: 'SET_SOURCE'; node: number; latLng: [number, number] }
+  | { type: 'SET_MODE'; mode: 'single' | 'sampled' }
+  | { type: 'SET_DEPARTURE_TIME'; value: number }
+  | { type: 'SET_DATE'; value: string }
+  | { type: 'SET_SAMPLES'; value: number }
+  | { type: 'SET_MAX_TIME'; value: number }
+  | { type: 'SET_SLACK'; value: number }
+  | { type: 'SET_PATTERN_COUNT'; count: number }
+  | { type: 'COMPUTING' }
+  | { type: 'QUERY_DONE'; travelTimes: Float64Array; ssspList: SsspList; timeMs: number }
+  | { type: 'QUERY_ERROR' }
+  | { type: 'PIN_DESTINATION'; node: number; latLng: [number, number]; hoverData: HoverData }
+  | { type: 'UNPIN_DESTINATION' }
+  | { type: 'SET_HOVER_DATA'; hoverData: HoverData }
+  | { type: 'CLEAR_HOVER' }
+  | { type: 'SHOW_COPIED_MESSAGE' }
+  | { type: 'HIDE_COPIED_MESSAGE' };
+
+export const initialState: AppState = {
   // City loading
   currentCity: null,
-  loadingState: 'idle', // 'idle' | 'loading' | 'initializing' | 'ready'
+  loadingState: 'idle',
   loadingProgress: 0,
 
   // Controls
@@ -21,7 +92,7 @@ export const initialState = {
   // Query results
   travelTimes: null,
   ssspList: null,
-  computeStatus: 'idle', // 'idle' | 'computing' | 'done' | 'error'
+  computeStatus: 'idle',
   computeTimeMs: 0,
   patternCount: 0,
   nodeCount: 0,
@@ -36,7 +107,7 @@ export const initialState = {
   showCopiedMessage: false,
 };
 
-export function reducer(state, action) {
+export function reducer(state: AppState, action: Action): AppState {
   switch (action.type) {
     case 'START_LOADING':
       return { ...state, loadingState: 'loading', loadingProgress: 0, currentCity: action.city };
@@ -113,7 +184,5 @@ export function reducer(state, action) {
       return { ...state, showCopiedMessage: true };
     case 'HIDE_COPIED_MESSAGE':
       return { ...state, showCopiedMessage: false };
-    default:
-      return state;
   }
 }

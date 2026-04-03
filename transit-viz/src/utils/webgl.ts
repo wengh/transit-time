@@ -1,6 +1,20 @@
-import { travelTimeColor } from './colors.js';
+import { travelTimeColor } from './colors';
+import type L from 'leaflet';
 
-export function initWebGL() {
+export interface GLState {
+  canvas: HTMLCanvasElement;
+  gl: WebGLRenderingContext;
+  program: WebGLProgram;
+  posBuffer: WebGLBuffer;
+  colorBuffer: WebGLBuffer;
+}
+
+export interface RenderResult {
+  dataUrl: string;
+  renderBounds: L.LatLngBounds;
+}
+
+export function initWebGL(): GLState | null {
   const canvas = document.createElement('canvas');
   const gl = canvas.getContext('webgl', { alpha: true, premultipliedAlpha: false, antialias: false });
   if (!gl) return null;
@@ -22,28 +36,41 @@ export function initWebGL() {
       gl_FragColor = v_color;
     }`;
 
-  function compile(type, src) {
-    const s = gl.createShader(type);
-    gl.shaderSource(s, src);
-    gl.compileShader(s);
+  function compile(type: number, src: string): WebGLShader {
+    const s = gl!.createShader(type);
+    if (!s) throw new Error('Failed to create shader');
+    gl!.shaderSource(s, src);
+    gl!.compileShader(s);
     return s;
   }
   const program = gl.createProgram();
+  if (!program) throw new Error('Failed to create program');
   gl.attachShader(program, compile(gl.VERTEX_SHADER, vsrc));
   gl.attachShader(program, compile(gl.FRAGMENT_SHADER, fsrc));
   gl.linkProgram(program);
   gl.useProgram(program);
 
+  const posBuffer = gl.createBuffer();
+  const colorBuffer = gl.createBuffer();
+  if (!posBuffer || !colorBuffer) throw new Error('Failed to create buffers');
+
   return {
     canvas,
     gl,
     program,
-    posBuffer: gl.createBuffer(),
-    colorBuffer: gl.createBuffer(),
+    posBuffer,
+    colorBuffer,
   };
 }
 
-export function renderIsochrone(glState, map, travelTimes, nodeCoords, maxTimeSec, L) {
+export function renderIsochrone(
+  glState: GLState,
+  map: L.Map,
+  travelTimes: Float64Array,
+  nodeCoords: Float32Array,
+  maxTimeSec: number,
+  L: typeof import('leaflet')
+): RenderResult | null {
   if (!travelTimes || !map || !nodeCoords) return null;
 
   const bounds = map.getBounds();
@@ -53,7 +80,7 @@ export function renderIsochrone(glState, map, travelTimes, nodeCoords, maxTimeSe
   const padLng = (bounds.getEast() - bounds.getWest()) * 0.5;
   const renderBounds = L.latLngBounds(
     [bounds.getSouth() - padLat, bounds.getWest() - padLng],
-    [bounds.getNorth() + padLat, bounds.getEast() + padLng],
+    [bounds.getNorth() + padLat, bounds.getEast() + padLng]
   );
 
   const topLeft = map.project(renderBounds.getNorthWest(), zoom);
@@ -96,7 +123,7 @@ export function renderIsochrone(glState, map, travelTimes, nodeCoords, maxTimeSe
     const lon = nodeCoords[ci2 + 1];
 
     const x = scale * (lon / 360 + 0.5) - ox;
-    const y = scale * (0.5 - Math.log(Math.tan(Math.PI / 4 + lat * Math.PI / 360)) / (2 * Math.PI)) - oy;
+    const y = scale * (0.5 - Math.log(Math.tan(Math.PI / 4 + (lat * Math.PI) / 360)) / (2 * Math.PI)) - oy;
 
     if (x < -dotSize || x > w + dotSize || y < -dotSize || y > h + dotSize) continue;
 

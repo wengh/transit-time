@@ -1,10 +1,10 @@
-import { useEffect, useRef } from 'react';
-import { useAppState } from '../state/AppContext.jsx';
-import { getTravelTimeSummary, getMedianPath, formatSegments } from '../utils/hoverInfo.js';
+import React, { useEffect, useRef } from 'react';
+import { useAppState } from '../state/AppContext';
+import { getTravelTimeSummary, getMedianPath } from '../utils/hoverInfo';
 
-export default function HoverInfo() {
+export default function HoverInfo(): React.ReactNode {
   const { state } = useAppState();
-  const canvasRef = useRef(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
   const { hoverData } = state;
 
   useEffect(() => {
@@ -47,9 +47,7 @@ export default function HoverInfo() {
                   )}
                   <div style={{ fontSize: 12, padding: '2px 0' }}>
                     <b>{seg.routeName || 'Transit'}</b>
-                    {seg.startStopName && seg.endStopName
-                      ? ` \u00b7 ${seg.startStopName} \u2192 ${seg.endStopName}` : ''}
-                    {'  '}{(seg.duration / 60).toFixed(1)} min
+                    {seg.startStopName && seg.endStopName ? ` · ${seg.startStopName} → ${seg.endStopName}` : ''} {(seg.duration / 60).toFixed(1)} min
                   </div>
                 </>
               )}
@@ -58,7 +56,7 @@ export default function HoverInfo() {
         </div>
       )}
 
-      {timeSummary.isSampled && timeSummary.count >= 2 && (
+      {timeSummary.isSampled && timeSummary.count! >= 2 && (
         <div style={{ borderTop: '1px solid #ddd', paddingTop: 6, marginTop: 6 }}>
           <canvas ref={canvasRef} height="32" style={{ width: '100%', height: 32, display: 'block' }} />
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: '#888', marginTop: 2 }}>
@@ -72,12 +70,14 @@ export default function HoverInfo() {
   );
 }
 
-function drawDistribution(canvas, travelTimes) {
+function drawDistribution(canvas: HTMLCanvasElement, travelTimes: number[]) {
   const rect = canvas.getBoundingClientRect();
   canvas.width = Math.round(rect.width);
   canvas.height = Math.round(rect.height);
   const ctx = canvas.getContext('2d');
-  const w = canvas.width, h = canvas.height;
+  if (!ctx) return;
+  const w = canvas.width,
+    h = canvas.height;
   ctx.clearRect(0, 0, w, h);
 
   const minT = travelTimes[0];
@@ -97,15 +97,17 @@ function drawDistribution(canvas, travelTimes) {
 
   ctx.strokeStyle = '#aaa';
   ctx.beginPath();
-  ctx.moveTo(pad, y - 6); ctx.lineTo(pad, y + 6);
-  ctx.moveTo(w - pad, y - 6); ctx.lineTo(w - pad, y + 6);
+  ctx.moveTo(pad, y - 6);
+  ctx.lineTo(pad, y + 6);
+  ctx.moveTo(w - pad, y - 6);
+  ctx.lineTo(w - pad, y + 6);
   ctx.stroke();
 
   ctx.fillStyle = '#4a90d9';
   for (let si = 0; si < travelTimes.length; si++) {
     const t = travelTimes[si];
     const x = range > 0 ? pad + ((t - minT) / range) * plotW : w / 2;
-    const jitter = ((si * 7 + 3) % 11 - 5) * 1.2;
+    const jitter = (((si * 7 + 3) % 11) - 5) * 1.2;
     ctx.beginPath();
     ctx.arc(x, y + jitter, 3, 0, Math.PI * 2);
     ctx.fill();

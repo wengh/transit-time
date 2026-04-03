@@ -1,6 +1,37 @@
-import init, { initThreadPool, TransitRouter, __markRayonReady } from '../../pkg/transit_router.js';
+import init, { initThreadPool, TransitRouter, WasmSsspResult, __markRayonReady } from '../../pkg/transit_router';
 
 let wasmReady = false;
+
+export type Router = TransitRouter;
+export type SsspList = WasmSsspResult[];
+
+export interface PathSegment {
+  edgeType: number;
+  routeIdx: number;
+  routeName: string;
+  startStopName: string;
+  endStopName: string;
+  endNodeIdx: number;
+  duration: number;
+  waitTime: number;
+  coords: Array<[number, number]>;
+}
+
+export interface QueryResult {
+  travelTimes: Float64Array;
+  ssspList: SsspList;
+}
+
+export interface RunQueryParams {
+  sourceNode: number;
+  mode: 'single' | 'sampled';
+  departureTime: number;
+  date: string;
+  nSamples: number;
+  transferSlack: number;
+  maxTime: number;
+  prevSsspList?: SsspList;
+}
 
 export async function initWasm() {
   if (wasmReady) return;
@@ -14,21 +45,21 @@ export async function initWasm() {
   wasmReady = true;
 }
 
-export async function loadRouter(cityFile, onProgress) {
+export async function loadRouter(cityFile: string, onProgress?: (progress: number) => void): Promise<Router> {
   const resp = await fetch(`/data/${cityFile}`);
   if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
   const total = parseInt(resp.headers.get('content-length') || '0');
   let loaded = 0;
 
-  const reader = resp.body.getReader();
-  const chunks = [];
+  const reader = resp.body!.getReader();
+  const chunks: Uint8Array[] = [];
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
     chunks.push(value);
     loaded += value.length;
     if (total > 0 && onProgress) {
-      onProgress(Math.round(loaded / total * 100));
+      onProgress(Math.round((loaded / total) * 100));
     }
   }
   const dataBytes = new Uint8Array(loaded);
@@ -41,31 +72,43 @@ export async function loadRouter(cityFile, onProgress) {
   return new TransitRouter(dataBytes);
 }
 
-export function freeSsspList(ssspList) {
+export function freeSsspList(ssspList: SsspList | null | undefined) {
   if (!ssspList) return;
   for (const sssp of ssspList) {
-    try { sssp.free(); } catch (_) {}
+    try {
+      sssp.free();
+    } catch (_) {
+      // ignore
+    }
   }
 }
 
-export function runQuery(router, { sourceNode, mode, departureTime, date, nSamples, transferSlack, maxTime, prevSsspList }) {
+export function runQuery(router: Router, params: RunQueryParams): QueryResult {
+  const { sourceNode, mode, departureTime, date, nSamples, transferSlack, maxTime, prevSsspList } = params;
+
   // Free previous results before allocating new ones to avoid WASM OOM
   freeSsspList(prevSsspList);
   const numNodes = router.num_nodes();
 
   if (mode === 'single') {
-    const sssp = router.run_tdd_full_for_date(sourceNode, departureTime, date, transferSlack, maxTime);
-    const ssspList = [sssp];
+    const sssp = router.run_tdd_full_for_date(sourceNode, departureTime, parseInt(date.replace(/-/g, '')), transferSlack, maxTime);
+    const ssspList: SsspList = [sssp];
     const travelTimes = new Float64Array(numNodes);
     for (let i = 0; i < numNodes; i++) {
       const arr = router.node_arrival_time(sssp, i);
-      travelTimes[i] = arr < 0xFFFFFFFF ? (arr - departureTime) : NaN;
+      travelTimes[i] = arr < 0xffffffff ? arr - departureTime : NaN;
     }
     return { travelTimes, ssspList };
   } else {
     const windowEnd = departureTime + 3600;
     const ssspList = router.run_tdd_sampled_full_for_date(
-      sourceNode, departureTime, windowEnd, nSamples, date, transferSlack, maxTime
+      sourceNode,
+      departureTime,
+      windowEnd,
+      nSamples,
+      parseInt(date.replace(/-/g, '')),
+      transferSlack,
+      maxTime
     );
     const sumTimes = new Float64Array(numNodes);
     const counts = new Uint32Array(numNodes);
@@ -74,8 +117,8 @@ export function runQuery(router, { sourceNode, mode, departureTime, date, nSampl
       const t = router.sssp_departure_time(sssp);
       for (let i = 0; i < numNodes; i++) {
         const arr = router.node_arrival_time(sssp, i);
-        if (arr < 0xFFFFFFFF) {
-          sumTimes[i] += (arr - t);
+        if (arr < 0xffffffff) {
+          sumTimes[i] += arr - t;
           counts[i]++;
         }
       }
@@ -88,14 +131,19 @@ export function runQuery(router, { sourceNode, mode, departureTime, date, nSampl
   }
 }
 
-export function getHoverData(router, ssspList, node) {
-  const allPaths = [];
+export interface HoverPath {
+  segments: PathSegment[];
+  totalTime: number | null;
+}
+
+export function getHoverData(router: Router, ssspList: SsspList, node: number): HoverPath[] {
+  const allPaths: HoverPath[] = [];
   for (const sssp of ssspList) {
-    if (sssp.__wbg_ptr === 0) continue; // Skip freed wasm objects
+    if ((sssp as any).__wbg_ptr === 0) continue; // Skip freed wasm objects
     try {
       const depTime = router.sssp_departure_time(sssp);
       const arrival = router.node_arrival_time(sssp, node);
-      if (arrival >= 0xFFFFFFFF) {
+      if (arrival >= 0xffffffff) {
         allPaths.push({ segments: [], totalTime: null });
         continue;
       }
@@ -104,23 +152,21 @@ export function getHoverData(router, ssspList, node) {
       allPaths.push({ segments, totalTime: arrival - depTime });
     } catch (e) {
       // In case of any Wasm errors about null pointers, skip safely
-      if (e.message && e.message.includes('null pointer')) continue;
+      if (e instanceof Error && e.message && e.message.includes('null pointer')) continue;
       throw e;
     }
   }
   return allPaths;
 }
 
-function parsePathSegments(router, sssp, pathArray) {
-  const segments = [];
+function parsePathSegments(router: Router, sssp: WasmSsspResult, pathArray: Uint32Array): PathSegment[] {
+  const segments: PathSegment[] = [];
   let i = 0;
   while (i < pathArray.length) {
     const startIdx = i;
     const edgeType = pathArray[i + 1];
     const routeIdx = pathArray[i + 2];
-    while (i + 3 < pathArray.length &&
-           pathArray[i + 3 + 1] === edgeType &&
-           pathArray[i + 3 + 2] === routeIdx) {
+    while (i + 3 < pathArray.length && pathArray[i + 3 + 1] === edgeType && pathArray[i + 3 + 2] === routeIdx) {
       i += 3;
     }
     const endIdx = i;
@@ -129,7 +175,7 @@ function parsePathSegments(router, sssp, pathArray) {
     const startTime = router.node_arrival_time(sssp, startNode);
     const endTime = router.node_arrival_time(sssp, endNode);
 
-    const coords = [];
+    const coords: Array<[number, number]> = [];
     for (let j = startIdx; j <= endIdx; j += 3) {
       const n = pathArray[j];
       coords.push([router.node_lat(n), router.node_lon(n)]);
@@ -144,7 +190,7 @@ function parsePathSegments(router, sssp, pathArray) {
     }
 
     let finalCoords = coords;
-    if (edgeType === 1 && routeIdx < 0xFFFFFFFF) {
+    if (edgeType === 1 && routeIdx < 0xffffffff) {
       const shapeCoords = router.route_shape_between(routeIdx, boardNode, endNode);
       if (shapeCoords.length >= 4) {
         finalCoords = [];
@@ -175,7 +221,7 @@ function parsePathSegments(router, sssp, pathArray) {
     let duration;
     if (edgeType === 1 && waitTime >= 0) {
       const boardingTime = router.node_boarding_time(sssp, startNode);
-      duration = boardingTime > 0 ? (endTime - boardingTime) : (endTime - startTime);
+      duration = boardingTime > 0 ? endTime - boardingTime : endTime - startTime;
     } else {
       duration = endTime - startTime;
     }
@@ -183,7 +229,7 @@ function parsePathSegments(router, sssp, pathArray) {
     segments.push({
       edgeType,
       routeIdx,
-      routeName: edgeType === 1 && routeIdx < 0xFFFFFFFF ? router.route_name(routeIdx) : '',
+      routeName: edgeType === 1 && routeIdx < 0xffffffff ? router.route_name(routeIdx) : '',
       startStopName: edgeType === 1 ? boardStopName : router.node_stop_name(startNode),
       endStopName: router.node_stop_name(endNode),
       endNodeIdx: endNode,

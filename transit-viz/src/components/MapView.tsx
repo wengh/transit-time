@@ -1,24 +1,25 @@
-import { useCallback, useEffect, useRef } from 'react';
+import React, { useCallback, useEffect, useRef } from 'react';
 import L from 'leaflet';
-import { useAppState } from '../state/AppContext.jsx';
-import { initWebGL, renderIsochrone } from '../utils/webgl.js';
-import { getHoverData } from '../utils/router.js';
-import { ROUTE_COLORS } from '../utils/colors.js';
+import { useAppState } from '../state/AppContext';
+import { initWebGL, renderIsochrone } from '../utils/webgl';
+import { getHoverData, type HoverPath } from '../utils/router';
+import { ROUTE_COLORS } from '../utils/colors';
 
 const isTouchDevice = typeof window !== 'undefined' && ('ontouchstart' in window || navigator.maxTouchPoints > 0);
 
-export default function MapView() {
+export default function MapView(): React.ReactNode {
   const { state, dispatch } = useAppState();
-  const mapRef = useRef(null);
-  const mapContainerRef = useRef(null);
-  const glStateRef = useRef(null);
-  const isoOverlayRef = useRef(null);
-  const sourceMarkerRef = useRef(null);
-  const destMarkerRef = useRef(null);
-  const routePolylinesRef = useRef([]);
-  const lastHoveredNodeRef = useRef(null);
-  const longPressTimerRef = useRef(null);
-  const longPressStartRef = useRef(null);
+  const mapRef = useRef<L.Map | null>(null);
+  const mapContainerRef = useRef<HTMLDivElement>(null);
+  const glStateRef = useRef<ReturnType<typeof initWebGL> | null>(null);
+  const isoOverlayRef = useRef<L.ImageOverlay | null>(null);
+  const sourceMarkerRef = useRef<L.Marker | null>(null);
+  const destMarkerRef = useRef<L.CircleMarker | null>(null);
+  const routePolylinesRef = useRef<L.Polyline[]>([]);
+  const lastHoveredNodeRef = useRef<number | null>(null);
+  const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const longPressStartRef = useRef<number | null>(null);
+  const renderIsoRef = useRef<(() => void) | null>(null);
 
   // Keep current state in refs for event handlers
   const stateRef = useRef(state);
@@ -26,8 +27,11 @@ export default function MapView() {
 
   // Clear destination marker and routes
   const clearDestination = useCallback(() => {
-    if (destMarkerRef.current) { destMarkerRef.current.remove(); destMarkerRef.current = null; }
-    routePolylinesRef.current.forEach(p => p.remove());
+    if (destMarkerRef.current) {
+      destMarkerRef.current.remove();
+      destMarkerRef.current = null;
+    }
+    routePolylinesRef.current.forEach((p) => p.remove());
     routePolylinesRef.current = [];
   }, []);
 
@@ -43,80 +47,96 @@ export default function MapView() {
     }).addTo(map);
     mapRef.current = map;
 
-    return () => { map.remove(); mapRef.current = null; };
+    return () => {
+      map.remove();
+      mapRef.current = null;
+    };
   }, []);
 
   // Set up map event handlers
   useEffect(() => {
-    const map = mapRef.current;
+    const map = mapRef.current as L.Map;
     if (!map) return;
 
-    function snapToNode(lat, lon) {
+    function snapToNode(lat: number, lon: number): number | null {
       const router = stateRef.current.router;
       if (!router) return null;
       return router.snap_to_node(lat, lon);
     }
 
-    function getNodeLatLng(node) {
+    function getNodeLatLng(node: number): [number, number] | null {
       const coords = stateRef.current.nodeCoords;
       if (!coords) return null;
       return [coords[node * 2], coords[node * 2 + 1]];
     }
 
     function clearRouteOverlay() {
-      routePolylinesRef.current.forEach(p => p.remove());
+      routePolylinesRef.current.forEach((p) => p.remove());
       routePolylinesRef.current = [];
     }
 
-    function drawRouteSegments(allPaths) {
+    function drawRouteSegments(allPaths: HoverPath[]) {
       clearRouteOverlay();
-      const routeColorMap = {};
+      const routeColorMap: Record<string, string> = {};
       let colorIdx = 0;
       for (const { segments } of allPaths) {
         for (const seg of segments) {
           if (seg.coords.length < 2) continue;
-          let color, dashArray, weight;
+          let color: string, dashArray: string | null, weight: number;
           if (seg.edgeType === 0) {
-            color = '#888'; dashArray = '6, 8'; weight = 3;
+            color = '#888';
+            dashArray = '6, 8';
+            weight = 3;
           } else {
             if (!(seg.routeName in routeColorMap)) {
               routeColorMap[seg.routeName] = ROUTE_COLORS[colorIdx % ROUTE_COLORS.length];
               colorIdx++;
             }
-            color = routeColorMap[seg.routeName]; dashArray = null; weight = 4;
+            color = routeColorMap[seg.routeName];
+            dashArray = null;
+            weight = 4;
           }
-          const line = L.polyline(seg.coords, { color, weight, opacity: 1, dashArray, interactive: false }).addTo(map);
+          const line = L.polyline(seg.coords, { color, weight, opacity: 1, ...(dashArray ? { dashArray } : {}), interactive: false }).addTo(map);
           routePolylinesRef.current.push(line);
         }
       }
     }
 
-    function showDestination(node, pin) {
+    function showDestination(node: number, pin: boolean) {
       const s = stateRef.current;
       if (!s.router || !s.travelTimes || !s.ssspList) return;
       const tt = s.travelTimes[node];
       if (isNaN(tt) || tt < 0) {
         clearRouteOverlay();
-        if (destMarkerRef.current) { destMarkerRef.current.remove(); destMarkerRef.current = null; }
+        if (destMarkerRef.current) {
+          destMarkerRef.current.remove();
+          destMarkerRef.current = null;
+        }
         dispatch({ type: pin ? 'UNPIN_DESTINATION' : 'CLEAR_HOVER' });
         return;
       }
 
       const allPaths = getHoverData(s.router, s.ssspList, node);
       const travelTimes = allPaths
-        .map(p => p.totalTime)
-        .filter(t => t !== null && isFinite(t))
+        .map((p) => p.totalTime)
+        .filter((t): t is number => t !== null && isFinite(t))
         .sort((a, b) => a - b);
 
-      drawRouteSegments(allPaths.filter(p => p.segments.length > 0));
+      drawRouteSegments(allPaths.filter((p) => p.segments.length > 0));
 
       const latLng = getNodeLatLng(node);
+      if (!latLng) return;
+
       if (pin) {
         if (destMarkerRef.current) {
           destMarkerRef.current.setLatLng(latLng);
         } else {
           destMarkerRef.current = L.circleMarker(latLng, {
-            radius: 6, color: '#fff', fillColor: '#4a90d9', fillOpacity: 1, weight: 2,
+            radius: 6,
+            color: '#fff',
+            fillColor: '#4a90d9',
+            fillOpacity: 1,
+            weight: 2,
           }).addTo(map);
         }
         dispatch({ type: 'PIN_DESTINATION', node, latLng, hoverData: { allPaths, travelTimes } });
@@ -125,35 +145,43 @@ export default function MapView() {
       }
     }
 
-    function setSource(lat, lng) {
+    function setSource(lat: number, lng: number) {
       const s = stateRef.current;
       if (!s.router) return;
       const node = snapToNode(lat, lng);
+      if (node === null) return;
       const latLng = getNodeLatLng(node);
+      if (!latLng) return;
       if (sourceMarkerRef.current) {
         sourceMarkerRef.current.setLatLng(latLng);
       } else {
         sourceMarkerRef.current = L.marker(latLng, { title: 'Origin' }).addTo(map);
       }
       // Clear destination
-      if (destMarkerRef.current) { destMarkerRef.current.remove(); destMarkerRef.current = null; }
+      if (destMarkerRef.current) {
+        destMarkerRef.current.remove();
+        destMarkerRef.current = null;
+      }
       clearRouteOverlay();
       dispatch({ type: 'SET_SOURCE', node, latLng });
     }
 
     // Desktop: double-click sets source
-    let clickTimer = null;
-    function onDblClick(e) {
+    let clickTimer: ReturnType<typeof setTimeout> | null = null;
+    function onDblClick(e: L.LeafletMouseEvent) {
       if (!stateRef.current.router) return;
       // Prevent on mobile (handled by long press)
       if (isTouchDevice) return;
       // Cancel pending single-click
-      if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; }
+      if (clickTimer) {
+        clearTimeout(clickTimer);
+        clickTimer = null;
+      }
       setSource(e.latlng.lat, e.latlng.lng);
     }
 
     // Single click: pin/unpin destination (delayed on desktop to distinguish from dblclick)
-    function onClick(e) {
+    function onClick(e: L.LeafletMouseEvent) {
       const s = stateRef.current;
       if (!s.router || s.sourceNode === null) return;
 
@@ -170,7 +198,9 @@ export default function MapView() {
           dispatch({ type: 'UNPIN_DESTINATION' });
         } else {
           const node = snapToNode(e.latlng.lat, e.latlng.lng);
-          showDestination(node, true);
+          if (node !== null) {
+            showDestination(node, true);
+          }
         }
       }
 
@@ -179,17 +209,20 @@ export default function MapView() {
       } else {
         // Delay to allow dblclick to cancel
         if (clickTimer) clearTimeout(clickTimer);
-        clickTimer = setTimeout(() => { clickTimer = null; doClick(); }, 250);
+        clickTimer = setTimeout(() => {
+          clickTimer = null;
+          doClick();
+        }, 250);
       }
     }
 
     // Hover: show route (desktop, no pinned dest)
-    function onMouseMove(e) {
+    function onMouseMove(e: L.LeafletMouseEvent) {
       const s = stateRef.current;
       if (!s.router || !s.travelTimes || !s.ssspList || s.pinnedNode !== null) return;
 
       const node = snapToNode(e.latlng.lat, e.latlng.lng);
-      if (node === lastHoveredNodeRef.current) return;
+      if (node === lastHoveredNodeRef.current || node === null) return;
       lastHoveredNodeRef.current = node;
       showDestination(node, false);
     }
@@ -203,13 +236,13 @@ export default function MapView() {
     }
 
     // Mobile: long press to set source
-    function onTouchStart(e) {
-      if (e.originalEvent.touches.length !== 1) return;
-      const touch = e.originalEvent.touches[0];
+    function onTouchStart(e: TouchEvent) {
+      if (e.touches.length !== 1) return;
+      const touch = e.touches[0];
       longPressStartRef.current = Date.now();
       longPressTimerRef.current = setTimeout(() => {
         if (!stateRef.current.router) return;
-        const latLng = map.containerPointToLatLng([touch.clientX, touch.clientY]);
+        const latLng = map.containerPointToLatLng(new L.Point(touch.clientX, touch.clientY));
         setSource(latLng.lat, latLng.lng);
         longPressStartRef.current = null;
       }, 600);
@@ -231,13 +264,9 @@ export default function MapView() {
     }
 
     // Re-render isochrone on map move/zoom
-    function onMoveEnd() {
-      renderIso();
-    }
-
     function renderIso() {
       const s = stateRef.current;
-      if (!s.travelTimes || !s.nodeCoords) return;
+      if (!s.travelTimes || !s.nodeCoords || !map) return;
       if (!glStateRef.current) {
         glStateRef.current = initWebGL();
       }
@@ -246,14 +275,20 @@ export default function MapView() {
       if (result) {
         const oldOverlay = isoOverlayRef.current;
         isoOverlayRef.current = L.imageOverlay(result.dataUrl, result.renderBounds, {
-          opacity: 1, interactive: false, zIndex: 500,
+          opacity: 1,
+          interactive: false,
+          zIndex: 500,
         }).addTo(map);
         if (oldOverlay) map.removeLayer(oldOverlay);
       }
     }
 
-    // Store renderIso on the map element for external trigger
-    map._renderIso = renderIso;
+    // Store render function in ref for external trigger
+    renderIsoRef.current = renderIso;
+
+    function onMoveEnd() {
+      renderIso();
+    }
 
     map.on('dblclick', onDblClick);
     map.on('click', onClick);
@@ -264,7 +299,7 @@ export default function MapView() {
 
     // Touch events on the map container
     const container = map.getContainer();
-    const touchStartHandler = (e) => onTouchStart({ originalEvent: e });
+    const touchStartHandler = (e: TouchEvent) => onTouchStart(e);
     container.addEventListener('touchstart', touchStartHandler, { passive: true });
     container.addEventListener('touchend', onTouchEnd, { passive: true });
     container.addEventListener('touchmove', onTouchMove, { passive: true });
@@ -289,20 +324,33 @@ export default function MapView() {
     const city = state.currentCity;
     if (!map || !city || state.loadingState !== 'ready') return;
 
-    map.setView(city.center, city.zoom);
+    // Need to look up city details from state
+    const cityData = state as any; // Get full city data from state
+    if (cityData.currentCity) {
+      map.setView(cityData.currentCity.center, cityData.currentCity.zoom);
+    }
+
     // Clean up old overlays
-    if (sourceMarkerRef.current) { sourceMarkerRef.current.remove(); sourceMarkerRef.current = null; }
-    if (destMarkerRef.current) { destMarkerRef.current.remove(); destMarkerRef.current = null; }
-    if (isoOverlayRef.current) { map.removeLayer(isoOverlayRef.current); isoOverlayRef.current = null; }
-    routePolylinesRef.current.forEach(p => p.remove());
+    if (sourceMarkerRef.current) {
+      sourceMarkerRef.current.remove();
+      sourceMarkerRef.current = null;
+    }
+    if (destMarkerRef.current) {
+      destMarkerRef.current.remove();
+      destMarkerRef.current = null;
+    }
+    if (isoOverlayRef.current) {
+      map.removeLayer(isoOverlayRef.current);
+      isoOverlayRef.current = null;
+    }
+    routePolylinesRef.current.forEach((p) => p.remove());
     routePolylinesRef.current = [];
   }, [state.currentCity, state.loadingState]);
 
   // Re-render isochrone when travel times or max time changes
   useEffect(() => {
-    const map = mapRef.current;
-    if (!map || !map._renderIso) return;
-    map._renderIso();
+    if (!renderIsoRef.current) return;
+    renderIsoRef.current();
   }, [state.travelTimes, state.maxTimeMin]);
 
   // Clear destination marker and routes when unpinned

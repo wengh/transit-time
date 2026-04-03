@@ -1,7 +1,8 @@
-import { useAppState } from '../state/AppContext.jsx';
-import { legendGradient } from '../utils/colors.js';
+import React from 'react';
+import { useAppState } from '../state/AppContext';
+import { legendGradient } from '../utils/colors';
 
-export default function Legend() {
+export default function Legend(): React.ReactNode {
   const { state } = useAppState();
   if (state.loadingState !== 'ready') return null;
 
