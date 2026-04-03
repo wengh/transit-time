@@ -135,6 +135,15 @@ impl TransitRouter {
         }
     }
 
+    pub fn route_color(&self, idx: u32) -> String {
+        if (idx as usize) < self.data.route_colors.len() {
+            if let Some(color) = self.data.route_colors[idx as usize] {
+                return color.to_hex();
+            }
+        }
+        String::new()
+    }
+
     pub fn node_stop_name(&self, node_idx: u32) -> String {
         let idx = node_idx as usize;
         if idx < self.data.node_is_stop.len() && self.data.node_is_stop[idx] {

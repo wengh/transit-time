@@ -3,7 +3,7 @@ import L from 'leaflet';
 import { useAppState } from '../state/AppContext';
 import { initWebGL, renderIsochrone } from '../utils/webgl';
 import { getHoverData, type HoverPath } from '../utils/router';
-import { ROUTE_COLORS } from '../utils/colors';
+import { ROUTE_COLORS, hexToRgb } from '../utils/colors';
 
 const isTouchDevice = typeof window !== 'undefined' && ('ontouchstart' in window || navigator.maxTouchPoints > 0);
 
@@ -89,7 +89,38 @@ export default function MapView(): React.ReactNode {
             weight = 3;
           } else {
             if (!(seg.routeName in routeColorMap)) {
-              routeColorMap[seg.routeName] = ROUTE_COLORS[colorIdx % ROUTE_COLORS.length];
+              let routeColor: string | null = null;
+              // Try to get actual color from GTFS
+              const s = stateRef.current;
+              if (s.router && seg.routeIdx < 0xffffffff) {
+                const hexColor = s.router.route_color(seg.routeIdx);
+                if (hexColor) {
+                  const rgb = hexToRgb(hexColor);
+                  if (rgb) {
+                    // Ensure color has enough brightness for dark background
+                    const brightness = (rgb[0] * 299 + rgb[1] * 587 + rgb[2] * 114) / 1000;
+                    const minBrightness = 100;
+                    const maxBrightness = 220;
+
+                    if (brightness < minBrightness) {
+                      // Too dark, lighten it
+                      const scale = minBrightness / brightness;
+                      routeColor = `rgb(${Math.min(255, Math.round(rgb[0] * scale))}, ${Math.min(255, Math.round(rgb[1] * scale))}, ${Math.min(255, Math.round(rgb[2] * scale))})`;
+                    } else if (brightness > maxBrightness) {
+                      // Too light, darken it
+                      const scale = maxBrightness / brightness;
+                      routeColor = `rgb(${Math.round(rgb[0] * scale)}, ${Math.round(rgb[1] * scale)}, ${Math.round(rgb[2] * scale)})`;
+                    } else {
+                      routeColor = hexColor;
+                    }
+                  }
+                }
+              }
+              // Fall back to palette colors if GTFS color unavailable
+              if (!routeColor) {
+                routeColor = ROUTE_COLORS[colorIdx % ROUTE_COLORS.length];
+              }
+              routeColorMap[seg.routeName] = routeColor;
               colorIdx++;
             }
             color = routeColorMap[seg.routeName];

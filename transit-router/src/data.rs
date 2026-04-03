@@ -1,5 +1,18 @@
 use std::io::Read;
 
+#[derive(Debug, Clone, Copy)]
+pub struct Color {
+    pub r: u8,
+    pub g: u8,
+    pub b: u8,
+}
+
+impl Color {
+    pub fn to_hex(&self) -> String {
+        format!("#{:02x}{:02x}{:02x}", self.r, self.g, self.b)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct NodeData {
     pub lat: f64,
@@ -111,6 +124,7 @@ pub struct PreparedData {
     pub stops: Vec<StopData>,
     pub stop_node_map: Vec<u32>, // stop_index -> node_index
     pub route_names: Vec<String>,
+    pub route_colors: Vec<Option<Color>>,
     pub patterns: Vec<PatternData>,
     pub num_nodes: usize,
     pub num_edges: usize,
@@ -205,6 +219,24 @@ pub fn load(compressed: &[u8]) -> Result<PreparedData, String> {
         let name = String::from_utf8_lossy(&buf[pos..pos + name_len]).to_string();
         pos += name_len;
         route_names.push(name);
+    }
+
+    // Route colors
+    let mut route_colors = Vec::with_capacity(num_route_names);
+    for _ in 0..num_route_names {
+        let has_color = buf[pos];
+        pos += 1;
+        if has_color != 0 {
+            let r = buf[pos];
+            pos += 1;
+            let g = buf[pos];
+            pos += 1;
+            let b = buf[pos];
+            pos += 1;
+            route_colors.push(Some(Color { r, g, b }));
+        } else {
+            route_colors.push(None);
+        }
     }
 
     // Patterns
@@ -421,6 +453,7 @@ pub fn load(compressed: &[u8]) -> Result<PreparedData, String> {
         stops,
         stop_node_map,
         route_names,
+        route_colors,
         patterns,
         num_nodes,
         num_edges,

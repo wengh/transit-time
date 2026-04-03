@@ -22,4 +22,3 @@ wasm-bindgen-rayon = "1.2"
 
 [dev-dependencies]
 transit-prep = { path = "../transit-prep" }
-

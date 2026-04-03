@@ -4,6 +4,26 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Read;
 use std::path::Path;
 
+#[derive(Debug, Clone, Copy)]
+pub struct Color {
+    pub r: u8,
+    pub g: u8,
+    pub b: u8,
+}
+
+impl Color {
+    pub fn from_hex(hex: &str) -> Option<Self> {
+        let hex = hex.trim_start_matches('#');
+        if hex.len() != 6 {
+            return None;
+        }
+        let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+        let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+        let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+        Some(Color { r, g, b })
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Stop {
     pub id: String,
@@ -17,6 +37,7 @@ pub struct Stop {
 pub struct Route {
     pub id: String,
     pub short_name: String,
+    pub color: Option<Color>,
     pub index: u32,
 }
 
@@ -183,6 +204,8 @@ struct RouteRecord {
     route_short_name: Option<String>,
     #[serde(default)]
     route_long_name: Option<String>,
+    #[serde(default)]
+    route_color: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -329,12 +352,14 @@ pub fn parse_gtfs(path: &Path) -> Result<GtfsData> {
             let record = result?;
             let index = routes.len() as u32;
             route_id_to_index.insert(record.route_id.clone(), index);
+            let color = record.route_color.as_ref().and_then(|c| Color::from_hex(c));
             routes.push(Route {
                 id: record.route_id,
                 short_name: record
                     .route_short_name
                     .or(record.route_long_name)
                     .unwrap_or_default(),
+                color,
                 index,
             });
         }

@@ -1,5 +1,5 @@
 use crate::graph::{OsmEdge, OsmNode};
-use crate::gtfs::{ServicePattern, Stop};
+use crate::gtfs::{ServicePattern, Stop, Color};
 use anyhow::Result;
 use std::collections::HashMap;
 use std::io::Write;
@@ -14,6 +14,7 @@ pub struct PreparedData {
     pub patterns: Vec<ServicePattern>,
     pub shapes: HashMap<String, Vec<(f64, f64)>>,
     pub route_names: Vec<String>,
+    pub route_colors: Vec<Option<Color>>,
     pub route_shapes: Vec<Vec<String>>, // route_index -> shape_id
 }
 
@@ -109,6 +110,21 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
         let name_bytes = name.as_bytes();
         write_u32(&mut buf, name_bytes.len() as u32);
         buf.extend_from_slice(name_bytes);
+    }
+
+    // Route colors (3 bytes each: R, G, B)
+    for color in &data.route_colors {
+        match color {
+            Some(c) => {
+                buf.push(1); // has color
+                buf.push(c.r);
+                buf.push(c.g);
+                buf.push(c.b);
+            }
+            None => {
+                buf.push(0); // no color
+            }
+        }
     }
 
     // Patterns

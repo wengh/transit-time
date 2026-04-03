@@ -174,7 +174,8 @@ pub fn run_prep(
         stop_to_node,
         patterns,
         shapes: gtfs_data.shapes,
-        route_names: gtfs_data.routes.into_iter().map(|r| r.short_name).collect(),
+        route_names: gtfs_data.routes.iter().map(|r| r.short_name.clone()).collect(),
+        route_colors: gtfs_data.routes.into_iter().map(|r| r.color).collect(),
         route_shapes,
     };
     binary::write_binary(&prepared, output)?;
