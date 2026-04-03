@@ -39,20 +39,20 @@ export default function HoverInfo() {
             <div key={si}>
               {seg.edgeType === 0 ? (
                 <div style={{ fontSize: 12, color: '#666', padding: '2px 0' }}>
-                  Walk {Math.round(seg.duration / 60)} min
+                  Walk {(seg.duration / 60).toFixed(1)} min
                 </div>
               ) : (
                 <>
                   {seg.waitTime > 0 && (
                     <div style={{ fontSize: 11, color: '#999', padding: '1px 0', fontStyle: 'italic' }}>
-                      {si <= 1 ? 'Initial wait' : 'Transfer wait'}: {(seg.waitTime / 60).toFixed(1)} min
+                      Wait {(seg.waitTime / 60).toFixed(1)} min
                     </div>
                   )}
                   <div style={{ fontSize: 12, padding: '2px 0' }}>
                     <b>{seg.routeName || 'Transit'}</b>
                     {seg.startStopName && seg.endStopName
                       ? ` \u00b7 ${seg.startStopName} \u2192 ${seg.endStopName}` : ''}
-                    {'  '}{Math.round(seg.duration / 60)} min
+                    {'  '}{(seg.duration / 60).toFixed(1)} min
                   </div>
                 </>
               )}
