@@ -8,6 +8,7 @@ import Legend from './components/Legend.jsx';
 import HoverInfo from './components/HoverInfo.jsx';
 import { initWasm, loadRouter, runQuery } from './utils/router.js';
 import { dateToYYYYMMDD } from './utils/format.js';
+import { getTravelTimeSummary, getMedianPath, formatSegments } from './utils/hoverInfo.js';
 import './styles.css';
 
 function AppInner() {
@@ -67,6 +68,7 @@ function AppInner() {
       try {
         const result = runQuery(s.router, params);
         dispatch({ type: 'QUERY_DONE', travelTimes: result.travelTimes, ssspList: result.ssspList, timeMs: performance.now() - start });
+        dispatch({ type: 'UNPIN_DESTINATION' });
       } catch (e) {
         console.error(e);
         dispatch({ type: 'QUERY_ERROR' });
@@ -81,56 +83,74 @@ function AppInner() {
     }
   }, [state.sourceNode]);
 
-  // Keyboard shortcut 'c' to copy
-  useEffect(() => {
-    function onKeyDown(e) {
-      if (e.key !== 'c' || e.ctrlKey || e.metaKey || e.altKey) return;
-      if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA') return;
+  // Copy info to clipboard
+  const copyInfo = useCallback(() => {
       const s = stateRef.current;
-      if (!s.router || s.sourceNode === null) return;
+      if (!s.router || s.sourceNode === null) return false;
 
       const srcLat = s.nodeCoords[s.sourceNode * 2].toFixed(6);
       const srcLon = s.nodeCoords[s.sourceNode * 2 + 1].toFixed(6);
       const lines = [`Source: ${srcLat}, ${srcLon}`];
 
-      if (s.pinnedNode !== null && s.ssspList?.length > 0) {
+      if (s.pinnedNode !== null) {
         const destLat = s.nodeCoords[s.pinnedNode * 2].toFixed(6);
         const destLon = s.nodeCoords[s.pinnedNode * 2 + 1].toFixed(6);
         lines.push(`Destination: ${destLat}, ${destLon}`);
       }
 
+      lines.push('');
+      lines.push(`Mode: ${s.mode}`);
       lines.push(`Date: ${s.date}`);
       lines.push(`Departure: ${new Date(s.departureTime * 1000).toISOString().substring(11, 16)}`);
+      if (s.mode === 'sampled') lines.push(`Samples: ${s.nSamples}`);
+      lines.push(`Max time: ${s.maxTimeMin} min`);
       lines.push(`Transfer slack: ${s.transferSlack}s`);
 
-      if (s.pinnedNode !== null && s.ssspList?.length > 0) {
-        const sssp = s.ssspList[0];
-        if (sssp.__wbg_ptr !== 0) {
-          try {
-            const arrival = s.router.node_arrival_time(sssp, s.pinnedNode);
-            if (arrival < 0xFFFFFFFF) {
-              const dep = s.router.sssp_departure_time(sssp);
-              lines.push(`Travel time: ${Math.round((arrival - dep) / 60)} min`);
+      if (s.hoverData) {
+        lines.push('');
+        const { allPaths, travelTimes } = s.hoverData;
+        const timeSummary = getTravelTimeSummary(travelTimes, allPaths);
+        if (timeSummary) {
+          if (timeSummary.isSampled) {
+            lines.push(`Travel time: ${timeSummary.min}–${timeSummary.avg}–${timeSummary.max} min (${timeSummary.count}/${timeSummary.total} samples)`);
+          } else {
+            lines.push(`Travel time: ${timeSummary.avg} min`);
+          }
+          // Add median path details
+          const medianPath = getMedianPath(allPaths);
+          if (medianPath && medianPath.segments.length > 0) {
+            lines.push('Route:');
+            for (const line of formatSegments(medianPath.segments)) {
+              lines.push(`  ${line}`);
             }
-          } catch (e) {
-            if (!e.message || !e.message.includes('null pointer')) throw e;
           }
         }
       }
 
       navigator.clipboard.writeText(lines.join('\n'));
+      dispatch({ type: 'SHOW_COPIED_MESSAGE' });
+      setTimeout(() => dispatch({ type: 'HIDE_COPIED_MESSAGE' }), 1500);
+      return true;
+  }, [dispatch]);
+
+  // Keyboard shortcut 'c' to copy info
+  useEffect(() => {
+    function onKeyDown(e) {
+      if (e.key !== 'c' || e.ctrlKey || e.metaKey || e.altKey) return;
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA') return;
+      if (copyInfo()) e.preventDefault();
     }
 
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
-  }, []);
+  }, [copyInfo]);
 
   return (
     <>
       <CitySelect />
       <LoadingOverlay />
       <MapView />
-      <Controls onRunQuery={handleRunQuery} />
+      <Controls onRunQuery={handleRunQuery} onCopy={() => { stateRef.current && copyInfo(); }} />
       <Legend />
       <HoverInfo />
     </>

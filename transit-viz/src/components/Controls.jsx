@@ -32,21 +32,28 @@ function RangeSlider({ id, min, max, step, defaultValue, formatDisplay, onCommit
   );
 }
 
-export default function Controls({ onRunQuery }) {
+export default function Controls({ onRunQuery, onCopy }) {
   const { state, dispatch } = useAppState();
   const { loadingState, mode, departureTime, date, nSamples, maxTimeMin, transferSlack,
-          computeStatus, computeTimeMs, patternCount, nodeCount, stopCount, sourceNode } = state;
+    computeStatus, computeTimeMs, patternCount, nodeCount, stopCount, sourceNode, showCopiedMessage } = state;
 
   const [collapsed, setCollapsed] = useState(false);
 
   if (loadingState !== 'ready') return null;
 
-  const statusText = computeStatus === 'computing' ? 'Computing...'
-    : computeStatus === 'done' ? `Done. Spent ${Math.round(computeTimeMs)} ms.`
-    : computeStatus === 'error' ? 'Error'
-    : sourceNode !== null
-      ? `${nodeCount.toLocaleString()} nodes, ${stopCount.toLocaleString()} stops.`
-      : `${nodeCount.toLocaleString()} nodes, ${stopCount.toLocaleString()} stops. Double-click map to set origin.`;
+  const statusText = showCopiedMessage ? 'Copied!'
+    : computeStatus === 'computing' ? 'Computing...'
+      : computeStatus === 'done' ? `Done. Spent ${Math.round(computeTimeMs)} ms.`
+        : computeStatus === 'error' ? 'Error'
+          : sourceNode !== null
+            ? `${nodeCount.toLocaleString()} nodes, ${stopCount.toLocaleString()} stops.`
+            : `${nodeCount.toLocaleString()} nodes, ${stopCount.toLocaleString()} stops. Double-click map to set origin.`;
+
+  function handleCopy() {
+    onCopy();
+    dispatch({ type: 'SHOW_COPIED_MESSAGE' });
+    setTimeout(() => dispatch({ type: 'HIDE_COPIED_MESSAGE' }), 1500);
+  }
 
   function handleModeChange(e) {
     dispatch({ type: 'SET_MODE', mode: e.target.value });
@@ -123,7 +130,12 @@ export default function Controls({ onRunQuery }) {
         {date}: {patternCount} service pattern{patternCount !== 1 ? 's' : ''} active
       </div>
       <div id="status">{statusText}</div>
-      <button id="change-city" onClick={handleChangeCity}>Change city</button>
+      <div style={{ display: 'flex', gap: '8px', marginTop: '8px' }}>
+        <button id="change-city" onClick={handleChangeCity}>Change city</button>
+        {state.pinnedNode !== null && (
+          <button id="copy-info" onClick={handleCopy}>Copy info</button>
+        )}
+      </div>
     </div>
   );
 }

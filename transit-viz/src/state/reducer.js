@@ -31,6 +31,9 @@ export const initialState = {
   pinnedNode: null,
   pinnedLatLng: null,
   hoverData: null,
+
+  // UI feedback
+  showCopiedMessage: false,
 };
 
 export function reducer(state, action) {
@@ -106,6 +109,10 @@ export function reducer(state, action) {
     case 'CLEAR_HOVER':
       if (state.pinnedNode !== null) return state;
       return { ...state, hoverData: null };
+    case 'SHOW_COPIED_MESSAGE':
+      return { ...state, showCopiedMessage: true };
+    case 'HIDE_COPIED_MESSAGE':
+      return { ...state, showCopiedMessage: false };
     default:
       return state;
   }

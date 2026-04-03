@@ -100,7 +100,7 @@ export function getHoverData(router, ssspList, node) {
         continue;
       }
       const pathArray = router.reconstruct_path(sssp, node);
-      const segments = parsePathSegments(router, sssp, pathArray, depTime);
+      const segments = parsePathSegments(router, sssp, pathArray);
       allPaths.push({ segments, totalTime: arrival - depTime });
     } catch (e) {
       // In case of any Wasm errors about null pointers, skip safely
@@ -111,7 +111,7 @@ export function getHoverData(router, ssspList, node) {
   return allPaths;
 }
 
-function parsePathSegments(router, sssp, pathArray, depTime) {
+function parsePathSegments(router, sssp, pathArray) {
   const segments = [];
   let i = 0;
   while (i < pathArray.length) {

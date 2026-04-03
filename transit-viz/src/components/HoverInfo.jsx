@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { useAppState } from '../state/AppContext.jsx';
+import { getTravelTimeSummary, getMedianPath, formatSegments } from '../utils/hoverInfo.js';
 
 export default function HoverInfo() {
   const { state } = useAppState();
@@ -16,21 +17,17 @@ export default function HoverInfo() {
   if (!hoverData) return null;
 
   const { allPaths, travelTimes } = hoverData;
-  if (!travelTimes || travelTimes.length === 0) return null;
+  const timeSummary = getTravelTimeSummary(travelTimes, allPaths);
+  if (!timeSummary) return null;
 
-  const isSampled = allPaths.length > 1;
-  const avg = Math.round(travelTimes.reduce((a, b) => a + b, 0) / travelTimes.length / 60);
-
-  // Find median path for itinerary display
-  const reachable = allPaths.filter(p => p.totalTime !== null && isFinite(p.totalTime));
-  const midPath = reachable.length > 0 ? reachable[Math.floor(reachable.length / 2)] : null;
+  const midPath = getMedianPath(allPaths);
 
   return (
     <div id="hover-info" style={{ display: 'block' }}>
       <div style={{ fontWeight: 600, marginBottom: 6 }}>
-        {isSampled
-          ? `Avg travel time: ${avg} min (${travelTimes.length}/${allPaths.length} reachable, showing median route)`
-          : `Travel time: ${Math.round(travelTimes[0] / 60)} min`}
+        {timeSummary.isSampled
+          ? `Avg travel time: ${timeSummary.avg} min (${timeSummary.count}/${timeSummary.total} samples, showing median route)`
+          : `Travel time: ${timeSummary.avg} min`}
       </div>
 
       {midPath && (
@@ -61,13 +58,13 @@ export default function HoverInfo() {
         </div>
       )}
 
-      {isSampled && travelTimes.length >= 2 && (
+      {timeSummary.isSampled && timeSummary.count >= 2 && (
         <div style={{ borderTop: '1px solid #ddd', paddingTop: 6, marginTop: 6 }}>
           <canvas ref={canvasRef} height="32" style={{ width: '100%', height: 32, display: 'block' }} />
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: '#888', marginTop: 2 }}>
-            <span>min {Math.round(travelTimes[0] / 60)}</span>
-            <span>avg {avg}</span>
-            <span>max {Math.round(travelTimes[travelTimes.length - 1] / 60)}</span>
+            <span>min {timeSummary.min}</span>
+            <span>avg {timeSummary.avg}</span>
+            <span>max {timeSummary.max}</span>
           </div>
         </div>
       )}

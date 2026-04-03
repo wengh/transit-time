@@ -44,12 +44,11 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
 .control-group select, .control-group input { width: 100%; padding: 6px; }
 #status { font-size: 12px; color: #888; margin-top: 8px; }
 #pattern-info { font-size: 11px; color: #aaa; margin-top: 4px; }
-#change-city {
-  display: inline-block; margin-top: 10px; padding: 4px 10px;
-  background: #f0f0f0; border: 1px solid #ccc; border-radius: 4px;
+#change-city, #copy-info {
+  padding: 4px 10px; background: #f0f0f0; border: 1px solid #ccc; border-radius: 4px;
   font-size: 12px; cursor: pointer; color: #555;
 }
-#change-city:hover { background: #e0e0e0; }
+#change-city:hover, #copy-info:hover { background: #e0e0e0; }
 #legend {
   position: absolute; bottom: 20px; left: 10px; z-index: 1000;
   background: white; padding: 12px; border-radius: 8px;

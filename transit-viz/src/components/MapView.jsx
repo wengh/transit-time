@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import L from 'leaflet';
 import { useAppState } from '../state/AppContext.jsx';
 import { initWebGL, renderIsochrone } from '../utils/webgl.js';
@@ -23,6 +23,13 @@ export default function MapView() {
   // Keep current state in refs for event handlers
   const stateRef = useRef(state);
   stateRef.current = state;
+
+  // Clear destination marker and routes
+  const clearDestination = useCallback(() => {
+    if (destMarkerRef.current) { destMarkerRef.current.remove(); destMarkerRef.current = null; }
+    routePolylinesRef.current.forEach(p => p.remove());
+    routePolylinesRef.current = [];
+  }, []);
 
   // Initialize map
   useEffect(() => {
@@ -160,8 +167,6 @@ export default function MapView() {
       function doClick() {
         const s = stateRef.current;
         if (s.pinnedNode !== null) {
-          if (destMarkerRef.current) { destMarkerRef.current.remove(); destMarkerRef.current = null; }
-          clearRouteOverlay();
           dispatch({ type: 'UNPIN_DESTINATION' });
         } else {
           const node = snapToNode(e.latlng.lat, e.latlng.lng);
@@ -173,6 +178,7 @@ export default function MapView() {
         doClick();
       } else {
         // Delay to allow dblclick to cancel
+        if (clickTimer) clearTimeout(clickTimer);
         clickTimer = setTimeout(() => { clickTimer = null; doClick(); }, 250);
       }
     }
@@ -298,6 +304,13 @@ export default function MapView() {
     if (!map || !map._renderIso) return;
     map._renderIso();
   }, [state.travelTimes, state.maxTimeMin]);
+
+  // Clear destination marker and routes when unpinned
+  useEffect(() => {
+    if (state.pinnedNode === null) {
+      clearDestination();
+    }
+  }, [state.pinnedNode, clearDestination]);
 
   return <div id="map" ref={mapContainerRef} />;
 }
