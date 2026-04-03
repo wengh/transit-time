@@ -111,7 +111,7 @@ pub fn run_prep(
             None => merged = Some(data),
         }
     }
-    let gtfs_data = merged.unwrap();
+    let mut gtfs_data = merged.unwrap();
 
     // Step 2: Download OSM data
     eprintln!("\n--- Fetching OSM pedestrian data ---");
@@ -129,6 +129,16 @@ pub fn run_prep(
         gtfs_data.services.len(),
     );
 
+    // Filter stops to bbox and re-index sequentially so out-of-bbox stops occupy no ids
+    let (min_lon, min_lat, max_lon, max_lat) = bbox;
+    gtfs_data.stops.retain(|s| {
+        s.lat >= min_lat && s.lat <= max_lat && s.lon >= min_lon && s.lon <= max_lon
+    });
+    for (i, stop) in gtfs_data.stops.iter_mut().enumerate() {
+        stop.index = i as u32;
+    }
+    eprintln!("  {} stops within bbox", gtfs_data.stops.len());
+
     // Step 4: Build OSM graph
     eprintln!("\n--- Building OSM graph ---");
     let mut osm_graph = graph::build_graph(&osm_path, bbox)?;
@@ -145,25 +155,64 @@ pub fn run_prep(
 
     // Step 6: Build service patterns and event arrays
     eprintln!("\n--- Building service patterns ---");
-    let patterns = gtfs::build_service_patterns(&gtfs_data, bbox);
+    let mut patterns = gtfs::build_service_patterns(&gtfs_data);
     eprintln!("Built {} service patterns", patterns.len());
 
-    // Build route_index -> shape_id mapping
-    let mut route_id_to_index: HashMap<String, u32> = HashMap::new();
-    for route in &gtfs_data.routes {
-        route_id_to_index.insert(route.id.clone(), route.index);
-    }
-    let mut route_shapes_set: Vec<std::collections::HashSet<String>> = vec![std::collections::HashSet::new(); gtfs_data.routes.len()];
-    for trip in &gtfs_data.trips {
-        if let Some(ref shape_id) = trip.shape_id {
-            if let Some(&ridx) = route_id_to_index.get(&trip.route_id) {
-                route_shapes_set[ridx as usize].insert(shape_id.clone());
+    // Compact route ids: collect used route indices, remap to 0..N, drop unused routes
+    let mut used_route_indices: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
+    for pattern in &patterns {
+        for second_events in &pattern.events {
+            for event in second_events {
+                used_route_indices.insert(event.route_index);
             }
         }
+        for freq in &pattern.frequency_routes {
+            used_route_indices.insert(freq.route_index);
+        }
     }
-    let route_shapes: Vec<Vec<String>> = route_shapes_set.into_iter()
-        .map(|s| s.into_iter().collect())
+    let route_remap: HashMap<u32, u32> = used_route_indices.iter().enumerate()
+        .map(|(new_idx, &old_idx)| (old_idx, new_idx as u32))
         .collect();
+    for pattern in &mut patterns {
+        for second_events in &mut pattern.events {
+            for event in second_events {
+                event.route_index = route_remap[&event.route_index];
+            }
+        }
+        for freq in &mut pattern.frequency_routes {
+            freq.route_index = route_remap[&freq.route_index];
+        }
+    }
+    eprintln!(
+        "  {} routes with events (of {} total)",
+        used_route_indices.len(),
+        gtfs_data.routes.len()
+    );
+
+    // Build compacted route arrays and route_shapes in new-index order
+    let mut route_names: Vec<String> = Vec::new();
+    let mut route_colors: Vec<Option<gtfs::Color>> = Vec::new();
+    let mut route_shapes: Vec<Vec<String>> = Vec::new();
+    // Build route_id -> shape_ids from trips (only once, before consuming routes)
+    let mut route_id_to_shapes: HashMap<&str, std::collections::HashSet<&str>> = HashMap::new();
+    for trip in &gtfs_data.trips {
+        if let Some(ref shape_id) = trip.shape_id {
+            route_id_to_shapes
+                .entry(&trip.route_id)
+                .or_default()
+                .insert(shape_id.as_str());
+        }
+    }
+    for &old_idx in &used_route_indices {
+        let route = &gtfs_data.routes[old_idx as usize];
+        route_names.push(route.short_name.clone());
+        route_colors.push(route.color);
+        let shapes = route_id_to_shapes
+            .get(route.id.as_str())
+            .map(|s| s.iter().map(|&id| id.to_string()).collect())
+            .unwrap_or_default();
+        route_shapes.push(shapes);
+    }
 
     // Step 7: Serialize to binary
     eprintln!("\n--- Writing binary output ---");
@@ -174,8 +223,8 @@ pub fn run_prep(
         stop_to_node,
         patterns,
         shapes: gtfs_data.shapes,
-        route_names: gtfs_data.routes.iter().map(|r| r.short_name.clone()).collect(),
-        route_colors: gtfs_data.routes.into_iter().map(|r| r.color).collect(),
+        route_names,
+        route_colors,
         route_shapes,
     };
     binary::write_binary(&prepared, output)?;

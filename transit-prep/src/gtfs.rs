@@ -552,21 +552,17 @@ fn day_mask_from_dates(dates: &[u32]) -> u8 {
     mask
 }
 
-pub fn build_service_patterns(data: &GtfsData, bbox: (f64, f64, f64, f64)) -> Vec<ServicePattern> {
-    let (min_lon, min_lat, max_lon, max_lat) = bbox;
-
+pub fn build_service_patterns(data: &GtfsData) -> Vec<ServicePattern> {
     // Build mappings
     let mut trip_id_to_idx: HashMap<&str, u32> = HashMap::new();
     for (i, trip) in data.trips.iter().enumerate() {
         trip_id_to_idx.insert(&trip.id, i as u32);
     }
 
-    // Only include stops within the bounding box
+    // data.stops is already filtered to bbox by the caller; build lookup from it
     let mut stop_id_to_idx: HashMap<&str, u32> = HashMap::new();
     for stop in &data.stops {
-        if stop.lat >= min_lat && stop.lat <= max_lat && stop.lon >= min_lon && stop.lon <= max_lon {
-            stop_id_to_idx.insert(&stop.id, stop.index);
-        }
+        stop_id_to_idx.insert(&stop.id, stop.index);
     }
 
     let mut route_id_to_idx: HashMap<&str, u32> = HashMap::new();
