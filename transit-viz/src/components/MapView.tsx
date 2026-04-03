@@ -15,7 +15,7 @@ export default function MapView(): React.ReactNode {
   const isoOverlayRef = useRef<L.ImageOverlay | null>(null);
   const sourceMarkerRef = useRef<L.Marker | null>(null);
   const destMarkerRef = useRef<L.CircleMarker | null>(null);
-  const routePolylinesRef = useRef<L.Polyline[]>([]);
+  const routePolylinesRef = useRef<L.Path[]>([]);
   const lastHoveredNodeRef = useRef<number | null>(null);
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const longPressStartRef = useRef<number | null>(null);
@@ -129,6 +129,23 @@ export default function MapView(): React.ReactNode {
           }
           const line = L.polyline(seg.coords, { color, weight, opacity: 1, ...(dashArray ? { dashArray } : {}), interactive: false }).addTo(map);
           routePolylinesRef.current.push(line);
+          // Add circle at end of transit segments to mark transfers
+          if (seg.edgeType === 1) {
+            const s = stateRef.current;
+            if (s.nodeCoords && seg.endNodeIdx !== undefined) {
+              const lat = s.nodeCoords[seg.endNodeIdx * 2];
+              const lon = s.nodeCoords[seg.endNodeIdx * 2 + 1];
+              const circle = L.circleMarker([lat, lon], {
+                radius: 5,
+                color: color,
+                fillColor: color,
+                fillOpacity: 0.7,
+                weight: 1,
+                interactive: false,
+              }).addTo(map);
+              routePolylinesRef.current.push(circle);
+            }
+          }
         }
       }
     }
