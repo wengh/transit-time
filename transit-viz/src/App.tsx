@@ -28,7 +28,7 @@ function AppInner() {
         } catch (e) {
           dispatch({ type: 'LOAD_ERROR' });
           history.replaceState(null, '', '/');
-          alert(`Failed to load ${city.name}: ${(e as Error).message}`);
+          alert(`Failed to load ${city.name}: ${String(e)}`);
         }
       })();
     }

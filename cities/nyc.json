@@ -2,9 +2,19 @@
     "id": "nyc",
     "bbbike_name": "New_York",
     "feed_ids": [
+        "mdb-507",
+        "mdb-509",
+        "mdb-510",
+        "mdb-512",
         "mdb-513",
+        "mdb-514",
+        "mdb-515",
         "mdb-516",
-        "mdb-517"
+        "mdb-517",
+        "mdb-518",
+        "mdb-519",
+        "mdb-520",
+        "mdb-528"
     ],
     "name": "New York City, NY",
     "file": "nyc.bin",
@@ -14,5 +24,5 @@
         -74.01
     ],
     "zoom": 11,
-    "detail": "MTA, PATH"
+    "detail": "MTA, PATH, Ferry"
 }

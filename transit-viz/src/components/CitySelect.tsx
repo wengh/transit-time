@@ -14,7 +14,7 @@ export default function CitySelect(): React.ReactNode {
       await loadCity(city, dispatch, false);
     } catch (e) {
       history.replaceState(null, '', '/');
-      alert(`Failed to load ${city.name}: ${(e as Error).message}`);
+      alert(`Failed to load ${city.name}: ${String(e)}`);
     }
   }
 
