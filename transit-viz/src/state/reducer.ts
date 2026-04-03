@@ -77,7 +77,7 @@ export const initialState: AppState = {
 
   // Controls
   mode: 'single',
-  departureTime: 28800, // 08:00
+  departureTime: 11 * 3600, // 11:00 AM
   date: new Date().toISOString().slice(0, 10),
   nSamples: 10,
   maxTimeMin: 45,
