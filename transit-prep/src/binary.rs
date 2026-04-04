@@ -68,7 +68,7 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
 
     // Header
     buf.extend_from_slice(b"TRNS");
-    write_u32(&mut buf, 2); // version
+    write_u32(&mut buf, 3); // version
     write_u32(&mut buf, data.nodes.len() as u32);
     write_u32(&mut buf, data.edges.len() as u32);
     write_u32(&mut buf, data.stops.len() as u32);
@@ -144,27 +144,118 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
         write_u32(&mut buf, pattern.min_time);
         write_u32(&mut buf, pattern.max_time);
 
-        let mut flat_events = Vec::new();
+        // Collect flat events from the per-second arrays
+        struct FlatEvent {
+            time_offset: u32,
+            stop_index: u32,
+            route_index: u32,
+            trip_index: u32,
+            next_stop_index: u32,
+            travel_time: u32,
+        }
+        let mut flat_events: Vec<FlatEvent> = Vec::new();
         for (time_offset, second_events) in pattern.events.iter().enumerate() {
             for event in second_events {
-                flat_events.push((time_offset as u32, event));
+                flat_events.push(FlatEvent {
+                    time_offset: time_offset as u32,
+                    stop_index: event.stop_index,
+                    route_index: event.route_index,
+                    trip_index: event.trip_index,
+                    next_stop_index: event.next_stop_index,
+                    travel_time: event.travel_time,
+                });
             }
         }
 
-        // Sorting by trip_index makes route_index and trip_index constant for the trip
-        flat_events.sort_unstable_by_key(|&(time_offset, e)| (e.trip_index, time_offset));
+        // Sort by trip to group trip events together
+        flat_events.sort_unstable_by_key(|e| (e.trip_index, e.time_offset));
 
-        write_u32(&mut buf, flat_events.len() as u32);
-        let cols: [Vec<u32>; 6] = [
-            flat_events.iter().map(|&(t, _)| t).collect(),
-            flat_events.iter().map(|&(_, e)| e.stop_index).collect(),
-            flat_events.iter().map(|&(_, e)| e.route_index).collect(),
-            flat_events.iter().map(|&(_, e)| e.trip_index).collect(),
-            flat_events
-                .iter()
-                .map(|&(_, e)| e.next_stop_index)
-                .collect(),
-            flat_events.iter().map(|&(_, e)| e.travel_time).collect(),
+        // Add sentinel events (arrival at final stop of each trip)
+        let n = flat_events.len();
+        let mut with_sentinels: Vec<FlatEvent> = Vec::with_capacity(n + n / 10);
+        for i in 0..n {
+            let e = &flat_events[i];
+            with_sentinels.push(FlatEvent {
+                time_offset: e.time_offset,
+                stop_index: e.stop_index,
+                route_index: e.route_index,
+                trip_index: e.trip_index,
+                next_stop_index: e.next_stop_index,
+                travel_time: e.travel_time,
+            });
+            let is_last = i + 1 == n || flat_events[i + 1].trip_index != e.trip_index;
+            if is_last && e.travel_time > 0 {
+                with_sentinels.push(FlatEvent {
+                    time_offset: e.time_offset + e.travel_time,
+                    stop_index: e.next_stop_index,
+                    route_index: e.route_index,
+                    trip_index: e.trip_index,
+                    next_stop_index: u32::MAX,
+                    travel_time: 0,
+                });
+            }
+        }
+
+        // Compute next_event_index within each trip (indices into with_sentinels)
+        let total = with_sentinels.len();
+        let mut next_event_index = vec![u32::MAX; total];
+        for i in 0..total.saturating_sub(1) {
+            if with_sentinels[i].trip_index == with_sentinels[i + 1].trip_index {
+                next_event_index[i] = (i + 1) as u32;
+            }
+        }
+
+        // Sort by (stop_index, time_offset) for direct JaggedArray construction
+        // Track the permutation so we can remap next_event_index
+        let mut order: Vec<u32> = (0..total as u32).collect();
+        order.sort_unstable_by_key(|&i| {
+            let e = &with_sentinels[i as usize];
+            (e.stop_index, e.time_offset)
+        });
+
+        // Build inverse permutation: inv[old_pos] = new_pos
+        let mut inv = vec![0u32; total];
+        for (new_pos, &old_pos) in order.iter().enumerate() {
+            inv[old_pos as usize] = new_pos as u32;
+        }
+
+        // Apply permutation and remap next_event_index
+        let sorted_events: Vec<FlatEvent> = order.iter().map(|&i| {
+            let e = &with_sentinels[i as usize];
+            FlatEvent {
+                time_offset: e.time_offset,
+                stop_index: e.stop_index,
+                route_index: e.route_index,
+                trip_index: e.trip_index,
+                next_stop_index: e.next_stop_index,
+                travel_time: e.travel_time,
+            }
+        }).collect();
+        let remapped_nei: Vec<u32> = order.iter().map(|&i| {
+            let nei = next_event_index[i as usize];
+            if nei == u32::MAX { u32::MAX } else { inv[nei as usize] }
+        }).collect();
+
+        // Compute stop offsets for JaggedArray
+        let num_stops = data.stops.len() as u32;
+        let mut stop_offsets: Vec<u32> = vec![0; num_stops as usize + 1];
+        for e in &sorted_events {
+            if e.stop_index < num_stops {
+                stop_offsets[e.stop_index as usize + 1] += 1;
+            }
+        }
+        for i in 1..stop_offsets.len() {
+            stop_offsets[i] += stop_offsets[i - 1];
+        }
+
+        // Serialize: num_events, 5 PCO columns, stop_offsets
+        write_u32(&mut buf, sorted_events.len() as u32);
+        let cols: [Vec<u32>; 5] = [
+            sorted_events.iter().map(|e| e.time_offset).collect(),
+            sorted_events.iter().map(|e| e.stop_index).collect(),
+            sorted_events.iter().map(|e| e.route_index).collect(),
+            sorted_events.iter().map(|e| e.travel_time).collect(),
+            remapped_nei,
         ];
         for col in &cols {
             let compressed = pco::standalone::simple_compress(col, &pco::ChunkConfig::default())
@@ -172,6 +263,11 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
             write_u32(&mut buf, compressed.len() as u32);
             buf.extend_from_slice(&compressed);
         }
+        // Stop offsets (num_stops + 1 entries)
+        let compressed_offsets = pco::standalone::simple_compress(&stop_offsets, &pco::ChunkConfig::default())
+            .expect("pco compress failed");
+        write_u32(&mut buf, compressed_offsets.len() as u32);
+        buf.extend_from_slice(&compressed_offsets);
 
         write_u32(&mut buf, pattern.frequency_routes.len() as u32);
         for freq in &pattern.frequency_routes {
