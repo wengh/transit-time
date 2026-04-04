@@ -146,363 +146,7 @@ pub struct PreparedData {
 }
 
 pub fn load(compressed: &[u8]) -> Result<PreparedData, String> {
-    #[cfg(target_arch = "wasm32")]
-    web_sys::console::log_1(&"[load] Starting decompression".into());
-
-    let mut decoder = flate2::read::GzDecoder::new(compressed);
-    let mut buf = Vec::new();
-    decoder
-        .read_to_end(&mut buf)
-        .map_err(|e| format!("Decompression failed: {}", e))?;
-
-    #[cfg(target_arch = "wasm32")]
-    web_sys::console::log_1(&format!("[load] Decompressed {} bytes", buf.len()).into());
-
-    let mut pos = 0;
-
-    // Header
-    if &buf[pos..pos + 4] != b"TRNS" {
-        return Err("Invalid magic".to_string());
-    }
-    pos += 4;
-    let version = read_u32(&buf, &mut pos);
-    if version != 3 {
-        return Err(format!("Unsupported version {}", version));
-    }
-    let num_nodes = read_u32(&buf, &mut pos) as usize;
-    let num_edges = read_u32(&buf, &mut pos) as usize;
-    let num_stops = read_u32(&buf, &mut pos) as usize;
-    let num_stop_to_node = read_u32(&buf, &mut pos) as usize;
-    let num_patterns = read_u32(&buf, &mut pos) as usize;
-    let num_route_names = read_u32(&buf, &mut pos) as usize;
-    let num_shapes = read_u32(&buf, &mut pos) as usize;
-
-    // Nodes
-    let mut nodes = Vec::with_capacity(num_nodes);
-    for _ in 0..num_nodes {
-        let lat = read_f64(&buf, &mut pos);
-        let lon = read_f64(&buf, &mut pos);
-        nodes.push(NodeData { lat, lon });
-    }
-
-    // Edges
-    let mut edges = Vec::with_capacity(num_edges);
-    for _ in 0..num_edges {
-        let u = read_u32(&buf, &mut pos);
-        let v = read_u32(&buf, &mut pos);
-        let distance = read_f32(&buf, &mut pos);
-        edges.push(EdgeData {
-            u,
-            v,
-            distance_meters: distance,
-        });
-    }
-
-    // Stops
-    let mut stops = Vec::with_capacity(num_stops);
-    for _ in 0..num_stops {
-        let lat = read_f64(&buf, &mut pos);
-        let lon = read_f64(&buf, &mut pos);
-        let name_len = read_u32(&buf, &mut pos) as usize;
-        let name = String::from_utf8_lossy(&buf[pos..pos + name_len]).to_string();
-        pos += name_len;
-        stops.push(StopData { lat, lon, name });
-    }
-
-    // Stop-to-node mapping
-    let mut stop_node_map = vec![u32::MAX; num_stops];
-    let mut node_is_stop = vec![false; num_nodes];
-    let mut node_stop_indices: Vec<Vec<u32>> = vec![Vec::new(); num_nodes];
-    for _ in 0..num_stop_to_node {
-        let stop_idx = read_u32(&buf, &mut pos);
-        let node_idx = read_u32(&buf, &mut pos);
-        if (stop_idx as usize) < num_stops && (node_idx as usize) < num_nodes {
-            stop_node_map[stop_idx as usize] = node_idx;
-            node_is_stop[node_idx as usize] = true;
-            node_stop_indices[node_idx as usize].push(stop_idx);
-        }
-    }
-
-    // Route names
-    let mut route_names = Vec::with_capacity(num_route_names);
-    for _ in 0..num_route_names {
-        let name_len = read_u32(&buf, &mut pos) as usize;
-        let name = String::from_utf8_lossy(&buf[pos..pos + name_len]).to_string();
-        pos += name_len;
-        route_names.push(name);
-    }
-
-    // Route colors
-    let mut route_colors = Vec::with_capacity(num_route_names);
-    for _ in 0..num_route_names {
-        let has_color = buf[pos];
-        pos += 1;
-        if has_color != 0 {
-            let r = buf[pos];
-            pos += 1;
-            let g = buf[pos];
-            pos += 1;
-            let b = buf[pos];
-            pos += 1;
-            route_colors.push(Some(Color { r, g, b }));
-        } else {
-            route_colors.push(None);
-        }
-    }
-
-    // Patterns
-    let mut patterns = Vec::with_capacity(num_patterns);
-    for _ in 0..num_patterns {
-        let _pattern_id = read_u32(&buf, &mut pos);
-        let day_mask = buf[pos];
-        pos += 1;
-        let start_date = read_u32(&buf, &mut pos);
-        let end_date = read_u32(&buf, &mut pos);
-        let num_add = read_u32(&buf, &mut pos) as usize;
-        let mut date_exceptions_add = Vec::with_capacity(num_add);
-        for _ in 0..num_add {
-            date_exceptions_add.push(read_u32(&buf, &mut pos));
-        }
-        let num_remove = read_u32(&buf, &mut pos) as usize;
-        let mut date_exceptions_remove = Vec::with_capacity(num_remove);
-        for _ in 0..num_remove {
-            date_exceptions_remove.push(read_u32(&buf, &mut pos));
-        }
-        let min_time = read_u32(&buf, &mut pos);
-        let max_time = read_u32(&buf, &mut pos);
-
-        // v3: events are pre-sorted by (stop_index, time_offset) with sentinels
-        // 4 PCO columns (time_offset, stop_index, travel_time, next_event_index) + stop_offsets + sentinel_routes
-        let num_events = read_u32(&buf, &mut pos) as usize;
-
-        let time_offsets = read_pco_u32(&buf, &mut pos)?;
-        let stop_indices = read_pco_u32(&buf, &mut pos)?;
-        let travel_times = read_pco_u32(&buf, &mut pos)?;
-        let next_event_indices = read_pco_u32(&buf, &mut pos)?;
-        let stop_offsets = read_pco_u32(&buf, &mut pos)?;
-        let sentinel_route_indices = read_pco_u32(&buf, &mut pos)?;
-
-        let data_vec: Vec<EventData> = (0..num_events)
-            .map(|i| EventData {
-                time_offset: time_offsets[i],
-                stop_index: stop_indices[i],
-                travel_time: travel_times[i],
-                next_event_index: next_event_indices[i],
-            })
-            .collect();
-
-        // Build sentinel_routes map: only events with travel_time == 0 and route_index > 0
-        let mut pattern_sentinel_routes = std::collections::HashMap::new();
-        for (i, route_idx) in sentinel_route_indices.iter().enumerate() {
-            if *route_idx != 0 {
-                pattern_sentinel_routes.insert(i as u32, *route_idx);
-            }
-        }
-
-        let events_by_stop = JaggedArray {
-            offsets: stop_offsets,
-            data: data_vec,
-        };
-
-        let num_freq = read_u32(&buf, &mut pos) as usize;
-        let mut freq_entries = Vec::with_capacity(num_freq);
-        let mut freq_indices = Vec::with_capacity(num_freq);
-
-        for i in 0..num_freq {
-            let route_index = read_u32(&buf, &mut pos);
-            let stop_index = read_u32(&buf, &mut pos);
-            let start_time = read_u32(&buf, &mut pos);
-            let end_time = read_u32(&buf, &mut pos);
-            let headway_secs = read_u32(&buf, &mut pos);
-            let next_stop_index = read_u32(&buf, &mut pos);
-            let travel_time = read_u32(&buf, &mut pos);
-
-            freq_entries.push(FreqData {
-                route_index,
-                stop_index,
-                start_time,
-                end_time,
-                headway_secs,
-                next_stop_index,
-                travel_time,
-            });
-            freq_indices.push(i as u32);
-        }
-
-        let freq_by_stop = JaggedArray::build(
-            freq_indices,
-            |&i| freq_entries[i as usize].stop_index,
-            num_stops as u32,
-        );
-
-        patterns.push(PatternData {
-            day_mask,
-            start_date,
-            end_date,
-            date_exceptions_add,
-            date_exceptions_remove,
-            min_time,
-            max_time,
-            frequency_routes: freq_entries,
-            stop_index: PatternStopIndex {
-                freq_by_stop,
-                events_by_stop,
-            },
-            sentinel_routes: pattern_sentinel_routes,
-        });
-    }
-
-    // Shapes: stored as PCO-compressed data (lat/lon as f32 bits)
-    let mut shapes_data: Vec<u8> = Vec::new();
-    let mut shapes_offsets: Vec<u32> = vec![0];
-    for shape_idx in 0..num_shapes {
-        if pos + 4 > buf.len() {
-            return Err(format!("Incomplete shape data at index {}", shape_idx));
-        }
-        let compressed_len = read_u32(&buf, &mut pos) as usize;
-        if pos + compressed_len > buf.len() {
-            return Err(format!(
-                "Shape {} compressed data out of bounds: need {} bytes at pos {}, buf len {}",
-                shape_idx, compressed_len, pos, buf.len()
-            ));
-        }
-        shapes_data.extend_from_slice(&buf[pos..pos + compressed_len]);
-        pos += compressed_len;
-        shapes_offsets.push(shapes_data.len() as u32);
-    }
-    let shapes = JaggedArray {
-        data: shapes_data,
-        offsets: shapes_offsets,
-    };
-
-    // Route-to-shape mapping: indices instead of IDs (may not be present in older binaries)
-    let mut route_shapes: Vec<Vec<u32>> = vec![Vec::new(); num_route_names];
-    if pos + 4 <= buf.len() {
-        let num_route_shapes = read_u32(&buf, &mut pos) as usize;
-        for i in 0..num_route_shapes.min(num_route_names) {
-            if pos + 4 > buf.len() {
-                return Err(format!("Incomplete route_shapes data at route {}", i));
-            }
-            let num_shapes = read_u32(&buf, &mut pos) as usize;
-            let mut shapes_for_route = Vec::with_capacity(num_shapes);
-            for _ in 0..num_shapes {
-                if pos + 4 > buf.len() {
-                    return Err(format!("Incomplete shape index in route_shapes for route {}", i));
-                }
-                let shape_idx = read_u32(&buf, &mut pos);
-                // Only keep valid shape indices (those that actually exist in the shapes array)
-                if shape_idx != u32::MAX && (shape_idx as usize) < shapes.offsets.len() - 1 {
-                    shapes_for_route.push(shape_idx);
-                }
-            }
-            route_shapes[i] = shapes_for_route;
-        }
-    }
-
-    // Build adjacency list
-    let mut adj: Vec<Vec<(u32, f32)>> = vec![Vec::new(); num_nodes];
-    for edge in &edges {
-        adj[edge.u as usize].push((edge.v, edge.distance_meters));
-        adj[edge.v as usize].push((edge.u, edge.distance_meters));
-    }
-
-    // Build spatial grid index for snap_to_node
-    const CELL_SIZE_LAT: f64 = 0.0045;
-    const CELL_SIZE_LON: f64 = 0.006;
-    let mut node_grid: std::collections::HashMap<(i32, i32), Vec<u32>> =
-        std::collections::HashMap::new();
-    for (i, node) in nodes.iter().enumerate() {
-        let cell = (
-            (node.lat / CELL_SIZE_LAT).floor() as i32,
-            (node.lon / CELL_SIZE_LON).floor() as i32,
-        );
-        node_grid.entry(cell).or_default().push(i as u32);
-    }
-
-    Ok(PreparedData {
-        nodes,
-        edges,
-        stops,
-        stop_node_map,
-        route_names,
-        route_colors,
-        patterns,
-        num_nodes,
-        num_edges,
-        num_stops,
-        adj,
-        node_is_stop,
-        node_stop_indices,
-        shapes,
-        route_shapes,
-        node_grid,
-    })
-}
-
-// === Stats instrumentation ===
-
-pub struct LoadStats {
-    pub compressed_size: usize,
-    pub decompressed_size: usize,
-    /// (section_name, binary_bytes)
-    pub binary_sections: Vec<(&'static str, usize)>,
-    /// (name, heap_bytes)
-    pub memory_sections: Vec<(&'static str, usize)>,
-    /// (phase_name, duration)
-    pub timings: Vec<(&'static str, Duration)>,
-    /// Counts for context
-    pub counts: Vec<(&'static str, usize)>,
-}
-
-impl LoadStats {
-    pub fn print(&self) {
-        println!("=== Binary Section Sizes (decompressed) ===");
-        println!("{:<25} {:>12} {:>8}", "Section", "Bytes", "% of total");
-        for &(name, bytes) in &self.binary_sections {
-            let pct = 100.0 * bytes as f64 / self.decompressed_size as f64;
-            println!("{:<25} {:>12} {:>7.1}%", name, fmt_bytes(bytes), pct);
-        }
-        println!("{:<25} {:>12}", "TOTAL decompressed", fmt_bytes(self.decompressed_size));
-        println!("{:<25} {:>12}", "TOTAL compressed (gzip)", fmt_bytes(self.compressed_size));
-        println!();
-
-        println!("=== In-Memory Sizes ===");
-        let total_mem: usize = self.memory_sections.iter().map(|x| x.1).sum();
-        println!("{:<25} {:>12} {:>8}", "Structure", "Bytes", "% of total");
-        for &(name, bytes) in &self.memory_sections {
-            let pct = 100.0 * bytes as f64 / total_mem as f64;
-            println!("{:<25} {:>12} {:>7.1}%", name, fmt_bytes(bytes), pct);
-        }
-        println!("{:<25} {:>12}", "TOTAL in-memory", fmt_bytes(total_mem));
-        println!();
-
-        println!("=== Load Timings ===");
-        let total_dur: Duration = self.timings.iter().map(|x| x.1).sum();
-        println!("{:<25} {:>10} {:>8}", "Phase", "Time", "% of total");
-        for &(name, dur) in &self.timings {
-            let pct = 100.0 * dur.as_secs_f64() / total_dur.as_secs_f64();
-            println!("{:<25} {:>10} {:>7.1}%", name, fmt_dur(dur), pct);
-        }
-        println!("{:<25} {:>10}", "TOTAL", fmt_dur(total_dur));
-        println!();
-
-        println!("=== Counts ===");
-        for &(name, count) in &self.counts {
-            println!("{:<25} {:>10}", name, count);
-        }
-    }
-}
-
-fn fmt_bytes(b: usize) -> String {
-    if b >= 1_048_576 { format!("{:.2} MB", b as f64 / 1_048_576.0) }
-    else if b >= 1024 { format!("{:.1} KB", b as f64 / 1024.0) }
-    else { format!("{} B", b) }
-}
-
-fn fmt_dur(d: Duration) -> String {
-    let ms = d.as_secs_f64() * 1000.0;
-    if ms >= 1000.0 { format!("{:.2} s", ms / 1000.0) }
-    else { format!("{:.1} ms", ms) }
+    load_with_stats(compressed).map(|(data, _)| data)
 }
 
 pub fn load_with_stats(compressed: &[u8]) -> Result<(PreparedData, LoadStats), String> {
@@ -903,6 +547,70 @@ pub fn load_with_stats(compressed: &[u8]) -> Result<(PreparedData, LoadStats), S
     };
 
     Ok((data, stats))
+}
+
+pub struct LoadStats {
+    pub compressed_size: usize,
+    pub decompressed_size: usize,
+    /// (section_name, binary_bytes)
+    pub binary_sections: Vec<(&'static str, usize)>,
+    /// (name, heap_bytes)
+    pub memory_sections: Vec<(&'static str, usize)>,
+    /// (phase_name, duration)
+    pub timings: Vec<(&'static str, Duration)>,
+    /// Counts for context
+    pub counts: Vec<(&'static str, usize)>,
+}
+
+impl LoadStats {
+    pub fn print(&self) {
+        println!("=== Binary Section Sizes (decompressed) ===");
+        println!("{:<25} {:>12} {:>8}", "Section", "Bytes", "% of total");
+        for &(name, bytes) in &self.binary_sections {
+            let pct = 100.0 * bytes as f64 / self.decompressed_size as f64;
+            println!("{:<25} {:>12} {:>7.1}%", name, fmt_bytes(bytes), pct);
+        }
+        println!("{:<25} {:>12}", "TOTAL decompressed", fmt_bytes(self.decompressed_size));
+        println!("{:<25} {:>12}", "TOTAL compressed (gzip)", fmt_bytes(self.compressed_size));
+        println!();
+
+        println!("=== In-Memory Sizes ===");
+        let total_mem: usize = self.memory_sections.iter().map(|x| x.1).sum();
+        println!("{:<25} {:>12} {:>8}", "Structure", "Bytes", "% of total");
+        for &(name, bytes) in &self.memory_sections {
+            let pct = 100.0 * bytes as f64 / total_mem as f64;
+            println!("{:<25} {:>12} {:>7.1}%", name, fmt_bytes(bytes), pct);
+        }
+        println!("{:<25} {:>12}", "TOTAL in-memory", fmt_bytes(total_mem));
+        println!();
+
+        println!("=== Load Timings ===");
+        let total_dur: Duration = self.timings.iter().map(|x| x.1).sum();
+        println!("{:<25} {:>10} {:>8}", "Phase", "Time", "% of total");
+        for &(name, dur) in &self.timings {
+            let pct = 100.0 * dur.as_secs_f64() / total_dur.as_secs_f64();
+            println!("{:<25} {:>10} {:>7.1}%", name, fmt_dur(dur), pct);
+        }
+        println!("{:<25} {:>10}", "TOTAL", fmt_dur(total_dur));
+        println!();
+
+        println!("=== Counts ===");
+        for &(name, count) in &self.counts {
+            println!("{:<25} {:>10}", name, count);
+        }
+    }
+}
+
+fn fmt_bytes(b: usize) -> String {
+    if b >= 1_048_576 { format!("{:.2} MB", b as f64 / 1_048_576.0) }
+    else if b >= 1024 { format!("{:.1} KB", b as f64 / 1024.0) }
+    else { format!("{} B", b) }
+}
+
+fn fmt_dur(d: Duration) -> String {
+    let ms = d.as_secs_f64() * 1000.0;
+    if ms >= 1000.0 { format!("{:.2} s", ms / 1000.0) }
+    else { format!("{:.1} ms", ms) }
 }
 
 fn read_pco_u32(buf: &[u8], pos: &mut usize) -> Result<Vec<u32>, String> {
