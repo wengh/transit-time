@@ -1,6 +1,13 @@
 use crate::data::{PatternData, PreparedData};
 use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashSet};
+use std::collections::BinaryHeap;
+
+/// Sentinel: node was reached by walking from source (no transit yet).
+/// Boarding any route from this state requires no transfer slack.
+const ARRIVED_BY_WALK: u32 = u32::MAX;
+/// Sentinel: node was reached via a frequency-based route (no event chain).
+/// Treated as always requiring transfer slack (can never "continue" a freq trip).
+const ARRIVED_BY_FREQ: u32 = u32::MAX - 1;
 
 const WALKING_SPEED_MPS: f32 = 1.4; // ~5 km/h
 pub const DEFAULT_TRANSFER_SLACK: u32 = 60; // default minimum transfer time in seconds
@@ -188,7 +195,11 @@ fn run_tdd_inner(
         boarding_time: 0,
     };
 
-    let mut arrived_by_route = vec![u32::MAX; n];
+    // Tracks which flat event index (into events_by_stop.data) last put us at each node.
+    // ARRIVED_BY_WALK = walked here from source (no prior transit, no transfer slack).
+    // ARRIVED_BY_FREQ = arrived via a frequency route (always requires transfer slack).
+    // Any other value = flat event index; only that specific event's continuation is free.
+    let mut arrived_by_event = vec![ARRIVED_BY_WALK; n];
 
     let mut pq: BinaryHeap<Reverse<(u32, u32)>> = BinaryHeap::new();
     pq.push(Reverse((departure_time, source_node)));
@@ -202,10 +213,12 @@ fn run_tdd_inner(
             continue;
         }
 
-        let current_route = arrived_by_route[node as usize];
+        let current_event = arrived_by_event[node as usize];
         let current_leave_home = result[node as usize].leave_home;
 
-        // Walking edges — leave_home propagates unchanged
+        // Walking edges — leave_home and current_event propagate unchanged.
+        // Propagating current_event means: if you were mid-trip and walk to an
+        // adjacent node, you can still continue the same trip from there.
         for &(neighbor, distance) in &data.adj[node as usize] {
             let wt = (distance / WALKING_SPEED_MPS) as u32;
             let arrival = t_current + wt;
@@ -219,9 +232,7 @@ fn run_tdd_inner(
             };
             if candidate.is_better_than(&result[neighbor as usize]) {
                 result[neighbor as usize] = candidate;
-                // Propagate the route we arrived by so transfer slack is
-                // applied when boarding a *different* route after walking.
-                arrived_by_route[neighbor as usize] = current_route;
+                arrived_by_event[neighbor as usize] = current_event;
                 pq.push(Reverse((arrival, neighbor)));
             }
         }
@@ -235,13 +246,13 @@ fn run_tdd_inner(
                         pat,
                         stop_idx,
                         t_current,
-                        current_route,
+                        current_event,
                         current_leave_home,
                         departure_time,
                         transfer_slack,
                         node,
                         &mut result,
-                        &mut arrived_by_route,
+                        &mut arrived_by_event,
                         &mut pq,
                     );
                 }
@@ -258,16 +269,18 @@ fn scan_pattern_at_stop(
     pat: &PatternData,
     stop_idx: u32,
     t_current: u32,
-    current_route: u32,
+    current_event: u32,
     current_leave_home: u32,
     departure_time: u32,
     transfer_slack: u32,
     node: u32,
     result: &mut Vec<NodeResult>,
-    arrived_by_route: &mut Vec<u32>,
+    arrived_by_event: &mut Vec<u32>,
     pq: &mut BinaryHeap<Reverse<(u32, u32)>>,
 ) {
-    // Check frequency-based routes (only those serving this stop)
+    // --- Frequency-based routes ---
+    // Freq routes have no event chain, so they never count as a "continuation".
+    // Only free if we arrived by walking from the source.
     let freq_indices = &pat.stop_index.freq_by_stop[stop_idx];
     for &fi in freq_indices {
         let freq = &pat.frequency_routes[fi as usize];
@@ -275,7 +288,7 @@ fn scan_pattern_at_stop(
             continue;
         }
 
-        let is_transfer = current_route != u32::MAX && current_route != freq.route_index;
+        let is_transfer = current_event != ARRIVED_BY_WALK;
         let earliest = if is_transfer {
             t_current + transfer_slack
         } else {
@@ -309,51 +322,63 @@ fn scan_pattern_at_stop(
                 };
                 if candidate.is_better_than(&result[dest_node as usize]) {
                     result[dest_node as usize] = candidate;
-                    arrived_by_route[dest_node as usize] = freq.route_index;
+                    arrived_by_event[dest_node as usize] = ARRIVED_BY_FREQ;
                     pq.push(Reverse((arrival, dest_node)));
                 }
             }
         }
     }
 
-    // Check direct-index event array (only events at this stop)
+    // --- Scheduled events ---
     let stop_events = &pat.stop_index.events_by_stop[stop_idx];
     if stop_events.is_empty() || t_current < pat.min_time {
         return;
     }
 
     let scan_start = t_current - pat.min_time;
-    // We just scan up to 1 hour max
     let scan_end = scan_start + 3600;
 
-    // Binary search for first event at or after scan_start
     let start_pos = stop_events.partition_point(|e| e.time_offset < scan_start);
 
-    let mut boarded_routes: HashSet<u32> = HashSet::new();
+    // Base offset of this stop's bucket in the flat events_by_stop.data array,
+    // used to compute global flat indices for same-trip continuation checks.
+    let base_offset = pat.stop_index.events_by_stop.offsets[stop_idx as usize] as usize;
 
-    for event in &stop_events[start_pos..] {
-        let time_offset = event.time_offset;
-        if time_offset >= scan_end {
+    for (local_i, event) in stop_events[start_pos..].iter().enumerate() {
+        if event.time_offset >= scan_end {
             break;
         }
-
         if event.travel_time == 0 {
             continue;
         }
-        if boarded_routes.contains(&event.route_index) {
-            continue;
-        }
 
-        let dep_time = pat.min_time + time_offset;
+        let dep_time = pat.min_time + event.time_offset;
 
-        let is_same_route = current_route == event.route_index;
-        let is_transfer = current_route != u32::MAX && !is_same_route;
+        // "Continuing" = this event is exactly the next step in the trip that
+        // brought us to this node (stored as its flat index in arrived_by_event).
+        // Any other event — including a later trip on the same route — is a transfer.
+        let global_idx = (base_offset + start_pos + local_i) as u32;
+        let is_continuing = current_event == global_idx;
+        let is_transfer = current_event != ARRIVED_BY_WALK && !is_continuing;
 
         if is_transfer && dep_time < t_current + transfer_slack {
             continue;
         }
 
-        boarded_routes.insert(event.route_index);
+        // Extract route_index from sentinel event (which is reached by following next_event_index)
+        let mut route_index = 0u32;
+        let mut idx = event.next_event_index;
+        while idx != u32::MAX {
+            let e = &pat.stop_index.events_by_stop.data[idx as usize];
+            if e.travel_time == 0 {
+                // Found sentinel event — look up its route_index
+                if let Some(&r) = pat.sentinel_routes.get(&idx) {
+                    route_index = r;
+                }
+                break;
+            }
+            idx = e.next_event_index;
+        }
 
         let leave_home = if current_leave_home == 0 {
             let walk_to_stop = t_current - departure_time;
@@ -362,18 +387,17 @@ fn scan_pattern_at_stop(
             current_leave_home
         };
 
-        // Board this trip and ride it through all downstream stops
         ride_trip(
             data,
             pat,
-            event.route_index,
+            route_index,
             leave_home,
             node,
             event.next_event_index,
             dep_time + event.travel_time,
             dep_time,
             result,
-            arrived_by_route,
+            arrived_by_event,
             pq,
         );
     }
@@ -390,7 +414,7 @@ fn ride_trip(
     mut current_arrival: u32,
     boarding_time: u32,
     result: &mut Vec<NodeResult>,
-    arrived_by_route: &mut Vec<u32>,
+    arrived_by_event: &mut Vec<u32>,
     pq: &mut BinaryHeap<Reverse<(u32, u32)>>,
 ) {
     while next_event_idx != u32::MAX {
@@ -411,7 +435,7 @@ fn ride_trip(
             };
             if candidate.is_better_than(&result[dest_node as usize]) {
                 result[dest_node as usize] = candidate;
-                arrived_by_route[dest_node as usize] = route_index;
+                arrived_by_event[dest_node as usize] = next_event_idx;
                 pq.push(Reverse((current_arrival, dest_node)));
             }
         }

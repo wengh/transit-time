@@ -248,12 +248,12 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
             stop_offsets[i] += stop_offsets[i - 1];
         }
 
-        // Serialize: num_events, 5 PCO columns, stop_offsets
+        // Serialize: num_events, 4 PCO columns (no route_index), stop_offsets, sentinel_routes
+        // route_index will be reconstructed from sentinels at query time
         write_u32(&mut buf, sorted_events.len() as u32);
-        let cols: [Vec<u32>; 5] = [
+        let cols: [Vec<u32>; 4] = [
             sorted_events.iter().map(|e| e.time_offset).collect(),
             sorted_events.iter().map(|e| e.stop_index).collect(),
-            sorted_events.iter().map(|e| e.route_index).collect(),
             sorted_events.iter().map(|e| e.travel_time).collect(),
             remapped_nei,
         ];
@@ -263,11 +263,21 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
             write_u32(&mut buf, compressed.len() as u32);
             buf.extend_from_slice(&compressed);
         }
+
         // Stop offsets (num_stops + 1 entries)
         let compressed_offsets = pco::standalone::simple_compress(&stop_offsets, &pco::ChunkConfig::default())
             .expect("pco compress failed");
         write_u32(&mut buf, compressed_offsets.len() as u32);
         buf.extend_from_slice(&compressed_offsets);
+
+        // Sentinel routes: for each event, if it's a sentinel (travel_time == 0), store its route_index
+        let sentinel_routes: Vec<u32> = sorted_events.iter().map(|e| {
+            if e.travel_time == 0 { e.route_index } else { 0 }
+        }).collect();
+        let compressed_sentinel_routes = pco::standalone::simple_compress(&sentinel_routes, &pco::ChunkConfig::default())
+            .expect("pco compress failed");
+        write_u32(&mut buf, compressed_sentinel_routes.len() as u32);
+        buf.extend_from_slice(&compressed_sentinel_routes);
 
         write_u32(&mut buf, pattern.frequency_routes.len() as u32);
         for freq in &pattern.frequency_routes {

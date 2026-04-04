@@ -4,10 +4,16 @@ use transit_router::router::*;
 
 /// Helper: build events sorted by (stop_index, time_offset) with next_event_index precomputed,
 /// mirroring the v3 binary format.
+/// Returns (events_by_stop, sentinel_routes) where sentinel_routes maps event indices to route indices.
 fn build_events_by_stop(
-    mut flat_events: Vec<(u32, EventData)>, // (trip_id, event) — trip_id used only for linking
+    events_with_routes: Vec<(u32, EventData, u32)>, // (trip_id, event, route_index for sentinels)
     num_stops: u32,
-) -> JaggedArray<EventData> {
+) -> (JaggedArray<EventData>, HashMap<u32, u32>) {
+    // Extract just the (trip_id, event) pairs for linking
+    let mut flat_events: Vec<(u32, EventData)> = events_with_routes.iter()
+        .map(|(trip, event, _)| (*trip, event.clone()))
+        .collect();
+
     // Sort by trip then time to compute next_event_index
     flat_events.sort_unstable_by_key(|&(trip, ref e)| (trip, e.time_offset));
 
@@ -39,12 +45,20 @@ fn build_events_by_stop(
             EventData {
                 time_offset: e.time_offset,
                 stop_index: e.stop_index,
-                route_index: e.route_index,
                 travel_time: e.travel_time,
                 next_event_index: if nei == u32::MAX { u32::MAX } else { inv[nei as usize] },
             }
         })
         .collect();
+
+    // Build sentinel_routes: map event indices to route indices for sentinels
+    let mut sentinel_routes = HashMap::new();
+    for (new_pos, &old_pos) in order.iter().enumerate() {
+        let route_idx = events_with_routes[old_pos as usize].2;
+        if route_idx != 0 {
+            sentinel_routes.insert(new_pos as u32, route_idx);
+        }
+    }
 
     // Compute offsets
     let mut offsets = vec![0u32; num_stops as usize + 1];
@@ -57,7 +71,7 @@ fn build_events_by_stop(
         offsets[i] += offsets[i - 1];
     }
 
-    JaggedArray { offsets, data }
+    (JaggedArray { offsets, data }, sentinel_routes)
 }
 
 fn build_test_data(add_extra_green: bool) -> PreparedData {
@@ -139,44 +153,44 @@ fn build_test_data(add_extra_green: bool) -> PreparedData {
 
     let min_time = 28800u32;
 
-    // (trip_id, EventData) pairs
+    // (trip_id, EventData, route_index_if_sentinel) triples
     let mut events = vec![
         // Pink: Stop 0 -> Stop 2
         (0u32, EventData {
-            time_offset: 300, stop_index: 0, route_index: 0,
+            time_offset: 300, stop_index: 0,
             travel_time: 120, next_event_index: u32::MAX,
-        }),
+        }, 0),
         (0, EventData {
-            time_offset: 420, stop_index: 2, route_index: 0,
+            time_offset: 420, stop_index: 2,
             travel_time: 0, next_event_index: u32::MAX,
-        }),
+        }, 0), // sentinel, route from Pink
         // Green: Stop 1 -> Stop 2 -> Stop 3
         (1, EventData {
-            time_offset: 300, stop_index: 1, route_index: 1,
+            time_offset: 300, stop_index: 1,
             travel_time: 120, next_event_index: u32::MAX,
-        }),
+        }, 0),
         (1, EventData {
-            time_offset: 420, stop_index: 2, route_index: 1,
+            time_offset: 420, stop_index: 2,
             travel_time: 120, next_event_index: u32::MAX,
-        }),
+        }, 0),
         (1, EventData {
-            time_offset: 540, stop_index: 3, route_index: 1,
+            time_offset: 540, stop_index: 3,
             travel_time: 0, next_event_index: u32::MAX,
-        }),
+        }, 1), // sentinel, route index 1 (Green)
     ];
 
     if add_extra_green {
         events.push((2, EventData {
-            time_offset: 480, stop_index: 2, route_index: 1,
+            time_offset: 480, stop_index: 2,
             travel_time: 60, next_event_index: u32::MAX,
-        }));
+        }, 0));
         events.push((2, EventData {
-            time_offset: 540, stop_index: 3, route_index: 1,
+            time_offset: 540, stop_index: 3,
             travel_time: 0, next_event_index: u32::MAX,
-        }));
+        }, 1)); // sentinel, route index 1 (Green)
     }
 
-    let events_by_stop = build_events_by_stop(events, num_stops);
+    let (events_by_stop, sentinel_routes) = build_events_by_stop(events, num_stops);
 
     let pattern = PatternData {
         day_mask: 0xFF,
@@ -191,6 +205,7 @@ fn build_test_data(add_extra_green: bool) -> PreparedData {
             freq_by_stop: JaggedArray::build(vec![], |_| 0, num_stops),
             events_by_stop,
         },
+        sentinel_routes,
     };
 
     let num_nodes = 5;

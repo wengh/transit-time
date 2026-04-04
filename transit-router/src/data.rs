@@ -38,7 +38,6 @@ pub struct StopData {
 pub struct EventData {
     pub time_offset: u32,
     pub stop_index: u32,
-    pub route_index: u32,
     pub travel_time: u32,
     pub next_event_index: u32, // u32::MAX if it's the last event in the trip
 }
@@ -116,6 +115,8 @@ pub struct PatternData {
     pub max_time: u32,
     pub frequency_routes: Vec<FreqData>,
     pub stop_index: PatternStopIndex,
+    /// Maps flat event index to route_index for sentinel events (travel_time == 0)
+    pub sentinel_routes: std::collections::HashMap<u32, u32>,
 }
 
 pub struct PreparedData {
@@ -261,25 +262,32 @@ pub fn load(compressed: &[u8]) -> Result<PreparedData, String> {
         let max_time = read_u32(&buf, &mut pos);
 
         // v3: events are pre-sorted by (stop_index, time_offset) with sentinels
-        // and next_event_index already computed. 5 PCO columns + stop offsets.
+        // 4 PCO columns (time_offset, stop_index, travel_time, next_event_index) + stop_offsets + sentinel_routes
         let num_events = read_u32(&buf, &mut pos) as usize;
 
         let time_offsets = read_pco_u32(&buf, &mut pos)?;
         let stop_indices = read_pco_u32(&buf, &mut pos)?;
-        let route_indices = read_pco_u32(&buf, &mut pos)?;
         let travel_times = read_pco_u32(&buf, &mut pos)?;
         let next_event_indices = read_pco_u32(&buf, &mut pos)?;
         let stop_offsets = read_pco_u32(&buf, &mut pos)?;
+        let sentinel_route_indices = read_pco_u32(&buf, &mut pos)?;
 
         let data_vec: Vec<EventData> = (0..num_events)
             .map(|i| EventData {
                 time_offset: time_offsets[i],
                 stop_index: stop_indices[i],
-                route_index: route_indices[i],
                 travel_time: travel_times[i],
                 next_event_index: next_event_indices[i],
             })
             .collect();
+
+        // Build sentinel_routes map: only events with travel_time == 0 and route_index > 0
+        let mut pattern_sentinel_routes = std::collections::HashMap::new();
+        for (i, route_idx) in sentinel_route_indices.iter().enumerate() {
+            if *route_idx != 0 {
+                pattern_sentinel_routes.insert(i as u32, *route_idx);
+            }
+        }
 
         let events_by_stop = JaggedArray {
             offsets: stop_offsets,
@@ -330,6 +338,7 @@ pub fn load(compressed: &[u8]) -> Result<PreparedData, String> {
                 freq_by_stop,
                 events_by_stop,
             },
+            sentinel_routes: pattern_sentinel_routes,
         });
     }
 
@@ -619,21 +628,21 @@ pub fn load_with_stats(compressed: &[u8]) -> Result<(PreparedData, LoadStats), S
         let max_time = read_u32(&buf, &mut pos);
 
         // v3: events pre-sorted with sentinels and next_event_index precomputed
+        // 4 columns + sentinel_routes
         let num_events = read_u32(&buf, &mut pos) as usize;
         total_events += num_events;
 
         let time_offsets = read_pco_u32(&buf, &mut pos)?;
         let stop_indices = read_pco_u32(&buf, &mut pos)?;
-        let route_indices = read_pco_u32(&buf, &mut pos)?;
         let travel_times = read_pco_u32(&buf, &mut pos)?;
         let next_event_indices = read_pco_u32(&buf, &mut pos)?;
         let stop_offsets = read_pco_u32(&buf, &mut pos)?;
+        let sentinel_route_indices = read_pco_u32(&buf, &mut pos)?;
 
         let data_vec: Vec<EventData> = (0..num_events)
             .map(|i| EventData {
                 time_offset: time_offsets[i],
                 stop_index: stop_indices[i],
-                route_index: route_indices[i],
                 travel_time: travel_times[i],
                 next_event_index: next_event_indices[i],
             })
@@ -667,12 +676,25 @@ pub fn load_with_stats(compressed: &[u8]) -> Result<(PreparedData, LoadStats), S
             freq_indices, |&i| freq_entries[i as usize].stop_index, num_stops as u32,
         );
 
+        // Build sentinel_routes for this pattern
+        let mut pattern_sentinel_routes = std::collections::HashMap::new();
+        for (i, route_idx) in sentinel_route_indices.iter().enumerate() {
+            if *route_idx != 0 {
+                pattern_sentinel_routes.insert(i as u32, *route_idx);
+            }
+        }
+
         patterns.push(PatternData {
-            day_mask, start_date, end_date,
-            date_exceptions_add, date_exceptions_remove,
-            min_time, max_time,
+            day_mask,
+            start_date,
+            end_date,
+            date_exceptions_add,
+            date_exceptions_remove,
+            min_time,
+            max_time,
             frequency_routes: freq_entries,
             stop_index: PatternStopIndex { freq_by_stop, events_by_stop },
+            sentinel_routes: pattern_sentinel_routes,
         });
     }
     binary_sections.push(("patterns", pos - pos_before));
