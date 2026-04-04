@@ -249,7 +249,10 @@ fn build_test_data(add_extra_green: bool) -> PreparedData {
         adj,
         node_is_stop,
         node_stop_indices,
-        shapes: HashMap::new(),
+        shapes: transit_router::data::JaggedArray {
+            data: Vec::new(),
+            offsets: vec![0],
+        },
         route_shapes: vec![Vec::new(); 2],
         node_grid,
     }

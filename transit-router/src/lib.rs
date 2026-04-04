@@ -395,11 +395,14 @@ impl TransitRouter {
         let mut best_worst_d = f64::MAX;
 
         for shape_idx in shape_indices {
-            // Decompress the shape on-demand
-            let compressed = match self.data.shapes.get(shape_idx) {
-                Some(data) => data,
-                None => panic!("Shape {} referenced by route {} does not exist in shapes map", shape_idx, route_idx),
-            };
+            // Get compressed data from JaggedArray
+            let shape_idx_usize = *shape_idx as usize;
+            if shape_idx_usize >= self.data.shapes.offsets.len() - 1 {
+                panic!("Shape {} referenced by route {} is out of bounds", shape_idx, route_idx);
+            }
+            let start = self.data.shapes.offsets[shape_idx_usize] as usize;
+            let end = self.data.shapes.offsets[shape_idx_usize + 1] as usize;
+            let compressed = &self.data.shapes.data[start..end];
 
             // Decompress PCO data
             let coords_u32: Vec<u32> = match pco::standalone::simple_decompress(compressed) {

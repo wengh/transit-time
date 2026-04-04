@@ -70,6 +70,10 @@ impl<T> std::ops::Index<u32> for JaggedArray<T> {
 }
 
 impl<T> JaggedArray<T> {
+    pub fn len(&self) -> u32 {
+        (self.offsets.len() - 1) as u32
+    }
+
     pub fn is_empty(&self) -> bool {
         self.data.is_empty()
     }
@@ -133,8 +137,8 @@ pub struct PreparedData {
     pub adj: Vec<Vec<(u32, f32)>>,
     pub node_is_stop: Vec<bool>,
     pub node_stop_indices: Vec<Vec<u32>>,
-    /// Compressed shapes: shape_index -> PCO-compressed data (lat/lon pairs as f32 bits)
-    pub shapes: std::collections::HashMap<u32, Vec<u8>>,
+    /// Compressed shapes: JaggedArray of PCO-compressed data (lat/lon pairs as f32 bits)
+    pub shapes: JaggedArray<u8>,
     /// route_index -> [shape_indices]
     pub route_shapes: Vec<Vec<u32>>,
     /// Spatial grid index: (lat_cell, lon_cell) -> [node_indices]
@@ -349,7 +353,8 @@ pub fn load(compressed: &[u8]) -> Result<PreparedData, String> {
     }
 
     // Shapes: stored as PCO-compressed data (lat/lon as f32 bits)
-    let mut shapes = std::collections::HashMap::new();
+    let mut shapes_data: Vec<u8> = Vec::new();
+    let mut shapes_offsets: Vec<u32> = vec![0];
     for shape_idx in 0..num_shapes {
         if pos + 4 > buf.len() {
             return Err(format!("Incomplete shape data at index {}", shape_idx));
@@ -361,10 +366,14 @@ pub fn load(compressed: &[u8]) -> Result<PreparedData, String> {
                 shape_idx, compressed_len, pos, buf.len()
             ));
         }
-        let compressed_data = buf[pos..pos + compressed_len].to_vec();
+        shapes_data.extend_from_slice(&buf[pos..pos + compressed_len]);
         pos += compressed_len;
-        shapes.insert(shape_idx as u32, compressed_data);
+        shapes_offsets.push(shapes_data.len() as u32);
     }
+    let shapes = JaggedArray {
+        data: shapes_data,
+        offsets: shapes_offsets,
+    };
 
     // Route-to-shape mapping: indices instead of IDs (may not be present in older binaries)
     let mut route_shapes: Vec<Vec<u32>> = vec![Vec::new(); num_route_names];
@@ -381,8 +390,8 @@ pub fn load(compressed: &[u8]) -> Result<PreparedData, String> {
                     return Err(format!("Incomplete shape index in route_shapes for route {}", i));
                 }
                 let shape_idx = read_u32(&buf, &mut pos);
-                // Only keep valid shape indices (those that actually exist in the shapes map)
-                if shape_idx != u32::MAX && shapes.contains_key(&shape_idx) {
+                // Only keep valid shape indices (those that actually exist in the shapes array)
+                if shape_idx != u32::MAX && (shape_idx as usize) < shapes.offsets.len() - 1 {
                     shapes_for_route.push(shape_idx);
                 }
             }
@@ -716,7 +725,8 @@ pub fn load_with_stats(compressed: &[u8]) -> Result<(PreparedData, LoadStats), S
     // Shapes: compressed PCO data
     let t0 = Instant::now();
     let pos_before = pos;
-    let mut shapes = std::collections::HashMap::new();
+    let mut shapes_data: Vec<u8> = Vec::new();
+    let mut shapes_offsets: Vec<u32> = vec![0];
     for shape_idx in 0..num_shapes {
         if pos + 4 > buf.len() {
             return Err(format!("Incomplete shape data at index {}", shape_idx));
@@ -728,10 +738,14 @@ pub fn load_with_stats(compressed: &[u8]) -> Result<(PreparedData, LoadStats), S
                 shape_idx, compressed_len, pos, buf.len()
             ));
         }
-        let compressed_data = buf[pos..pos + compressed_len].to_vec();
+        shapes_data.extend_from_slice(&buf[pos..pos + compressed_len]);
         pos += compressed_len;
-        shapes.insert(shape_idx as u32, compressed_data);
+        shapes_offsets.push(shapes_data.len() as u32);
     }
+    let shapes = JaggedArray {
+        data: shapes_data,
+        offsets: shapes_offsets,
+    };
     binary_sections.push(("shapes", pos - pos_before));
     timings.push(("parse shapes", t0.elapsed()));
 
@@ -752,8 +766,8 @@ pub fn load_with_stats(compressed: &[u8]) -> Result<(PreparedData, LoadStats), S
                     return Err(format!("Incomplete shape index in route_shapes for route {}", i));
                 }
                 let shape_idx = read_u32(&buf, &mut pos);
-                // Only keep valid shape indices (those that actually exist in the shapes map)
-                if shape_idx != u32::MAX && shapes.contains_key(&shape_idx) {
+                // Only keep valid shape indices (those that actually exist in the shapes array)
+                if shape_idx != u32::MAX && (shape_idx as usize) < shapes.offsets.len() - 1 {
                     shapes_for_route.push(shape_idx);
                 }
             }
@@ -842,11 +856,8 @@ pub fn load_with_stats(compressed: &[u8]) -> Result<(PreparedData, LoadStats), S
         + adj.iter().map(|v| v.capacity() * std::mem::size_of::<(u32, f32)>()).sum::<usize>();
     memory_sections.push(("adj list", adj_mem));
 
-    // shapes HashMap: compressed PCO data
-    let shapes_mem: usize = shapes.iter().map(|(_, v)| {
-        std::mem::size_of::<Vec<u8>>() + v.capacity()
-        + 64 // rough HashMap entry overhead
-    }).sum();
+    // shapes JaggedArray: compressed PCO data
+    let shapes_mem: usize = shapes.data.capacity() + shapes.offsets.capacity() * 4;
     memory_sections.push(("shapes", shapes_mem));
 
     // route_shapes: now Vec<Vec<u32>> (shape indices) - stored compressed in binary anyway
