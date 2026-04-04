@@ -8,6 +8,7 @@ use rayon::prelude::*;
 pub use wasm_bindgen_rayon::init_thread_pool;
 
 use router::NodeResult;
+use pco;
 
 /// Whether the rayon thread pool has been initialized (via `initThreadPool` from JS).
 /// When false, we fall back to sequential iteration.
@@ -373,13 +374,14 @@ impl TransitRouter {
 
     /// Get the shape polyline for a route between two stops (identified by node indices).
     /// Returns flat array [lat, lon, lat, lon, ...] of the sub-polyline, or empty if no shape.
+    /// Shapes are stored compressed and decompressed on-demand.
     pub fn route_shape_between(&self, route_idx: u32, from_node: u32, to_node: u32) -> Vec<f64> {
         let ri = route_idx as usize;
         if ri >= self.data.route_shapes.len() {
             return Vec::new();
         }
-        let shape_ids = &self.data.route_shapes[ri];
-        if shape_ids.is_empty() {
+        let shape_indices = &self.data.route_shapes[ri];
+        if shape_indices.is_empty() {
             return Vec::new();
         }
 
@@ -392,11 +394,36 @@ impl TransitRouter {
         let mut best_result: Vec<f64> = Vec::new();
         let mut best_worst_d = f64::MAX;
 
-        for shape_id in shape_ids {
-            let points = match self.data.shapes.get(shape_id) {
-                Some(p) if p.len() >= 2 => p,
-                _ => continue,
+        for shape_idx in shape_indices {
+            // Decompress the shape on-demand
+            let compressed = match self.data.shapes.get(shape_idx) {
+                Some(data) => data,
+                None => panic!("Shape {} referenced by route {} does not exist in shapes map", shape_idx, route_idx),
             };
+
+            // Decompress PCO data
+            let coords_u32: Vec<u32> = match pco::standalone::simple_decompress(compressed) {
+                Ok(c) => c,
+                Err(e) => panic!("Failed to decompress shape {}: {}", shape_idx, e),
+            };
+
+            if coords_u32.len() < 4 {
+                panic!("Shape {} has invalid compressed data: expected at least 4 u32s (2 points), got {}", shape_idx, coords_u32.len());
+            }
+
+            // Convert u32 bits back to f64 (via f32)
+            let mut points: Vec<(f64, f64)> = Vec::with_capacity(coords_u32.len() / 2);
+            for chunk in coords_u32.chunks(2) {
+                if chunk.len() == 2 {
+                    let lat_f32 = f32::from_bits(chunk[0]);
+                    let lon_f32 = f32::from_bits(chunk[1]);
+                    points.push((lat_f32 as f64, lon_f32 as f64));
+                }
+            }
+
+            if points.len() < 2 {
+                panic!("Shape {} decompressed to {} points, expected at least 2", shape_idx, points.len());
+            }
 
             let mut best_from = 0usize;
             let mut best_from_d = f64::MAX;

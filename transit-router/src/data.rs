@@ -133,20 +133,26 @@ pub struct PreparedData {
     pub adj: Vec<Vec<(u32, f32)>>,
     pub node_is_stop: Vec<bool>,
     pub node_stop_indices: Vec<Vec<u32>>,
-    /// shape_id -> [(lat, lon)]
-    pub shapes: std::collections::HashMap<String, Vec<(f64, f64)>>,
-    /// route_index -> [shape_ids] (all shapes for that route)
-    pub route_shapes: Vec<Vec<String>>,
+    /// Compressed shapes: shape_index -> PCO-compressed data (lat/lon pairs as f32 bits)
+    pub shapes: std::collections::HashMap<u32, Vec<u8>>,
+    /// route_index -> [shape_indices]
+    pub route_shapes: Vec<Vec<u32>>,
     /// Spatial grid index: (lat_cell, lon_cell) -> [node_indices]
     pub node_grid: std::collections::HashMap<(i32, i32), Vec<u32>>,
 }
 
 pub fn load(compressed: &[u8]) -> Result<PreparedData, String> {
+    #[cfg(target_arch = "wasm32")]
+    web_sys::console::log_1(&"[load] Starting decompression".into());
+
     let mut decoder = flate2::read::GzDecoder::new(compressed);
     let mut buf = Vec::new();
     decoder
         .read_to_end(&mut buf)
         .map_err(|e| format!("Decompression failed: {}", e))?;
+
+    #[cfg(target_arch = "wasm32")]
+    web_sys::console::log_1(&format!("[load] Decompressed {} bytes", buf.len()).into());
 
     let mut pos = 0;
 
@@ -342,36 +348,43 @@ pub fn load(compressed: &[u8]) -> Result<PreparedData, String> {
         });
     }
 
-    // Shapes
+    // Shapes: stored as PCO-compressed data (lat/lon as f32 bits)
     let mut shapes = std::collections::HashMap::new();
-    for _ in 0..num_shapes {
-        let id_len = read_u32(&buf, &mut pos) as usize;
-        let shape_id = String::from_utf8_lossy(&buf[pos..pos + id_len]).to_string();
-        pos += id_len;
-        let num_points = read_u32(&buf, &mut pos) as usize;
-        let mut points = Vec::with_capacity(num_points);
-        for _ in 0..num_points {
-            let lat = read_f64(&buf, &mut pos);
-            let lon = read_f64(&buf, &mut pos);
-            points.push((lat, lon));
+    for shape_idx in 0..num_shapes {
+        if pos + 4 > buf.len() {
+            return Err(format!("Incomplete shape data at index {}", shape_idx));
         }
-        shapes.insert(shape_id, points);
+        let compressed_len = read_u32(&buf, &mut pos) as usize;
+        if pos + compressed_len > buf.len() {
+            return Err(format!(
+                "Shape {} compressed data out of bounds: need {} bytes at pos {}, buf len {}",
+                shape_idx, compressed_len, pos, buf.len()
+            ));
+        }
+        let compressed_data = buf[pos..pos + compressed_len].to_vec();
+        pos += compressed_len;
+        shapes.insert(shape_idx as u32, compressed_data);
     }
 
-    // Route-to-shape mapping (may not be present in older binaries)
-    let mut route_shapes: Vec<Vec<String>> = vec![Vec::new(); num_route_names];
-    if pos < buf.len() {
+    // Route-to-shape mapping: indices instead of IDs (may not be present in older binaries)
+    let mut route_shapes: Vec<Vec<u32>> = vec![Vec::new(); num_route_names];
+    if pos + 4 <= buf.len() {
         let num_route_shapes = read_u32(&buf, &mut pos) as usize;
-        for i in 0..num_route_shapes {
+        for i in 0..num_route_shapes.min(num_route_names) {
+            if pos + 4 > buf.len() {
+                return Err(format!("Incomplete route_shapes data at route {}", i));
+            }
             let num_shapes = read_u32(&buf, &mut pos) as usize;
             let mut shapes_for_route = Vec::with_capacity(num_shapes);
             for _ in 0..num_shapes {
-                let id_len = read_u32(&buf, &mut pos) as usize;
-                if id_len > 0 {
-                    shapes_for_route
-                        .push(String::from_utf8_lossy(&buf[pos..pos + id_len]).to_string());
+                if pos + 4 > buf.len() {
+                    return Err(format!("Incomplete shape index in route_shapes for route {}", i));
                 }
-                pos += id_len;
+                let shape_idx = read_u32(&buf, &mut pos);
+                // Only keep valid shape indices (those that actually exist in the shapes map)
+                if shape_idx != u32::MAX && shapes.contains_key(&shape_idx) {
+                    shapes_for_route.push(shape_idx);
+                }
             }
             route_shapes[i] = shapes_for_route;
         }
@@ -700,45 +713,49 @@ pub fn load_with_stats(compressed: &[u8]) -> Result<(PreparedData, LoadStats), S
     binary_sections.push(("patterns", pos - pos_before));
     timings.push(("parse+index patterns", t0_patterns.elapsed()));
 
-    // Shapes
+    // Shapes: compressed PCO data
     let t0 = Instant::now();
     let pos_before = pos;
     let mut shapes = std::collections::HashMap::new();
-    let mut total_shape_points = 0usize;
-    for _ in 0..num_shapes {
-        let id_len = read_u32(&buf, &mut pos) as usize;
-        let shape_id = String::from_utf8_lossy(&buf[pos..pos + id_len]).to_string();
-        pos += id_len;
-        let num_points = read_u32(&buf, &mut pos) as usize;
-        total_shape_points += num_points;
-        let mut points = Vec::with_capacity(num_points);
-        for _ in 0..num_points {
-            let lat = read_f64(&buf, &mut pos);
-            let lon = read_f64(&buf, &mut pos);
-            points.push((lat, lon));
+    for shape_idx in 0..num_shapes {
+        if pos + 4 > buf.len() {
+            return Err(format!("Incomplete shape data at index {}", shape_idx));
         }
-        shapes.insert(shape_id, points);
+        let compressed_len = read_u32(&buf, &mut pos) as usize;
+        if pos + compressed_len > buf.len() {
+            return Err(format!(
+                "Shape {} compressed data out of bounds: need {} bytes at pos {}, buf len {}",
+                shape_idx, compressed_len, pos, buf.len()
+            ));
+        }
+        let compressed_data = buf[pos..pos + compressed_len].to_vec();
+        pos += compressed_len;
+        shapes.insert(shape_idx as u32, compressed_data);
     }
     binary_sections.push(("shapes", pos - pos_before));
     timings.push(("parse shapes", t0.elapsed()));
 
-    // Route-to-shape mapping
+    // Route-to-shape mapping (indices instead of IDs)
     let t0 = Instant::now();
     let pos_before = pos;
-    let mut route_shapes: Vec<Vec<String>> = vec![Vec::new(); num_route_names];
-    if pos < buf.len() {
+    let mut route_shapes: Vec<Vec<u32>> = vec![Vec::new(); num_route_names];
+    if pos + 4 <= buf.len() {
         let num_route_shapes = read_u32(&buf, &mut pos) as usize;
-        for i in 0..num_route_shapes {
+        for i in 0..num_route_shapes.min(num_route_names) {
+            if pos + 4 > buf.len() {
+                return Err(format!("Incomplete route_shapes data at route {}", i));
+            }
             let num_shapes_for_route = read_u32(&buf, &mut pos) as usize;
             let mut shapes_for_route = Vec::with_capacity(num_shapes_for_route);
             for _ in 0..num_shapes_for_route {
-                let id_len = read_u32(&buf, &mut pos) as usize;
-                if id_len > 0 {
-                    shapes_for_route.push(
-                        String::from_utf8_lossy(&buf[pos..pos + id_len]).to_string(),
-                    );
+                if pos + 4 > buf.len() {
+                    return Err(format!("Incomplete shape index in route_shapes for route {}", i));
                 }
-                pos += id_len;
+                let shape_idx = read_u32(&buf, &mut pos);
+                // Only keep valid shape indices (those that actually exist in the shapes map)
+                if shape_idx != u32::MAX && shapes.contains_key(&shape_idx) {
+                    shapes_for_route.push(shape_idx);
+                }
             }
             route_shapes[i] = shapes_for_route;
         }
@@ -825,20 +842,16 @@ pub fn load_with_stats(compressed: &[u8]) -> Result<(PreparedData, LoadStats), S
         + adj.iter().map(|v| v.capacity() * std::mem::size_of::<(u32, f32)>()).sum::<usize>();
     memory_sections.push(("adj list", adj_mem));
 
-    // shapes HashMap
-    let shapes_mem: usize = shapes.iter().map(|(k, v)| {
-        std::mem::size_of::<String>() + k.capacity()
-        + std::mem::size_of::<Vec<(f64, f64)>>() + v.capacity() * 16
+    // shapes HashMap: compressed PCO data
+    let shapes_mem: usize = shapes.iter().map(|(_, v)| {
+        std::mem::size_of::<Vec<u8>>() + v.capacity()
         + 64 // rough HashMap entry overhead
     }).sum();
     memory_sections.push(("shapes", shapes_mem));
 
-    // route_shapes
-    let rs_mem: usize = route_shapes.iter().map(|v| {
-        std::mem::size_of::<Vec<String>>()
-        + v.iter().map(|s| std::mem::size_of::<String>() + s.capacity()).sum::<usize>()
-    }).sum();
-    memory_sections.push(("route_shapes", rs_mem));
+    // route_shapes: now Vec<Vec<u32>> (shape indices) - stored compressed in binary anyway
+    // Skip detailed memory calculation as it's in compressed form
+    memory_sections.push(("route_shapes", 0));
 
     // node_grid HashMap
     let ng_mem: usize = node_grid.iter().map(|(_, v)| {
@@ -860,7 +873,6 @@ pub fn load_with_stats(compressed: &[u8]) -> Result<(PreparedData, LoadStats), S
         ("total events (raw)", total_events),
         ("sentinel events", total_sentinels),
         ("total freq entries", total_freq),
-        ("shape points", total_shape_points),
         ("grid cells", node_grid.len()),
     ];
 

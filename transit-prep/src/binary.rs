@@ -291,26 +291,54 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
         }
     }
 
-    // Shapes
-    for (shape_id, points) in &data.shapes {
-        let id_bytes = shape_id.as_bytes();
-        write_u32(&mut buf, id_bytes.len() as u32);
-        buf.extend_from_slice(id_bytes);
-        write_u32(&mut buf, points.len() as u32);
-        for &(lat, lon) in points {
-            write_f64(&mut buf, lat);
-            write_f64(&mut buf, lon);
-        }
+    // Shapes: build index mapping and compress with PCO per shape
+    // Sort shape IDs for consistent output order
+    let mut sorted_shape_ids: Vec<_> = data.shapes.keys().collect();
+    sorted_shape_ids.sort();
+
+    // Map shape_id -> shape_index based on sorted order
+    let mut shape_id_to_index: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+    for (idx, shape_id) in sorted_shape_ids.iter().enumerate() {
+        shape_id_to_index.insert((*shape_id).clone(), idx as u32);
     }
 
-    // Route-to-shape mapping
+    // Write shapes: for each shape (in consistent sorted order): compressed PCO data
+    // num_shapes already written in header
+
+    for shape_id_ref in &sorted_shape_ids {
+        let shape_id = *shape_id_ref;
+        let points = &data.shapes[shape_id];
+
+        // Convert to f32 and flatten: [lat0, lon0, lat1, lon1, ...]
+        let mut coords: Vec<u32> = Vec::with_capacity(points.len() * 2);
+        for &(lat, lon) in points {
+            // Round to f32 and reinterpret as u32 for PCO compression
+            let lat_f32 = lat as f32;
+            let lon_f32 = lon as f32;
+            coords.push(lat_f32.to_bits());
+            coords.push(lon_f32.to_bits());
+        }
+
+        // Compress coordinates with PCO - even if empty, compress empty vec
+        let compressed = if coords.is_empty() {
+            // Empty shapes: write 0 length
+            Vec::new()
+        } else {
+            pco::standalone::simple_compress(&coords, &pco::ChunkConfig::default())
+                .expect("pco compress failed")
+        };
+        write_u32(&mut buf, compressed.len() as u32);
+        buf.extend_from_slice(&compressed);
+    }
+
+    // Route-to-shape mapping: use shape indices instead of IDs
     write_u32(&mut buf, data.route_shapes.len() as u32);
-    for shapes in &data.route_shapes {
-        write_u32(&mut buf, shapes.len() as u32);
-        for shape_id in shapes {
-            let id_bytes = shape_id.as_bytes();
-            write_u32(&mut buf, id_bytes.len() as u32);
-            buf.extend_from_slice(id_bytes);
+    for shapes_for_route in &data.route_shapes {
+        write_u32(&mut buf, shapes_for_route.len() as u32);
+        for shape_id in shapes_for_route {
+            // Look up the shape index from the sorted mapping
+            let shape_idx = shape_id_to_index.get(shape_id).copied().unwrap_or(u32::MAX);
+            write_u32(&mut buf, shape_idx);
         }
     }
 
