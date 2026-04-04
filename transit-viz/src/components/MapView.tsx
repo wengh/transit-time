@@ -16,6 +16,7 @@ export default function MapView(): React.ReactNode {
   const sourceMarkerRef = useRef<L.Marker | null>(null);
   const destMarkerRef = useRef<L.CircleMarker | null>(null);
   const routePolylinesRef = useRef<L.Path[]>([]);
+  const drawRouteLayersRef = useRef<((paths: HoverPath[]) => void) | null>(null);
   const lastHoveredNodeRef = useRef<number | null>(null);
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const longPressStartRef = useRef<number | null>(null);
@@ -149,6 +150,8 @@ export default function MapView(): React.ReactNode {
         }
       }
     }
+
+    drawRouteLayersRef.current = drawRouteSegments;
 
     function showDestination(node: number, pin: boolean) {
       const s = stateRef.current;
@@ -407,6 +410,16 @@ export default function MapView(): React.ReactNode {
       clearDestination();
     }
   }, [state.pinnedNode, clearDestination]);
+
+  // Redraw routes when selected sample changes (chart hover/click)
+  useEffect(() => {
+    const { hoverData, selectedSampleIdx, pinnedNode } = state;
+    if (!drawRouteLayersRef.current || !hoverData || pinnedNode === null) return;
+    const paths = selectedSampleIdx !== null
+      ? [hoverData.allPaths[selectedSampleIdx]].filter((p): p is HoverPath => !!p && p.segments.length > 0)
+      : hoverData.allPaths.filter(p => p.segments.length > 0);
+    drawRouteLayersRef.current(paths);
+  }, [state.selectedSampleIdx, state.hoverData, state.pinnedNode]);
 
   return <div id="map" ref={mapContainerRef} />;
 }

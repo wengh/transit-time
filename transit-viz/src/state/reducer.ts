@@ -34,6 +34,7 @@ export interface AppState {
   pinnedNode: number | null;
   pinnedLatLng: [number, number] | null;
   hoverData: HoverData | null;
+  selectedSampleIdx: number | null;
 
   // UI feedback
   showCopiedMessage: boolean;
@@ -66,6 +67,7 @@ export type Action =
   | { type: 'UNPIN_DESTINATION' }
   | { type: 'SET_HOVER_DATA'; hoverData: HoverData }
   | { type: 'CLEAR_HOVER' }
+  | { type: 'SELECT_SAMPLE'; idx: number | null }
   | { type: 'SHOW_COPIED_MESSAGE' }
   | { type: 'HIDE_COPIED_MESSAGE' };
 
@@ -102,6 +104,7 @@ export const initialState: AppState = {
   pinnedNode: null,
   pinnedLatLng: null,
   hoverData: null,
+  selectedSampleIdx: null,
 
   // UI feedback
   showCopiedMessage: false,
@@ -130,6 +133,7 @@ export function reducer(state: AppState, action: Action): AppState {
         pinnedNode: null,
         pinnedLatLng: null,
         hoverData: null,
+        selectedSampleIdx: null,
         computeStatus: 'idle',
       };
     case 'LOAD_ERROR':
@@ -148,9 +152,10 @@ export function reducer(state: AppState, action: Action): AppState {
         pinnedNode: null,
         pinnedLatLng: null,
         hoverData: null,
+        selectedSampleIdx: null,
       };
     case 'SET_SOURCE':
-      return { ...state, sourceNode: action.node, sourceLatLng: action.latLng, pinnedNode: null, pinnedLatLng: null, hoverData: null };
+      return { ...state, sourceNode: action.node, sourceLatLng: action.latLng, pinnedNode: null, pinnedLatLng: null, hoverData: null, selectedSampleIdx: null };
     case 'SET_MODE':
       return { ...state, mode: action.mode };
     case 'SET_DEPARTURE_TIME':
@@ -168,13 +173,15 @@ export function reducer(state: AppState, action: Action): AppState {
     case 'COMPUTING':
       return { ...state, computeStatus: 'computing' };
     case 'QUERY_DONE':
-      return { ...state, travelTimes: action.travelTimes, ssspList: action.ssspList, computeStatus: 'done', computeTimeMs: action.timeMs };
+      return { ...state, travelTimes: action.travelTimes, ssspList: action.ssspList, computeStatus: 'done', computeTimeMs: action.timeMs, selectedSampleIdx: null };
     case 'QUERY_ERROR':
       return { ...state, computeStatus: 'error' };
+    case 'SELECT_SAMPLE':
+      return { ...state, selectedSampleIdx: action.idx };
     case 'PIN_DESTINATION':
-      return { ...state, pinnedNode: action.node, pinnedLatLng: action.latLng, hoverData: action.hoverData };
+      return { ...state, pinnedNode: action.node, pinnedLatLng: action.latLng, hoverData: action.hoverData, selectedSampleIdx: null };
     case 'UNPIN_DESTINATION':
-      return { ...state, pinnedNode: null, pinnedLatLng: null, hoverData: null };
+      return { ...state, pinnedNode: null, pinnedLatLng: null, hoverData: null, selectedSampleIdx: null };
     case 'SET_HOVER_DATA':
       return { ...state, hoverData: action.hoverData };
     case 'CLEAR_HOVER':

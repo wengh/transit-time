@@ -1,4 +1,5 @@
 import init, { initThreadPool, TransitRouter, WasmSsspResult, __markRayonReady } from '../../pkg/transit_router';
+import { ROUTE_COLORS, hexToRgb } from './colors';
 
 let wasmReady = false;
 
@@ -101,19 +102,28 @@ export function runQuery(router: Router, params: RunQueryParams): QueryResult {
     return { travelTimes, ssspList };
   } else {
     const windowEnd = departureTime + 3600;
-    const ssspList = router.run_tdd_sampled_full_for_date(
-      sourceNode,
-      departureTime,
-      windowEnd,
-      nSamples,
-      parseInt(date.replace(/-/g, '')),
-      transferSlack,
-      maxTime
+    const dateInt = parseInt(date.replace(/-/g, ''));
+    const startSssp = router.run_tdd_full_for_date(sourceNode, departureTime, dateInt, transferSlack, maxTime);
+    const endSssp = router.run_tdd_full_for_date(sourceNode, windowEnd, dateInt, transferSlack, maxTime);
+    const sampledList = router.run_tdd_sampled_full_for_date(
+      sourceNode, departureTime, windowEnd, nSamples, dateInt, transferSlack, maxTime
     );
+    // Merge, deduplicating by exact departure time (keep first occurrence = boundary takes priority)
+    const seenTimes = new Set<number>();
+    const ssspList: SsspList = [];
+    for (const sssp of [startSssp, ...sampledList, endSssp]) {
+      const t = router.sssp_departure_time(sssp);
+      if (!seenTimes.has(t)) {
+        seenTimes.add(t);
+        ssspList.push(sssp);
+      } else {
+        sssp.free();
+      }
+    }
+
     const sumTimes = new Float64Array(numNodes);
     const counts = new Uint32Array(numNodes);
-    for (let s = 0; s < ssspList.length; s++) {
-      const sssp = ssspList[s];
+    for (const sssp of ssspList) {
       const t = router.sssp_departure_time(sssp);
       for (let i = 0; i < numNodes; i++) {
         const arr = router.node_arrival_time(sssp, i);
@@ -134,6 +144,31 @@ export function runQuery(router: Router, params: RunQueryParams): QueryResult {
 export interface HoverPath {
   segments: PathSegment[];
   totalTime: number | null;
+  departureTime: number;
+  routeColor: string;
+}
+
+function getDominantRouteColor(router: Router, segments: PathSegment[]): string {
+  const transitSegs = segments.filter(s => s.edgeType === 1);
+  if (transitSegs.length === 0) return '#888888';
+  const dominant = transitSegs.reduce((a, b) => (a.duration >= b.duration ? a : b));
+  if (dominant.routeIdx >= 0xffffffff) return ROUTE_COLORS[0];
+  const hex = router.route_color(dominant.routeIdx);
+  if (hex) {
+    const rgb = hexToRgb(hex);
+    if (rgb) {
+      const lum = (rgb[0] * 299 + rgb[1] * 587 + rgb[2] * 114) / 1000;
+      if (lum > 0 && lum < 100) {
+        const s = 100 / lum;
+        return `rgb(${Math.min(255, Math.round(rgb[0] * s))},${Math.min(255, Math.round(rgb[1] * s))},${Math.min(255, Math.round(rgb[2] * s))})`;
+      } else if (lum > 220) {
+        const s = 220 / lum;
+        return `rgb(${Math.round(rgb[0] * s)},${Math.round(rgb[1] * s)},${Math.round(rgb[2] * s)})`;
+      }
+      return hex;
+    }
+  }
+  return ROUTE_COLORS[0];
 }
 
 export function getHoverData(router: Router, ssspList: SsspList, node: number): HoverPath[] {
@@ -144,12 +179,17 @@ export function getHoverData(router: Router, ssspList: SsspList, node: number): 
       const depTime = router.sssp_departure_time(sssp);
       const arrival = router.node_arrival_time(sssp, node);
       if (arrival >= 0xffffffff) {
-        allPaths.push({ segments: [], totalTime: null });
+        allPaths.push({ segments: [], totalTime: null, departureTime: depTime, routeColor: '#888888' });
         continue;
       }
       const pathArray = router.reconstruct_path(sssp, node);
       const segments = parsePathSegments(router, sssp, pathArray);
-      allPaths.push({ segments, totalTime: arrival - depTime });
+      allPaths.push({
+        segments,
+        totalTime: arrival - depTime,
+        departureTime: depTime,
+        routeColor: getDominantRouteColor(router, segments),
+      });
     } catch (e) {
       // In case of any Wasm errors about null pointers, skip safely
       if (e instanceof Error && e.message && e.message.includes('null pointer')) continue;
