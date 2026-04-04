@@ -1,5 +1,5 @@
 use crate::graph::{OsmEdge, OsmNode};
-use crate::gtfs::{ServicePattern, Stop, Color};
+use crate::gtfs::{Color, ServicePattern, Stop};
 use anyhow::Result;
 use std::collections::HashMap;
 use std::io::Write;
@@ -68,7 +68,7 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
 
     // Header
     buf.extend_from_slice(b"TRNS");
-    write_u32(&mut buf, 1); // version
+    write_u32(&mut buf, 2); // version
     write_u32(&mut buf, data.nodes.len() as u32);
     write_u32(&mut buf, data.edges.len() as u32);
     write_u32(&mut buf, data.stops.len() as u32);
@@ -151,16 +151,26 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
             }
         }
 
+        // Sorting by trip_index makes route_index and trip_index constant for the trip
         flat_events.sort_unstable_by_key(|&(time_offset, e)| (e.trip_index, time_offset));
 
         write_u32(&mut buf, flat_events.len() as u32);
-        for &(time_offset, event) in &flat_events {
-            write_u32(&mut buf, time_offset);
-            write_u32(&mut buf, event.stop_index);
-            write_u32(&mut buf, event.route_index);
-            write_u32(&mut buf, event.trip_index);
-            write_u32(&mut buf, event.next_stop_index);
-            write_u32(&mut buf, event.travel_time);
+        let cols: [Vec<u32>; 6] = [
+            flat_events.iter().map(|&(t, _)| t).collect(),
+            flat_events.iter().map(|&(_, e)| e.stop_index).collect(),
+            flat_events.iter().map(|&(_, e)| e.route_index).collect(),
+            flat_events.iter().map(|&(_, e)| e.trip_index).collect(),
+            flat_events
+                .iter()
+                .map(|&(_, e)| e.next_stop_index)
+                .collect(),
+            flat_events.iter().map(|&(_, e)| e.travel_time).collect(),
+        ];
+        for col in &cols {
+            let compressed = pco::standalone::simple_compress(col, &pco::ChunkConfig::default())
+                .expect("pco compress failed");
+            write_u32(&mut buf, compressed.len() as u32);
+            buf.extend_from_slice(&compressed);
         }
 
         write_u32(&mut buf, pattern.frequency_routes.len() as u32);

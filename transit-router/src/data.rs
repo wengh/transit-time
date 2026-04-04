@@ -155,7 +155,7 @@ pub fn load(compressed: &[u8]) -> Result<PreparedData, String> {
     }
     pos += 4;
     let version = read_u32(&buf, &mut pos);
-    if version != 1 {
+    if version != 2 {
         return Err(format!("Unsupported version {}", version));
     }
     let num_nodes = read_u32(&buf, &mut pos) as usize;
@@ -261,7 +261,6 @@ pub fn load(compressed: &[u8]) -> Result<PreparedData, String> {
         let max_time = read_u32(&buf, &mut pos);
 
         let num_flat_events = read_u32(&buf, &mut pos) as usize;
-        let _target_len = (max_time.saturating_sub(min_time) + 1) as usize;
 
         struct RawEvent {
             time_offset: u32,
@@ -272,25 +271,23 @@ pub fn load(compressed: &[u8]) -> Result<PreparedData, String> {
             travel_time: u32,
         }
 
-        let mut raw_events = Vec::with_capacity(num_flat_events);
+        let time_offsets = read_pco_u32(&buf, &mut pos)?;
+        let stop_indices = read_pco_u32(&buf, &mut pos)?;
+        let route_indices = read_pco_u32(&buf, &mut pos)?;
+        let trip_indices = read_pco_u32(&buf, &mut pos)?;
+        let next_stop_indices = read_pco_u32(&buf, &mut pos)?;
+        let travel_times = read_pco_u32(&buf, &mut pos)?;
 
-        for _ in 0..num_flat_events {
-            let time_offset = read_u32(&buf, &mut pos);
-            let stop_index = read_u32(&buf, &mut pos);
-            let route_index = read_u32(&buf, &mut pos);
-            let trip_index = read_u32(&buf, &mut pos);
-            let next_stop_index = read_u32(&buf, &mut pos);
-            let travel_time = read_u32(&buf, &mut pos);
-
-            raw_events.push(RawEvent {
-                time_offset,
-                stop_index,
-                route_index,
-                trip_index,
-                next_stop_index,
-                travel_time,
-            });
-        }
+        let mut raw_events: Vec<RawEvent> = (0..num_flat_events)
+            .map(|i| RawEvent {
+                time_offset: time_offsets[i],
+                stop_index: stop_indices[i],
+                route_index: route_indices[i],
+                trip_index: trip_indices[i],
+                next_stop_index: next_stop_indices[i],
+                travel_time: travel_times[i],
+            })
+            .collect();
 
         // Sort by trip to identify the end of each trip and attach sentinels
         raw_events.sort_unstable_by_key(|e| (e.trip_index, e.time_offset));
@@ -465,6 +462,14 @@ pub fn load(compressed: &[u8]) -> Result<PreparedData, String> {
         route_shapes,
         node_grid,
     })
+}
+
+fn read_pco_u32(buf: &[u8], pos: &mut usize) -> Result<Vec<u32>, String> {
+    let pco_len = read_u32(buf, pos) as usize;
+    let result: Vec<u32> = pco::standalone::simple_decompress(&buf[*pos..*pos + pco_len])
+        .map_err(|e| format!("pco decompress failed: {}", e))?;
+    *pos += pco_len;
+    Ok(result)
 }
 
 fn read_u32(buf: &[u8], pos: &mut usize) -> u32 {
