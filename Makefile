@@ -11,7 +11,7 @@ BIN_FILES := $(addprefix transit-viz/public/data/, $(addsuffix .bin, $(CITY_IDS)
 
 # Build WASM (only when router source changes)
 wasm: $(WASM_OUT)
-$(WASM_OUT): $(ROUTER_SRC) transit-router/Cargo.toml
+$(WASM_OUT): $(ROUTER_SRC) transit-router/Cargo.toml .cargo/config.toml
 	RUSTUP_TOOLCHAIN=nightly wasm-pack build transit-router --target web --out-dir ../transit-viz/pkg -- -Z build-std=panic_abort,std
 
 # Build all data
