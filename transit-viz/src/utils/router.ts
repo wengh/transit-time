@@ -52,23 +52,18 @@ export async function loadRouter(cityFile: string, onProgress?: (progress: numbe
   const total = parseInt(resp.headers.get('content-length') || '0');
   let loaded = 0;
 
-  const reader = resp.body!.getReader();
-  const chunks: Uint8Array[] = [];
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    chunks.push(value);
-    loaded += value.length;
-    if (total > 0 && onProgress) {
-      onProgress(Math.round((loaded / total) * 100));
-    }
-  }
-  const dataBytes = new Uint8Array(loaded);
-  let offset = 0;
-  for (const chunk of chunks) {
-    dataBytes.set(chunk, offset);
-    offset += chunk.length;
-  }
+  // Decompress pipelined with download; track progress on compressed bytes
+  const decompressedStream = resp.body!
+    .pipeThrough(new TransformStream({
+      transform(chunk, controller) {
+        loaded += chunk.length;
+        if (total > 0 && onProgress) onProgress(Math.round((loaded / total) * 100));
+        controller.enqueue(chunk);
+      }
+    }))
+    .pipeThrough(new DecompressionStream('gzip'));
+
+  const dataBytes = new Uint8Array(await new Response(decompressedStream).arrayBuffer());
 
   return new TransitRouter(dataBytes);
 }

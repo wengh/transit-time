@@ -220,21 +220,31 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
         }
 
         // Apply permutation and remap next_event_index
-        let sorted_events: Vec<FlatEvent> = order.iter().map(|&i| {
-            let e = &with_sentinels[i as usize];
-            FlatEvent {
-                time_offset: e.time_offset,
-                stop_index: e.stop_index,
-                route_index: e.route_index,
-                trip_index: e.trip_index,
-                next_stop_index: e.next_stop_index,
-                travel_time: e.travel_time,
-            }
-        }).collect();
-        let remapped_nei: Vec<u32> = order.iter().map(|&i| {
-            let nei = next_event_index[i as usize];
-            if nei == u32::MAX { u32::MAX } else { inv[nei as usize] }
-        }).collect();
+        let sorted_events: Vec<FlatEvent> = order
+            .iter()
+            .map(|&i| {
+                let e = &with_sentinels[i as usize];
+                FlatEvent {
+                    time_offset: e.time_offset,
+                    stop_index: e.stop_index,
+                    route_index: e.route_index,
+                    trip_index: e.trip_index,
+                    next_stop_index: e.next_stop_index,
+                    travel_time: e.travel_time,
+                }
+            })
+            .collect();
+        let remapped_nei: Vec<u32> = order
+            .iter()
+            .map(|&i| {
+                let nei = next_event_index[i as usize];
+                if nei == u32::MAX {
+                    u32::MAX
+                } else {
+                    inv[nei as usize]
+                }
+            })
+            .collect();
 
         // Compute stop offsets for JaggedArray
         let num_stops = data.stops.len() as u32;
@@ -265,17 +275,20 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
         }
 
         // Stop offsets (num_stops + 1 entries)
-        let compressed_offsets = pco::standalone::simple_compress(&stop_offsets, &pco::ChunkConfig::default())
-            .expect("pco compress failed");
+        let compressed_offsets =
+            pco::standalone::simple_compress(&stop_offsets, &pco::ChunkConfig::default())
+                .expect("pco compress failed");
         write_u32(&mut buf, compressed_offsets.len() as u32);
         buf.extend_from_slice(&compressed_offsets);
 
         // Sentinel routes: for each event, if it's a sentinel (travel_time == 0), store its route_index
-        let sentinel_routes: Vec<u32> = sorted_events.iter().map(|e| {
-            if e.travel_time == 0 { e.route_index } else { 0 }
-        }).collect();
-        let compressed_sentinel_routes = pco::standalone::simple_compress(&sentinel_routes, &pco::ChunkConfig::default())
-            .expect("pco compress failed");
+        let sentinel_routes: Vec<u32> = sorted_events
+            .iter()
+            .map(|e| if e.travel_time == 0 { e.route_index } else { 0 })
+            .collect();
+        let compressed_sentinel_routes =
+            pco::standalone::simple_compress(&sentinel_routes, &pco::ChunkConfig::default())
+                .expect("pco compress failed");
         write_u32(&mut buf, compressed_sentinel_routes.len() as u32);
         buf.extend_from_slice(&compressed_sentinel_routes);
 
@@ -297,7 +310,8 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
     sorted_shape_ids.sort();
 
     // Map shape_id -> shape_index based on sorted order
-    let mut shape_id_to_index: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+    let mut shape_id_to_index: std::collections::HashMap<String, u32> =
+        std::collections::HashMap::new();
     for (idx, shape_id) in sorted_shape_ids.iter().enumerate() {
         shape_id_to_index.insert((*shape_id).clone(), idx as u32);
     }

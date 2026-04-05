@@ -1,4 +1,3 @@
-use std::io::Read;
 use std::time::Duration;
 extern crate console_error_panic_hook;
 
@@ -162,22 +161,14 @@ pub struct PreparedData {
     pub node_grid: std::collections::HashMap<(i32, i32), Vec<u32>>,
 }
 
-pub fn load(compressed: &[u8]) -> Result<PreparedData, String> {
-    load_with_stats(compressed).map(|(data, _)| data)
+pub fn load(buf: &[u8]) -> Result<PreparedData, String> {
+    load_with_stats(buf).map(|(data, _)| data)
 }
 
-pub fn load_with_stats(compressed: &[u8]) -> Result<(PreparedData, LoadStats), String> {
+pub fn load_with_stats(buf: &[u8]) -> Result<(PreparedData, LoadStats), String> {
     console_error_panic_hook::set_once();
     let mut binary_sections: Vec<(&str, usize)> = Vec::new();
     let mut timings: Vec<(&str, Duration)> = Vec::new();
-
-    let t0 = Instant::now();
-    let mut decoder = flate2::read::GzDecoder::new(compressed);
-    let mut buf = Vec::new();
-    decoder
-        .read_to_end(&mut buf)
-        .map_err(|e| format!("Decompression failed: {}", e))?;
-    timings.push(("decompress", t0.elapsed()));
 
     let mut pos = 0;
 
@@ -578,7 +569,7 @@ pub fn load_with_stats(compressed: &[u8]) -> Result<(PreparedData, LoadStats), S
     memory_sections.push(("node_grid", ng_mem));
 
     // decompressed buf (transient)
-    memory_sections.push(("decompressed buf (transient)", buf.capacity()));
+    memory_sections.push(("input buf", buf.len()));
 
     let counts = vec![
         ("nodes", num_nodes),
@@ -595,7 +586,7 @@ pub fn load_with_stats(compressed: &[u8]) -> Result<(PreparedData, LoadStats), S
     ];
 
     let stats = LoadStats {
-        compressed_size: compressed.len(),
+        compressed_size: 0,
         decompressed_size: buf.len(),
         binary_sections,
         memory_sections,
@@ -653,7 +644,7 @@ impl LoadStats {
         );
         println!(
             "{:<25} {:>12}",
-            "TOTAL compressed (gzip)",
+            "TOTAL compressed (zstd)",
             fmt_bytes(self.compressed_size)
         );
         println!();

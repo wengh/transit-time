@@ -1,3 +1,4 @@
+use std::io::Read;
 use std::path::Path;
 use std::time::Instant;
 
@@ -20,7 +21,11 @@ fn profile_hour_window() {
         return;
     }
 
-    let data = std::fs::read(&bin_path).expect("Failed to read binary");
+    let compressed = std::fs::read(&bin_path).expect("Failed to read binary");
+    let mut data = Vec::new();
+    flate2::read::GzDecoder::new(compressed.as_slice())
+        .read_to_end(&mut data)
+        .expect("Failed to decompress gzip");
     let (prepared, stats) =
         transit_router::data::load_with_stats(&data).expect("Failed to load data");
     stats.print();
