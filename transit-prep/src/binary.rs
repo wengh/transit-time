@@ -259,16 +259,22 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
         }
 
         // Serialize events as JaggedArray<EventData>:
-        // num_stops, offsets[num_stops+1], flat events (4 u32s each)
+        // num_stops, offsets[num_stops+1] (prebuilt), then 4 PCO-compressed columns
         write_u32(&mut buf, num_stops);
         for &offset in &stop_offsets {
             write_u32(&mut buf, offset);
         }
-        for (i, e) in sorted_events.iter().enumerate() {
-            write_u32(&mut buf, e.time_offset);
-            write_u32(&mut buf, e.stop_index);
-            write_u32(&mut buf, e.travel_time);
-            write_u32(&mut buf, remapped_nei[i]);
+        let cols: [Vec<u32>; 4] = [
+            sorted_events.iter().map(|e| e.time_offset).collect(),
+            sorted_events.iter().map(|e| e.stop_index).collect(),
+            sorted_events.iter().map(|e| e.travel_time).collect(),
+            remapped_nei,
+        ];
+        for col in &cols {
+            let compressed = pco::standalone::simple_compress(col, &pco::ChunkConfig::default())
+                .expect("pco compress failed");
+            write_u32(&mut buf, compressed.len() as u32);
+            buf.extend_from_slice(&compressed);
         }
 
         // Sentinel routes: sparse (num_sentinels, then (event_idx, route_idx) pairs)

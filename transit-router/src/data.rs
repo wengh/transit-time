@@ -104,36 +104,6 @@ impl<T: Copy> JaggedArray<T> {
     }
 }
 
-impl JaggedArray<EventData> {
-    pub fn read_from_bytes(buf: &[u8], pos: &mut usize) -> Result<Self, String> {
-        let num_buckets = read_u32(buf, pos) as usize;
-
-        if *pos + (num_buckets + 1) * 4 > buf.len() {
-            return Err("Cannot read events_by_stop offsets".to_string());
-        }
-        let mut offsets = Vec::with_capacity(num_buckets + 1);
-        for _ in 0..=num_buckets {
-            offsets.push(read_u32(buf, pos));
-        }
-
-        let data_len = offsets[num_buckets] as usize;
-        if *pos + data_len * 16 > buf.len() {
-            return Err("Cannot read events_by_stop data".to_string());
-        }
-        let mut data = Vec::with_capacity(data_len);
-        for _ in 0..data_len {
-            data.push(EventData {
-                time_offset: read_u32(buf, pos),
-                stop_index: read_u32(buf, pos),
-                travel_time: read_u32(buf, pos),
-                next_event_index: read_u32(buf, pos),
-            });
-        }
-
-        Ok(Self { offsets, data })
-    }
-}
-
 pub struct PatternStopIndex {
     pub freq_by_stop: JaggedArray<u32>,
     pub events_by_stop: JaggedArray<EventData>,
@@ -335,9 +305,36 @@ pub fn load_with_stats(compressed: &[u8]) -> Result<(PreparedData, LoadStats), S
         let min_time = read_u32(&buf, &mut pos);
         let max_time = read_u32(&buf, &mut pos);
 
-        // v4: events stored as pre-built JaggedArray<EventData>
-        let events_by_stop = JaggedArray::<EventData>::read_from_bytes(&buf, &mut pos)?;
-        total_events += events_by_stop.data.len();
+        // v4: pre-built offsets + 4 PCO-compressed columns
+        let num_stops_in_pattern = read_u32(&buf, &mut pos) as usize;
+        if pos + (num_stops_in_pattern + 1) * 4 > buf.len() {
+            return Err("Cannot read events_by_stop offsets".to_string());
+        }
+        let mut stop_offsets = Vec::with_capacity(num_stops_in_pattern + 1);
+        for _ in 0..=num_stops_in_pattern {
+            stop_offsets.push(read_u32(&buf, &mut pos));
+        }
+        let num_events = stop_offsets[num_stops_in_pattern] as usize;
+
+        let time_offsets = read_pco_u32(&buf, &mut pos)?;
+        let stop_indices = read_pco_u32(&buf, &mut pos)?;
+        let travel_times = read_pco_u32(&buf, &mut pos)?;
+        let next_event_indices = read_pco_u32(&buf, &mut pos)?;
+
+        let data: Vec<EventData> = (0..num_events)
+            .map(|i| EventData {
+                time_offset: time_offsets[i],
+                stop_index: stop_indices[i],
+                travel_time: travel_times[i],
+                next_event_index: next_event_indices[i],
+            })
+            .collect();
+
+        let events_by_stop = JaggedArray {
+            offsets: stop_offsets,
+            data,
+        };
+        total_events += num_events;
 
         // Sentinel routes: sparse (num_sentinels, then (event_idx, route_idx) pairs)
         let num_sentinels = read_u32(&buf, &mut pos) as usize;
@@ -706,4 +703,12 @@ fn read_f64(buf: &[u8], pos: &mut usize) -> f64 {
     let v = f64::from_le_bytes(buf[*pos..*pos + 8].try_into().unwrap());
     *pos += 8;
     v
+}
+
+fn read_pco_u32(buf: &[u8], pos: &mut usize) -> Result<Vec<u32>, String> {
+    let pco_len = read_u32(buf, pos) as usize;
+    let result: Vec<u32> = pco::standalone::simple_decompress(&buf[*pos..*pos + pco_len])
+        .map_err(|e| format!("pco decompress failed: {}", e))?;
+    *pos += pco_len;
+    Ok(result)
 }
