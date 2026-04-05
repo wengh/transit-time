@@ -12,7 +12,8 @@ export interface City {
 
 const cityModules = import.meta.glob<string>('../../cities/*.jsonc', {
   eager: true,
-  as: 'raw',
+  query: '?raw',
+  import: 'default',
 });
 
 export const CITIES: City[] = Object.values(cityModules).map((content) => JSONC.parse(content) as City);
