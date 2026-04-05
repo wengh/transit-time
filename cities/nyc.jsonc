@@ -1,0 +1,26 @@
+{
+    "id": "nyc",
+    "bbbike_name": "New_York",
+    "feed_ids": [
+        "http://web.mta.info/developers/data/lirr/google_transit.zip",
+        "https://www.njtransit.com/rail_data.zip",
+        "http://web.mta.info/developers/data/busco/google_transit.zip",
+        "http://web.mta.info/developers/data/nyct/bus/google_transit_brooklyn.zip",
+        "http://web.mta.info/developers/data/nyct/bus/google_transit_manhattan.zip",
+        "http://web.mta.info/developers/data/nyct/bus/google_transit_staten_island.zip",
+        "http://web.mta.info/developers/data/nyct/subway/google_transit.zip",
+        "http://data.trilliumtransit.com/gtfs/path-nj-us/path-nj-us.zip",
+        "http://mjcaction.com/MJC_GTFS_Public/downtown_nyc_google_transit.zip",
+        "http://web.mta.info/developers/data/nyct/bus/google_transit_queens.zip",
+        "http://web.mta.info/developers/data/nyct/bus/google_transit_bronx.zip"
+    ],
+    "name": "New York City, NY",
+    "file": "nyc.bin",
+    "bbox": "-74.25,40.50,-73.70,40.92",
+    "center": [
+        40.71,
+        -74.01
+    ],
+    "zoom": 11,
+    "detail": "MTA, PATH"
+}

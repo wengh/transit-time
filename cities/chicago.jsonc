@@ -1,0 +1,17 @@
+{
+    "id": "chicago",
+    "bbbike_name": "Chicago",
+    "feed_ids": [
+        "http://www.transitchicago.com/downloads/sch_data/google_transit.zip",
+        "https://www.pacebus.com/gtfsdownload"
+    ],
+    "name": "Chicago, IL",
+    "file": "chicago.bin",
+    "bbox": "-87.99,41.66,-87.43,42.08",
+    "center": [
+        41.88,
+        -87.63
+    ],
+    "zoom": 12,
+    "detail": "CTA, Pace"
+}

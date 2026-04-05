@@ -1,0 +1,32 @@
+[package]
+name = "transit-prep"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "transit_prep"
+path = "src/lib.rs"
+
+[[bin]]
+name = "transit-prep"
+path = "src/main.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+bytemuck = { workspace = true }
+reqwest = { version = "0.12", features = ["blocking", "json"] }
+zip = "2"
+csv = "1"
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+quick-xml = "0.36"
+osmpbf = "0.3"
+flate2 = "1"
+pco = "1"
+sha2 = "0.10"
+hex = "0.4"
+jsonc-parser = { version = "0.32.2", features = ["serde"] }
+
+[dev-dependencies]
+tempfile = "3"

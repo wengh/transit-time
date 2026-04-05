@@ -1,0 +1,18 @@
+{
+    "id": "toronto",
+    "bbbike_name": "Toronto",
+    "feed_ids": [
+        "http://opendata.toronto.ca/toronto.transit.commission/ttc-routes-and-schedules/OpenData_TTC_Schedules.zip",
+        "https://assets.metrolinx.com/raw/upload/Documents/Metrolinx/Open%20Data/GO-GTFS.zip",
+        "https://assets.metrolinx.com/raw/upload/Documents/Metrolinx/Open%20Data/UP-GTFS.zip"
+    ],
+    "name": "Toronto, ON",
+    "file": "toronto.bin",
+    "bbox": "-79.63,43.58,-79.11,43.85",
+    "center": [
+        43.65,
+        -79.38
+    ],
+    "zoom": 12,
+    "detail": "TTC, Go Transit, UP Express"
+}

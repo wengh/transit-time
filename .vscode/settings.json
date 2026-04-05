@@ -1,0 +1,8 @@
+{
+    "chat.tools.terminal.autoApprove": {
+        "cargo test": true,
+        "cargo run": true,
+        "make": true,
+        "npm run build": true
+    }
+}

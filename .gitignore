@@ -1,0 +1,11 @@
+/target
+/node_modules
+/transit-viz/node_modules
+/transit-viz/dist
+/cache
+*.bin
+/pkg
+/transit-router/pkg
+.env
+perf.data*
+flamegraph.svg

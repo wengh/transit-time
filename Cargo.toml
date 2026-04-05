@@ -1,0 +1,12 @@
+[workspace]
+members = ["transit-prep", "transit-router"]
+resolver = "2"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+bytemuck = { version = "1", features = ["derive"] }
+
+[profile.release]
+opt-level = "z"
+lto = "fat"
