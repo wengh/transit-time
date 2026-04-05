@@ -1,7 +1,7 @@
 [target.wasm32-unknown-unknown]
 rustflags = [
     "-C",
-    "target-feature=+atomics,+bulk-memory,+mutable-globals,+simd128",
+    "target-feature=+atomics,+bulk-memory,+mutable-globals",
     "-C",
     "link-arg=--shared-memory",
     "-C",
