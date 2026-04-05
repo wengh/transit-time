@@ -288,8 +288,26 @@ export default function HoverInfo(): React.ReactNode {
 
   // Which path to show details for
   const displayPath = selectedSampleIdx !== null
-    ? allPaths[selectedSampleIdx]
+    ? { ...allPaths[selectedSampleIdx] }
     : getMedianPath(allPaths);
+
+  // Remove initial wait time if it's a selected sample to show the optimal trip time
+  if (selectedSampleIdx !== null) {
+    const firstTransitIndex = displayPath?.segments.findIndex(s => s.edgeType === 1) ?? -1;
+    if (firstTransitIndex !== -1) {
+      const firstTransit = displayPath!.segments[firstTransitIndex];
+      const waitTime = firstTransit.waitTime;
+      displayPath!.segments = displayPath!.segments.map((s, i) => {
+        if (i === firstTransitIndex) {
+          return { ...s, waitTime: 0, duration: s.duration - waitTime };
+        } else {
+          return s;
+        }
+      })
+      displayPath!.totalTime! -= waitTime;
+      displayPath!.departureTime += waitTime;
+    }
+  }
 
   // Title line
   let titleText: string;
@@ -323,7 +341,6 @@ export default function HoverInfo(): React.ReactNode {
         </div>
 
         {displayPath && displayPath.segments.length > 0 && (() => {
-          const firstTransitIdx = displayPath.segments.findIndex(s => s.edgeType === 1);
           return (
             <div style={{ borderTop: '1px solid #ddd', paddingTop: 6, marginTop: 2 }}>
               {displayPath.segments.map((seg, si) => (
@@ -334,7 +351,7 @@ export default function HoverInfo(): React.ReactNode {
                     </div>
                   ) : (
                     <>
-                      {seg.waitTime > 0 && !(selectedSampleIdx !== null && si === firstTransitIdx) && (
+                      {seg.waitTime > 0 && (
                         <div style={{ fontSize: 11, color: '#999', padding: '1px 0', fontStyle: 'italic' }}>
                           Wait {(seg.waitTime / 60).toFixed(1)} min
                         </div>

@@ -38,8 +38,7 @@ export function formatSegments(segments: PathSegment[]): string[] {
         seg.startStopName && seg.endStopName ? ` · ${seg.startStopName} → ${seg.endStopName}` : '';
       lines.push(`${seg.routeName || 'Transit'}${fromTo} ${Math.round(seg.duration / 60)} min`);
       if (seg.waitTime > 0) {
-        const label = segments.indexOf(seg) <= 1 ? 'Initial wait' : 'Transfer wait';
-        lines.push(`  ${label}: ${(seg.waitTime / 60).toFixed(1)} min`);
+        lines.push(`  Wait: ${(seg.waitTime / 60).toFixed(1)} min`);
       }
     }
   }
