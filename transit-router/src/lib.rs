@@ -7,13 +7,12 @@ use wasm_bindgen::prelude::*;
 use rayon::prelude::*;
 pub use wasm_bindgen_rayon::init_thread_pool;
 
-use router::NodeResult;
 use pco;
+use router::NodeResult;
 
 /// Whether the rayon thread pool has been initialized (via `initThreadPool` from JS).
 /// When false, we fall back to sequential iteration.
-static RAYON_INITIALIZED: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
+static RAYON_INITIALIZED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Called from the JS-side `initThreadPool` wrapper to mark rayon as ready.
 #[wasm_bindgen(js_name = "__markRayonReady")]
@@ -398,7 +397,10 @@ impl TransitRouter {
             // Get compressed data from JaggedArray
             let shape_idx_usize = *shape_idx as usize;
             if shape_idx_usize >= self.data.shapes.offsets.len() - 1 {
-                panic!("Shape {} referenced by route {} is out of bounds", shape_idx, route_idx);
+                panic!(
+                    "Shape {} referenced by route {} is out of bounds",
+                    shape_idx, route_idx
+                );
             }
             let start = self.data.shapes.offsets[shape_idx_usize] as usize;
             let end = self.data.shapes.offsets[shape_idx_usize + 1] as usize;
@@ -425,7 +427,11 @@ impl TransitRouter {
             }
 
             if points.len() < 2 {
-                panic!("Shape {} decompressed to {} points, expected at least 2", shape_idx, points.len());
+                panic!(
+                    "Shape {} decompressed to {} points, expected at least 2",
+                    shape_idx,
+                    points.len()
+                );
             }
 
             let mut best_from = 0usize;

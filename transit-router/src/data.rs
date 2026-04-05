@@ -1,5 +1,22 @@
 use std::io::Read;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+extern crate console_error_panic_hook;
+
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Instant;
+
+/// Zero-cost no-op Instant for wasm32 where std::time::Instant panics.
+#[cfg(target_arch = "wasm32")]
+struct Instant;
+#[cfg(target_arch = "wasm32")]
+impl Instant {
+    fn now() -> Self {
+        Instant
+    }
+    fn elapsed(&self) -> Duration {
+        Duration::ZERO
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct Color {
@@ -150,6 +167,7 @@ pub fn load(compressed: &[u8]) -> Result<PreparedData, String> {
 }
 
 pub fn load_with_stats(compressed: &[u8]) -> Result<(PreparedData, LoadStats), String> {
+    console_error_panic_hook::set_once();
     let mut binary_sections: Vec<(&str, usize)> = Vec::new();
     let mut timings: Vec<(&str, Duration)> = Vec::new();
 
@@ -202,7 +220,11 @@ pub fn load_with_stats(compressed: &[u8]) -> Result<(PreparedData, LoadStats), S
         let u = read_u32(&buf, &mut pos);
         let v = read_u32(&buf, &mut pos);
         let distance = read_f32(&buf, &mut pos);
-        edges.push(EdgeData { u, v, distance_meters: distance });
+        edges.push(EdgeData {
+            u,
+            v,
+            distance_meters: distance,
+        });
     }
     binary_sections.push(("edges", pos - pos_before));
     timings.push(("parse edges", t0.elapsed()));
@@ -261,9 +283,12 @@ pub fn load_with_stats(compressed: &[u8]) -> Result<(PreparedData, LoadStats), S
         let has_color = buf[pos];
         pos += 1;
         if has_color != 0 {
-            let r = buf[pos]; pos += 1;
-            let g = buf[pos]; pos += 1;
-            let b = buf[pos]; pos += 1;
+            let r = buf[pos];
+            pos += 1;
+            let g = buf[pos];
+            pos += 1;
+            let b = buf[pos];
+            pos += 1;
             route_colors.push(Some(Color { r, g, b }));
         } else {
             route_colors.push(None);
@@ -281,15 +306,20 @@ pub fn load_with_stats(compressed: &[u8]) -> Result<(PreparedData, LoadStats), S
     let mut patterns = Vec::with_capacity(num_patterns);
     for _ in 0..num_patterns {
         let _pattern_id = read_u32(&buf, &mut pos);
-        let day_mask = buf[pos]; pos += 1;
+        let day_mask = buf[pos];
+        pos += 1;
         let start_date = read_u32(&buf, &mut pos);
         let end_date = read_u32(&buf, &mut pos);
         let num_add = read_u32(&buf, &mut pos) as usize;
         let mut date_exceptions_add = Vec::with_capacity(num_add);
-        for _ in 0..num_add { date_exceptions_add.push(read_u32(&buf, &mut pos)); }
+        for _ in 0..num_add {
+            date_exceptions_add.push(read_u32(&buf, &mut pos));
+        }
         let num_remove = read_u32(&buf, &mut pos) as usize;
         let mut date_exceptions_remove = Vec::with_capacity(num_remove);
-        for _ in 0..num_remove { date_exceptions_remove.push(read_u32(&buf, &mut pos)); }
+        for _ in 0..num_remove {
+            date_exceptions_remove.push(read_u32(&buf, &mut pos));
+        }
         let min_time = read_u32(&buf, &mut pos);
         let max_time = read_u32(&buf, &mut pos);
 
@@ -332,14 +362,21 @@ pub fn load_with_stats(compressed: &[u8]) -> Result<(PreparedData, LoadStats), S
             let next_stop_index = read_u32(&buf, &mut pos);
             let travel_time = read_u32(&buf, &mut pos);
             freq_entries.push(FreqData {
-                route_index, stop_index, start_time, end_time,
-                headway_secs, next_stop_index, travel_time,
+                route_index,
+                stop_index,
+                start_time,
+                end_time,
+                headway_secs,
+                next_stop_index,
+                travel_time,
             });
             freq_indices.push(i as u32);
         }
 
         let freq_by_stop = JaggedArray::build(
-            freq_indices, |&i| freq_entries[i as usize].stop_index, num_stops as u32,
+            freq_indices,
+            |&i| freq_entries[i as usize].stop_index,
+            num_stops as u32,
         );
 
         // Build sentinel_routes for this pattern
@@ -359,7 +396,10 @@ pub fn load_with_stats(compressed: &[u8]) -> Result<(PreparedData, LoadStats), S
             min_time,
             max_time,
             frequency_routes: freq_entries,
-            stop_index: PatternStopIndex { freq_by_stop, events_by_stop },
+            stop_index: PatternStopIndex {
+                freq_by_stop,
+                events_by_stop,
+            },
             sentinel_routes: pattern_sentinel_routes,
         });
     }
@@ -379,7 +419,10 @@ pub fn load_with_stats(compressed: &[u8]) -> Result<(PreparedData, LoadStats), S
         if pos + compressed_len > buf.len() {
             return Err(format!(
                 "Shape {} compressed data out of bounds: need {} bytes at pos {}, buf len {}",
-                shape_idx, compressed_len, pos, buf.len()
+                shape_idx,
+                compressed_len,
+                pos,
+                buf.len()
             ));
         }
         shapes_data.extend_from_slice(&buf[pos..pos + compressed_len]);
@@ -407,7 +450,10 @@ pub fn load_with_stats(compressed: &[u8]) -> Result<(PreparedData, LoadStats), S
             let mut shapes_for_route = Vec::with_capacity(num_shapes_for_route);
             for _ in 0..num_shapes_for_route {
                 if pos + 4 > buf.len() {
-                    return Err(format!("Incomplete shape index in route_shapes for route {}", i));
+                    return Err(format!(
+                        "Incomplete shape index in route_shapes for route {}",
+                        i
+                    ));
                 }
                 let shape_idx = read_u32(&buf, &mut pos);
                 // Only keep valid shape indices (those that actually exist in the shapes array)
@@ -455,9 +501,10 @@ pub fn load_with_stats(compressed: &[u8]) -> Result<(PreparedData, LoadStats), S
     memory_sections.push(("edges", edges.capacity() * std::mem::size_of::<EdgeData>()));
 
     // stops: approximate (16 bytes struct + string heap)
-    let stops_mem: usize = stops.iter().map(|s| {
-        std::mem::size_of::<StopData>() + s.name.capacity()
-    }).sum();
+    let stops_mem: usize = stops
+        .iter()
+        .map(|s| std::mem::size_of::<StopData>() + s.name.capacity())
+        .sum();
     memory_sections.push(("stops", stops_mem));
 
     // stop_node_map
@@ -468,28 +515,38 @@ pub fn load_with_stats(compressed: &[u8]) -> Result<(PreparedData, LoadStats), S
 
     // node_stop_indices: Vec<Vec<u32>> — outer vec + inner vecs
     let nsi_mem: usize = num_nodes * std::mem::size_of::<Vec<u32>>()
-        + node_stop_indices.iter().map(|v| v.capacity() * 4).sum::<usize>();
+        + node_stop_indices
+            .iter()
+            .map(|v| v.capacity() * 4)
+            .sum::<usize>();
     memory_sections.push(("node_stop_indices", nsi_mem));
 
     // route_names
-    let rn_mem: usize = route_names.iter().map(|s| std::mem::size_of::<String>() + s.capacity()).sum();
+    let rn_mem: usize = route_names
+        .iter()
+        .map(|s| std::mem::size_of::<String>() + s.capacity())
+        .sum();
     memory_sections.push(("route_names", rn_mem));
 
     // route_colors
-    memory_sections.push(("route_colors", route_colors.capacity() * std::mem::size_of::<Option<Color>>()));
+    memory_sections.push((
+        "route_colors",
+        route_colors.capacity() * std::mem::size_of::<Option<Color>>(),
+    ));
 
     // patterns: events_by_stop data + offsets + freq data + freq offsets + freq_entries
     let mut pat_events_mem = 0usize;
     let mut pat_freq_mem = 0usize;
     let mut pat_other_mem = 0usize;
     for p in &patterns {
-        pat_events_mem += p.stop_index.events_by_stop.data.capacity() * std::mem::size_of::<EventData>()
+        pat_events_mem += p.stop_index.events_by_stop.data.capacity()
+            * std::mem::size_of::<EventData>()
             + p.stop_index.events_by_stop.offsets.capacity() * 4;
         pat_freq_mem += p.stop_index.freq_by_stop.data.capacity() * 4
             + p.stop_index.freq_by_stop.offsets.capacity() * 4
             + p.frequency_routes.capacity() * std::mem::size_of::<FreqData>();
-        pat_other_mem += p.date_exceptions_add.capacity() * 4
-            + p.date_exceptions_remove.capacity() * 4;
+        pat_other_mem +=
+            p.date_exceptions_add.capacity() * 4 + p.date_exceptions_remove.capacity() * 4;
     }
     memory_sections.push(("patterns/events", pat_events_mem));
     memory_sections.push(("patterns/freq", pat_freq_mem));
@@ -497,7 +554,10 @@ pub fn load_with_stats(compressed: &[u8]) -> Result<(PreparedData, LoadStats), S
 
     // adj list: Vec<Vec<(u32, f32)>>
     let adj_mem: usize = num_nodes * std::mem::size_of::<Vec<(u32, f32)>>()
-        + adj.iter().map(|v| v.capacity() * std::mem::size_of::<(u32, f32)>()).sum::<usize>();
+        + adj
+            .iter()
+            .map(|v| v.capacity() * std::mem::size_of::<(u32, f32)>())
+            .sum::<usize>();
     memory_sections.push(("adj list", adj_mem));
 
     // shapes JaggedArray: compressed PCO data
@@ -509,9 +569,12 @@ pub fn load_with_stats(compressed: &[u8]) -> Result<(PreparedData, LoadStats), S
     memory_sections.push(("route_shapes", 0));
 
     // node_grid HashMap
-    let ng_mem: usize = node_grid.iter().map(|(_, v)| {
-        16 + 64 + v.capacity() * 4 // key + hashmap overhead + data
-    }).sum();
+    let ng_mem: usize = node_grid
+        .iter()
+        .map(|(_, v)| {
+            16 + 64 + v.capacity() * 4 // key + hashmap overhead + data
+        })
+        .sum();
     memory_sections.push(("node_grid", ng_mem));
 
     // decompressed buf (transient)
@@ -541,9 +604,22 @@ pub fn load_with_stats(compressed: &[u8]) -> Result<(PreparedData, LoadStats), S
     };
 
     let data = PreparedData {
-        nodes, edges, stops, stop_node_map, route_names, route_colors,
-        patterns, num_nodes, num_edges, num_stops, adj, node_is_stop,
-        node_stop_indices, shapes, route_shapes, node_grid,
+        nodes,
+        edges,
+        stops,
+        stop_node_map,
+        route_names,
+        route_colors,
+        patterns,
+        num_nodes,
+        num_edges,
+        num_stops,
+        adj,
+        node_is_stop,
+        node_stop_indices,
+        shapes,
+        route_shapes,
+        node_grid,
     };
 
     Ok((data, stats))
@@ -570,8 +646,16 @@ impl LoadStats {
             let pct = 100.0 * bytes as f64 / self.decompressed_size as f64;
             println!("{:<25} {:>12} {:>7.1}%", name, fmt_bytes(bytes), pct);
         }
-        println!("{:<25} {:>12}", "TOTAL decompressed", fmt_bytes(self.decompressed_size));
-        println!("{:<25} {:>12}", "TOTAL compressed (gzip)", fmt_bytes(self.compressed_size));
+        println!(
+            "{:<25} {:>12}",
+            "TOTAL decompressed",
+            fmt_bytes(self.decompressed_size)
+        );
+        println!(
+            "{:<25} {:>12}",
+            "TOTAL compressed (gzip)",
+            fmt_bytes(self.compressed_size)
+        );
         println!();
 
         println!("=== In-Memory Sizes ===");
@@ -602,15 +686,22 @@ impl LoadStats {
 }
 
 fn fmt_bytes(b: usize) -> String {
-    if b >= 1_048_576 { format!("{:.2} MB", b as f64 / 1_048_576.0) }
-    else if b >= 1024 { format!("{:.1} KB", b as f64 / 1024.0) }
-    else { format!("{} B", b) }
+    if b >= 1_048_576 {
+        format!("{:.2} MB", b as f64 / 1_048_576.0)
+    } else if b >= 1024 {
+        format!("{:.1} KB", b as f64 / 1024.0)
+    } else {
+        format!("{} B", b)
+    }
 }
 
 fn fmt_dur(d: Duration) -> String {
     let ms = d.as_secs_f64() * 1000.0;
-    if ms >= 1000.0 { format!("{:.2} s", ms / 1000.0) }
-    else { format!("{:.1} ms", ms) }
+    if ms >= 1000.0 {
+        format!("{:.2} s", ms / 1000.0)
+    } else {
+        format!("{:.1} ms", ms)
+    }
 }
 
 fn read_pco_u32(buf: &[u8], pos: &mut usize) -> Result<Vec<u32>, String> {
