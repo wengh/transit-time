@@ -12,7 +12,7 @@ The system has three components:
 
 ### Data Preparation (`transit-prep`)
 
-1. **GTFS download** — Fetches the city's transit feed from the [Mobility Database](https://mobilitydatabase.org/) API (stops, routes, trips, stop_times, calendars, frequencies)
+1. **GTFS download** — Fetches the city's transit feed from a URL specified in the city config (stops, routes, trips, stop_times, calendars, frequencies)
 2. **OSM download** — For large cities, downloads a PBF extract from [BBBike](https://download.bbbike.org/osm/); for small areas, queries the Overpass API. Extracts the pedestrian-walkable street network (footways, sidewalks, paths, corridors, crossings, residential streets, etc.)
 3. **Graph construction** — Builds a walking graph from OSM data. Intersection and endpoint nodes become graph nodes; street segments become edges weighted by haversine distance. Subway entrance nodes (`railway=subway_entrance`) are detected and connected to the street network.
 4. **Stop snapping** — Each GTFS transit stop is snapped to its nearest OSM graph node (max 400m). Stops near subway entrances (within 150m) are preferentially snapped to the entrance node, so routing naturally traverses mapped indoor corridors and stairways.
@@ -45,7 +45,6 @@ The web app loads the WASM router and binary data, then:
 - **Rust** (stable, 1.70+)
 - **wasm-pack** — `cargo install wasm-pack`
 - **Node.js** (18+) and npm
-- A **Mobility Database refresh token** — sign up at [mobilitydatabase.org](https://mobilitydatabase.org/) and save the token to `.mdb_refresh_token` in the repo root
 
 ## Quick Start
 
@@ -71,7 +70,6 @@ Options:
 | `--city-file` | Path to city JSON config (e.g. `cities/chicago.jsonc`) |
 | `--output` | Output binary file path (default: `city.bin`) |
 | `--cache-dir` | Directory to cache downloaded GTFS/OSM files (default: `cache`) |
-| `--token-file` | Path to MDB refresh token file (default: `.mdb_refresh_token`) |
 
 Downloaded GTFS zips and OSM data are cached in `--cache-dir`, so subsequent runs skip the download step.
 
@@ -122,7 +120,6 @@ transit-time/
 ├── transit-prep/           # Data preparation CLI (Rust)
 │   └── src/
 │       ├── main.rs         # CLI entry point
-│       ├── mdb.rs          # Mobility Database API client
 │       ├── osm.rs          # OSM data fetcher (Overpass + BBBike PBF)
 │       ├── gtfs.rs         # GTFS parser + service pattern builder
 │       ├── graph.rs        # OSM graph builder (XML + PBF) + stop snapping

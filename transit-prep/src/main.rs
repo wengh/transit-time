@@ -1,13 +1,13 @@
 mod binary;
 mod graph;
 mod gtfs;
-mod mdb;
 mod osm;
 
 use anyhow::{Context, Result};
 use clap::Parser;
 use jsonc_parser::parse_to_serde_value;
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
@@ -26,9 +26,6 @@ struct Cli {
     #[arg(long, default_value = "cache")]
     cache_dir: PathBuf,
 
-    /// MDB refresh token file path
-    #[arg(long, default_value = ".mdb_refresh_token")]
-    token_file: PathBuf,
 }
 
 #[derive(serde::Deserialize)]
@@ -37,6 +34,24 @@ struct CityConfig {
     feed_ids: Vec<String>,
     bbox: String,
     bbbike_name: Option<String>,
+}
+
+fn fetch_gtfs_url(url: &str, cache_dir: &Path) -> Result<PathBuf> {
+    let hash = url.bytes().fold(0xcbf29ce484222325u64, |h, b| {
+        h.wrapping_mul(0x100000001b3) ^ b as u64
+    });
+    let cache_path = cache_dir.join(format!("url_{:016x}.gtfs.zip", hash));
+    if cache_path.exists() {
+        eprintln!("Using cached GTFS: {:?}", cache_path);
+        return Ok(cache_path);
+    }
+    eprintln!("Downloading GTFS from: {}", url);
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
+        .build()?;
+    let bytes = client.get(url).send()?.error_for_status()?.bytes()?;
+    std::fs::File::create(&cache_path)?.write_all(&bytes)?;
+    Ok(cache_path)
 }
 
 fn parse_bbox(s: &str) -> Result<(f64, f64, f64, f64)> {
@@ -69,20 +84,6 @@ fn main() -> Result<()> {
 
     std::fs::create_dir_all(&cli.cache_dir)?;
 
-    // Only load the MDB token if at least one feed uses MDB (not a direct URL)
-    let needs_mdb = city
-        .feed_ids
-        .iter()
-        .any(|id| !id.starts_with("http://") && !id.starts_with("https://"));
-    let refresh_token = if needs_mdb {
-        std::fs::read_to_string(&cli.token_file)
-            .context("Failed to read MDB refresh token file")?
-            .trim()
-            .to_string()
-    } else {
-        String::new()
-    };
-
     run_prep(
         &city.id,
         &city.feed_ids,
@@ -90,7 +91,6 @@ fn main() -> Result<()> {
         bbox,
         &cli.output,
         &cli.cache_dir,
-        &refresh_token,
     )
 }
 
@@ -101,7 +101,6 @@ pub fn run_prep(
     bbox: (f64, f64, f64, f64),
     output: &Path,
     cache_dir: &Path,
-    refresh_token: &str,
 ) -> Result<()> {
     eprintln!("=== Transit Prep for '{}' ===", city);
     eprintln!("Bounding box: {:?}", bbox);
@@ -111,11 +110,7 @@ pub fn run_prep(
 
     let mut merged: Option<gtfs::GtfsData> = None;
     for fid in feed_ids {
-        let path = if fid.starts_with("http://") || fid.starts_with("https://") {
-            mdb::fetch_gtfs_url(fid, cache_dir)?
-        } else {
-            mdb::fetch_gtfs(fid, cache_dir, refresh_token)?
-        };
+        let path = fetch_gtfs_url(fid, cache_dir)?;
         eprintln!("GTFS feed {} cached at: {:?}", fid, path);
         let data = gtfs::parse_gtfs(&path)?;
         eprintln!(
