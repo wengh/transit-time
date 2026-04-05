@@ -20,9 +20,14 @@ fn profile_hour_window() {
         return;
     }
 
+    let load_start = Instant::now();
     let data = std::fs::read(&bin_path).expect("Failed to read binary");
-    let (prepared, stats) = transit_router::data::load_with_stats(&data).expect("Failed to load data");
-    stats.print();
+    let prepared = transit_router::data::load(&data).expect("Failed to load data");
+    let load_ms = load_start.elapsed().as_millis();
+
+    eprintln!("Data load: {}ms ({} nodes, {} edges, {} stops, {} patterns)",
+        load_ms, prepared.num_nodes, prepared.num_edges,
+        prepared.num_stops, prepared.patterns.len());
 
     let snap_start = Instant::now();
     let source = transit_router::router::snap_to_node(&prepared, 41.884400, -87.629347);

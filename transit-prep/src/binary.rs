@@ -68,7 +68,7 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
 
     // Header
     buf.extend_from_slice(b"TRNS");
-    write_u32(&mut buf, 4); // version
+    write_u32(&mut buf, 3); // version
     write_u32(&mut buf, data.nodes.len() as u32);
     write_u32(&mut buf, data.edges.len() as u32);
     write_u32(&mut buf, data.stops.len() as u32);
@@ -220,31 +220,21 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
         }
 
         // Apply permutation and remap next_event_index
-        let sorted_events: Vec<FlatEvent> = order
-            .iter()
-            .map(|&i| {
-                let e = &with_sentinels[i as usize];
-                FlatEvent {
-                    time_offset: e.time_offset,
-                    stop_index: e.stop_index,
-                    route_index: e.route_index,
-                    trip_index: e.trip_index,
-                    next_stop_index: e.next_stop_index,
-                    travel_time: e.travel_time,
-                }
-            })
-            .collect();
-        let remapped_nei: Vec<u32> = order
-            .iter()
-            .map(|&i| {
-                let nei = next_event_index[i as usize];
-                if nei == u32::MAX {
-                    u32::MAX
-                } else {
-                    inv[nei as usize]
-                }
-            })
-            .collect();
+        let sorted_events: Vec<FlatEvent> = order.iter().map(|&i| {
+            let e = &with_sentinels[i as usize];
+            FlatEvent {
+                time_offset: e.time_offset,
+                stop_index: e.stop_index,
+                route_index: e.route_index,
+                trip_index: e.trip_index,
+                next_stop_index: e.next_stop_index,
+                travel_time: e.travel_time,
+            }
+        }).collect();
+        let remapped_nei: Vec<u32> = order.iter().map(|&i| {
+            let nei = next_event_index[i as usize];
+            if nei == u32::MAX { u32::MAX } else { inv[nei as usize] }
+        }).collect();
 
         // Compute stop offsets for JaggedArray
         let num_stops = data.stops.len() as u32;
@@ -258,31 +248,36 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
             stop_offsets[i] += stop_offsets[i - 1];
         }
 
-        // Serialize events as JaggedArray<EventData>:
-        // num_stops, offsets[num_stops+1], flat events (4 u32s each)
-        write_u32(&mut buf, num_stops);
-        for &offset in &stop_offsets {
-            write_u32(&mut buf, offset);
-        }
-        for (i, e) in sorted_events.iter().enumerate() {
-            write_u32(&mut buf, e.time_offset);
-            write_u32(&mut buf, e.stop_index);
-            write_u32(&mut buf, e.travel_time);
-            write_u32(&mut buf, remapped_nei[i]);
+        // Serialize: num_events, 4 PCO columns (no route_index), stop_offsets, sentinel_routes
+        // route_index will be reconstructed from sentinels at query time
+        write_u32(&mut buf, sorted_events.len() as u32);
+        let cols: [Vec<u32>; 4] = [
+            sorted_events.iter().map(|e| e.time_offset).collect(),
+            sorted_events.iter().map(|e| e.stop_index).collect(),
+            sorted_events.iter().map(|e| e.travel_time).collect(),
+            remapped_nei,
+        ];
+        for col in &cols {
+            let compressed = pco::standalone::simple_compress(col, &pco::ChunkConfig::default())
+                .expect("pco compress failed");
+            write_u32(&mut buf, compressed.len() as u32);
+            buf.extend_from_slice(&compressed);
         }
 
-        // Sentinel routes: sparse (num_sentinels, then (event_idx, route_idx) pairs)
-        let sentinels: Vec<(u32, u32)> = sorted_events
-            .iter()
-            .enumerate()
-            .filter(|(_, e)| e.travel_time == 0 && e.route_index != 0)
-            .map(|(i, e)| (i as u32, e.route_index))
-            .collect();
-        write_u32(&mut buf, sentinels.len() as u32);
-        for (idx, route_idx) in sentinels {
-            write_u32(&mut buf, idx);
-            write_u32(&mut buf, route_idx);
-        }
+        // Stop offsets (num_stops + 1 entries)
+        let compressed_offsets = pco::standalone::simple_compress(&stop_offsets, &pco::ChunkConfig::default())
+            .expect("pco compress failed");
+        write_u32(&mut buf, compressed_offsets.len() as u32);
+        buf.extend_from_slice(&compressed_offsets);
+
+        // Sentinel routes: for each event, if it's a sentinel (travel_time == 0), store its route_index
+        let sentinel_routes: Vec<u32> = sorted_events.iter().map(|e| {
+            if e.travel_time == 0 { e.route_index } else { 0 }
+        }).collect();
+        let compressed_sentinel_routes = pco::standalone::simple_compress(&sentinel_routes, &pco::ChunkConfig::default())
+            .expect("pco compress failed");
+        write_u32(&mut buf, compressed_sentinel_routes.len() as u32);
+        buf.extend_from_slice(&compressed_sentinel_routes);
 
         write_u32(&mut buf, pattern.frequency_routes.len() as u32);
         for freq in &pattern.frequency_routes {
@@ -302,37 +297,39 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
     sorted_shape_ids.sort();
 
     // Map shape_id -> shape_index based on sorted order
-    let mut shape_id_to_index: std::collections::HashMap<String, u32> =
-        std::collections::HashMap::new();
+    let mut shape_id_to_index: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
     for (idx, shape_id) in sorted_shape_ids.iter().enumerate() {
         shape_id_to_index.insert((*shape_id).clone(), idx as u32);
     }
 
-    // Write shapes as JaggedArray<u8>: offsets[num_shapes+1], then all compressed data
+    // Write shapes: for each shape (in consistent sorted order): compressed PCO data
     // num_shapes already written in header
-    let mut shapes_offsets: Vec<u32> = vec![0];
-    let mut shapes_data: Vec<u8> = Vec::new();
 
     for shape_id_ref in &sorted_shape_ids {
         let shape_id = *shape_id_ref;
         let points = &data.shapes[shape_id];
 
-        let coords: Vec<u32> = points
-            .iter()
-            .flat_map(|&(lat, lon)| [(lat as f32).to_bits(), (lon as f32).to_bits()])
-            .collect();
+        // Convert to f32 and flatten: [lat0, lon0, lat1, lon1, ...]
+        let mut coords: Vec<u32> = Vec::with_capacity(points.len() * 2);
+        for &(lat, lon) in points {
+            // Round to f32 and reinterpret as u32 for PCO compression
+            let lat_f32 = lat as f32;
+            let lon_f32 = lon as f32;
+            coords.push(lat_f32.to_bits());
+            coords.push(lon_f32.to_bits());
+        }
 
-        let compressed = pco::standalone::simple_compress(&coords, &pco::ChunkConfig::default())
-            .expect("pco compress failed");
-
-        shapes_data.extend_from_slice(&compressed);
-        shapes_offsets.push(shapes_data.len() as u32);
+        // Compress coordinates with PCO - even if empty, compress empty vec
+        let compressed = if coords.is_empty() {
+            // Empty shapes: write 0 length
+            Vec::new()
+        } else {
+            pco::standalone::simple_compress(&coords, &pco::ChunkConfig::default())
+                .expect("pco compress failed")
+        };
+        write_u32(&mut buf, compressed.len() as u32);
+        buf.extend_from_slice(&compressed);
     }
-
-    for &offset in &shapes_offsets {
-        write_u32(&mut buf, offset);
-    }
-    buf.extend_from_slice(&shapes_data);
 
     // Route-to-shape mapping: use shape indices instead of IDs
     write_u32(&mut buf, data.route_shapes.len() as u32);
