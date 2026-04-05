@@ -2,7 +2,7 @@
     "id": "seattle",
     "bbbike_name": "Seattle",
     "feed_ids": [
-        "mdb-1080"
+        "https://gtfs.sound.obaweb.org/prod/gtfs_puget_sound_consolidated.zip"
     ],
     "name": "Seattle, WA",
     "file": "seattle.bin",

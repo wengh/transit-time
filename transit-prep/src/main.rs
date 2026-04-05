@@ -6,6 +6,7 @@ mod osm;
 
 use anyhow::{Context, Result};
 use clap::Parser;
+use jsonc_parser::parse_to_serde_value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -13,7 +14,7 @@ use std::path::{Path, PathBuf};
 #[command(name = "transit-prep")]
 #[command(about = "Download and preprocess transit data for a city")]
 struct Cli {
-    /// Path to city JSON file (e.g. cities/chicago.json)
+    /// Path to city JSON file (e.g. cities/chicago.jsonc)
     #[arg(long)]
     city_file: PathBuf,
 
@@ -55,19 +56,32 @@ fn main() -> Result<()> {
 
     let city_json = std::fs::read_to_string(&cli.city_file)
         .with_context(|| format!("Failed to read city file: {:?}", cli.city_file))?;
-    let city: CityConfig = serde_json::from_str(&city_json)
+    let city: CityConfig = parse_to_serde_value(&city_json, &Default::default())
         .with_context(|| format!("Failed to parse city file: {:?}", cli.city_file))?;
 
-    anyhow::ensure!(!city.feed_ids.is_empty(), "feed_ids must not be empty in {:?}", cli.city_file);
+    anyhow::ensure!(
+        !city.feed_ids.is_empty(),
+        "feed_ids must not be empty in {:?}",
+        cli.city_file
+    );
 
     let bbox = parse_bbox(&city.bbox)?;
 
     std::fs::create_dir_all(&cli.cache_dir)?;
 
-    let refresh_token = std::fs::read_to_string(&cli.token_file)
-        .context("Failed to read MDB refresh token file")?
-        .trim()
-        .to_string();
+    // Only load the MDB token if at least one feed uses MDB (not a direct URL)
+    let needs_mdb = city
+        .feed_ids
+        .iter()
+        .any(|id| !id.starts_with("http://") && !id.starts_with("https://"));
+    let refresh_token = if needs_mdb {
+        std::fs::read_to_string(&cli.token_file)
+            .context("Failed to read MDB refresh token file")?
+            .trim()
+            .to_string()
+    } else {
+        String::new()
+    };
 
     run_prep(
         &city.id,
@@ -97,7 +111,11 @@ pub fn run_prep(
 
     let mut merged: Option<gtfs::GtfsData> = None;
     for fid in feed_ids {
-        let path = mdb::fetch_gtfs(fid, cache_dir, refresh_token)?;
+        let path = if fid.starts_with("http://") || fid.starts_with("https://") {
+            mdb::fetch_gtfs_url(fid, cache_dir)?
+        } else {
+            mdb::fetch_gtfs(fid, cache_dir, refresh_token)?
+        };
         eprintln!("GTFS feed {} cached at: {:?}", fid, path);
         let data = gtfs::parse_gtfs(&path)?;
         eprintln!(
@@ -131,9 +149,9 @@ pub fn run_prep(
 
     // Filter stops to bbox and re-index sequentially so out-of-bbox stops occupy no ids
     let (min_lon, min_lat, max_lon, max_lat) = bbox;
-    gtfs_data.stops.retain(|s| {
-        s.lat >= min_lat && s.lat <= max_lat && s.lon >= min_lon && s.lon <= max_lon
-    });
+    gtfs_data
+        .stops
+        .retain(|s| s.lat >= min_lat && s.lat <= max_lat && s.lon >= min_lon && s.lon <= max_lon);
     for (i, stop) in gtfs_data.stops.iter_mut().enumerate() {
         stop.index = i as u32;
     }
@@ -170,7 +188,9 @@ pub fn run_prep(
             used_route_indices.insert(freq.route_index);
         }
     }
-    let route_remap: HashMap<u32, u32> = used_route_indices.iter().enumerate()
+    let route_remap: HashMap<u32, u32> = used_route_indices
+        .iter()
+        .enumerate()
         .map(|(new_idx, &old_idx)| (old_idx, new_idx as u32))
         .collect();
     for pattern in &mut patterns {

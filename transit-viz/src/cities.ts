@@ -1,3 +1,5 @@
+import JSONC from 'jsonc-simple-parser';
+
 export interface City {
   id: string;
   name: string;
@@ -8,9 +10,12 @@ export interface City {
   detail: string;
 }
 
-const cityModules = import.meta.glob<City>('../../cities/*.json', { eager: true });
+const cityModules = import.meta.glob<string>('../../cities/*.jsonc', {
+  eager: true,
+  as: 'raw',
+});
 
-export const CITIES: City[] = Object.values(cityModules).map((m: any) => m.default || m);
+export const CITIES: City[] = Object.values(cityModules).map((content) => JSONC.parse(content) as City);
 
 export function getCityFromUrl(): City | null {
   const path = window.location.pathname.replace(/^\//, '').replace(/\/$/, '');

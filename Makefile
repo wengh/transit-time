@@ -5,8 +5,8 @@ ROUTER_SRC := $(shell find transit-router/src -name '*.rs')
 PREP_SRC := $(shell find transit-prep/src -name '*.rs')
 WASM_OUT := transit-viz/pkg/transit_router_bg.wasm
 
-CITY_FILES := $(wildcard cities/*.json)
-CITY_IDS := $(patsubst cities/%.json,%,$(CITY_FILES))
+CITY_FILES := $(wildcard cities/*.jsonc)
+CITY_IDS := $(patsubst cities/%.jsonc,%,$(CITY_FILES))
 BIN_FILES := $(addprefix transit-viz/public/data/, $(addsuffix .bin, $(CITY_IDS)))
 
 # Build WASM (only when router source changes)
@@ -17,10 +17,10 @@ $(WASM_OUT): $(ROUTER_SRC) transit-router/Cargo.toml .cargo/config.toml
 # Build all data
 data-all: $(BIN_FILES)
 
-transit-viz/public/data/%.bin: $(PREP_SRC) transit-prep/Cargo.toml cities/%.json
+transit-viz/public/data/%.bin: $(PREP_SRC) transit-prep/Cargo.toml cities/%.jsonc
 	@echo "Building data for $*..."
 	cargo run --release -p transit-prep --bin transit-prep -- \
-		--city-file cities/$*.json \
+		--city-file cities/$*.jsonc \
 		--output $@ \
 		--cache-dir cache
 

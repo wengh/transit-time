@@ -2,8 +2,8 @@
     "id": "waterloo",
     "bbbike_name": "Waterloo",
     "feed_ids": [
-        "mdb-721",
-        "mdb-1993"
+        "http://www.regionofwaterloo.ca/opendatadownloads/GRT_GTFS.zip",
+        "https://assets.metrolinx.com/raw/upload/Documents/Metrolinx/Open%20Data/GO-GTFS.zip"
     ],
     "name": "Waterloo, ON",
     "file": "waterloo.bin",

@@ -5,12 +5,8 @@ use std::path::{Path, PathBuf};
 const MDB_TOKEN_URL: &str = "https://api.mobilitydatabase.org/v1/tokens";
 const MDB_FEEDS_URL: &str = "https://api.mobilitydatabase.org/v1/gtfs_feeds";
 
-/// Fetch a GTFS zip for the given feed ID, caching the result.
-pub fn fetch_gtfs(
-    feed_id: &str,
-    cache_dir: &Path,
-    refresh_token: &str,
-) -> Result<PathBuf> {
+/// Fetch a GTFS zip for the given feed ID (mdb-xxx) via the Mobility Database, caching the result.
+pub fn fetch_gtfs(feed_id: &str, cache_dir: &Path, refresh_token: &str) -> Result<PathBuf> {
     let cache_path = cache_dir.join(format!("{}.gtfs.zip", sanitize_filename(feed_id)));
     if cache_path.exists() {
         eprintln!("Using cached GTFS: {:?}", cache_path);
@@ -21,18 +17,42 @@ pub fn fetch_gtfs(
     let feed_url = find_feed_url(feed_id, &access_token)?;
     eprintln!("Downloading GTFS from: {}", feed_url);
 
-    // Download the GTFS zip
+    download_to_cache(&feed_url, &cache_path)
+}
+
+/// Fetch a GTFS zip directly from a URL, caching by a hash of the URL.
+pub fn fetch_gtfs_url(url: &str, cache_dir: &Path) -> Result<PathBuf> {
+    // Use a short hash of the URL as the cache filename
+    let hash = {
+        let mut h: u64 = 0xcbf29ce484222325;
+        for b in url.bytes() {
+            h ^= b as u64;
+            h = h.wrapping_mul(0x100000001b3);
+        }
+        h
+    };
+    let cache_path = cache_dir.join(format!("url_{:016x}.gtfs.zip", hash));
+    if cache_path.exists() {
+        eprintln!("Using cached GTFS: {:?}", cache_path);
+        return Ok(cache_path);
+    }
+
+    eprintln!("Downloading GTFS from: {}", url);
+    download_to_cache(url, &cache_path)
+}
+
+fn download_to_cache(url: &str, cache_path: &Path) -> Result<PathBuf> {
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(120))
         .build()?;
 
-    let resp = client.get(&feed_url).send()?.error_for_status()?;
+    let resp = client.get(url).send()?.error_for_status()?;
     let bytes = resp.bytes()?;
 
-    let mut file = std::fs::File::create(&cache_path)?;
+    let mut file = std::fs::File::create(cache_path)?;
     file.write_all(&bytes)?;
 
-    Ok(cache_path)
+    Ok(cache_path.to_path_buf())
 }
 
 fn get_access_token(refresh_token: &str) -> Result<String> {

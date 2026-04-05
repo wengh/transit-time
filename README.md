@@ -54,13 +54,13 @@ The web app loads the WASM router and binary data, then:
 ```bash
 # Chapel Hill, NC (small city, quick test)
 cargo run --release -p transit-prep -- \
-  --city-file cities/chapel_hill.json \
+  --city-file cities/chapel_hill.jsonc \
   --output transit-viz/public/data/chapel_hill.bin \
   --cache-dir cache
 
 # Chicago, IL (large city — downloads ~94 MB PBF)
 cargo run --release -p transit-prep -- \
-  --city-file cities/chicago.json \
+  --city-file cities/chicago.jsonc \
   --output transit-viz/public/data/chicago.bin \
   --cache-dir cache
 ```
@@ -68,7 +68,7 @@ cargo run --release -p transit-prep -- \
 Options:
 | Flag | Description |
 |------|-------------|
-| `--city-file` | Path to city JSON config (e.g. `cities/chicago.json`) |
+| `--city-file` | Path to city JSON config (e.g. `cities/chicago.jsonc`) |
 | `--output` | Output binary file path (default: `city.bin`) |
 | `--cache-dir` | Directory to cache downloaded GTFS/OSM files (default: `cache`) |
 | `--token-file` | Path to MDB refresh token file (default: `.mdb_refresh_token`) |

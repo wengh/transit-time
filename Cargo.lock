@@ -1014,6 +1014,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "jsonc-parser"
+version = "0.32.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "22e174964e77ea79b784f1e1dfffec4f77f61a453a36efc7c36838c917706777"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "leb128fmt"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1981,6 +1990,7 @@ dependencies = [
  "csv",
  "flate2",
  "hex",
+ "jsonc-parser",
  "osmpbf",
  "pco",
  "quick-xml",

@@ -2,8 +2,8 @@
     "id": "chicago",
     "bbbike_name": "Chicago",
     "feed_ids": [
-        "mdb-389",
-        "mdb-2347"
+        "http://www.transitchicago.com/downloads/sch_data/google_transit.zip",
+        "https://www.pacebus.com/gtfsdownload"
     ],
     "name": "Chicago, IL",
     "file": "chicago.bin",

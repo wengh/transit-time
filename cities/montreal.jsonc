@@ -1,0 +1,35 @@
+{
+    "id": "montreal",
+    "bbbike_name": "Montreal",
+    "feed_ids": [
+        "https://www.stm.info/sites/default/files/gtfs/gtfs_stm.zip", // STM
+        "https://www.rtl-longueuil.qc.ca/transit/latestfeed/RTL.zip", // RTL
+        "https://www.stl.laval.qc.ca/opendata/GTF_STL.zip", // STL
+        "https://gtfs.gpmmom.ca/gtfs/gtfs.zip", // REM
+        "https://zenbus.net/gtfs/static/download.zip?dataset=saint-jean-sur-richelieu", // Zenbus Saint-Jean-sur-Richelieu
+        // Exo
+        "https://exo.quebec/xdata/citsv/google_transit.zip",
+        "https://exo.quebec/xdata/citso/google_transit.zip",
+        "https://exo.quebec/xdata/citpi/google_transit.zip",
+        "https://exo.quebec/xdata/citla/google_transit.zip",
+        "https://exo.quebec/xdata/cithsl/google_transit.zip",
+        "https://exo.quebec/xdata/citlr/google_transit.zip",
+        "https://exo.quebec/xdata/citrous/google_transit.zip",
+        "https://exo.quebec/xdata/trains/google_transit.zip",
+        "https://exo.quebec/xdata/citcrc/google_transit.zip",
+        "https://exo.quebec/xdata/citvr/google_transit.zip",
+        "https://exo.quebec/xdata/omitsju/google_transit.zip",
+        "https://exo.quebec/xdata/mrclm/google_transit.zip",
+        "https://exo.quebec/xdata/lrrs/google_transit.zip",
+        "https://exo.quebec/xdata/mrclasso/google_transit.zip"
+    ],
+    "name": "Montreal, QC",
+    "file": "montreal.bin",
+    "bbox": "-74.086,45.301,-73.268,45.75",
+    "center": [
+        45.501,
+        -73.568
+    ],
+    "zoom": 12,
+    "detail": "STM, RTL, STL, REM, Exo"
+}
