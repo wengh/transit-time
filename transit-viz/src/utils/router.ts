@@ -47,7 +47,7 @@ export async function initWasm() {
 }
 
 export async function loadRouter(cityFile: string, onProgress?: (progress: number) => void): Promise<Router> {
-  const resp = await fetch(`/data/${cityFile}`);
+  const resp = await fetch(`${import.meta.env.BASE_URL}data/${cityFile}`);
   if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
   const total = parseInt(resp.headers.get('content-length') || '0');
   let loaded = 0;
