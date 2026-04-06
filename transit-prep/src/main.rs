@@ -34,6 +34,50 @@ struct CityConfig {
     feed_ids: Vec<String>,
     bbox: String,
     bbbike_name: Option<String>,
+    osm_url: Option<String>,
+}
+
+/// Days since Unix epoch (no external deps).
+fn unix_days_now() -> u32 {
+    (std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+        / 86400) as u32
+}
+
+/// YYYYMMDD → days since Unix epoch (Hinnant's civil_from_days inverse).
+fn yyyymmdd_to_days(date: u32) -> u32 {
+    let y = (date / 10000) as i64;
+    let m = (date / 100 % 100) as u32;
+    let d = (date % 100) as u32;
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = (y - era * 400) as u32;
+    let m0 = if m > 2 { m - 3 } else { m + 9 };
+    let doy = (153 * m0 + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    (era * 146097 + doe as i64 - 719468) as u32
+}
+
+/// Warn if the last service date in `data` is more than 1 day before today.
+fn warn_if_expired(feed_id: &str, data: &gtfs::GtfsData) {
+    let last = data.services.iter().flat_map(|s| {
+        s.added_dates.iter().copied()
+            .chain(if s.end_date != 0 { Some(s.end_date) } else { None })
+    }).max();
+    if let Some(last_date) = last {
+        let today = unix_days_now();
+        let last_days = yyyymmdd_to_days(last_date);
+        if last_days + 1 < today {
+            eprintln!(
+                "WARNING: feed '{}' last service date is {} — {} day(s) ago",
+                feed_id,
+                last_date,
+                today - last_days,
+            );
+        }
+    }
 }
 
 fn fetch_gtfs_url(url: &str, cache_dir: &Path) -> Result<PathBuf> {
@@ -48,6 +92,7 @@ fn fetch_gtfs_url(url: &str, cache_dir: &Path) -> Result<PathBuf> {
     eprintln!("Downloading GTFS from: {}", url);
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(120))
+        .user_agent("Mozilla/5.0 (compatible; transit-prep/1.0)")
         .build()?;
     let bytes = client.get(url).send()?.error_for_status()?.bytes()?;
     std::fs::File::create(&cache_path)?.write_all(&bytes)?;
@@ -88,6 +133,7 @@ fn main() -> Result<()> {
         &city.id,
         &city.feed_ids,
         city.bbbike_name.as_deref(),
+        city.osm_url.as_deref(),
         bbox,
         &cli.output,
         &cli.cache_dir,
@@ -98,6 +144,7 @@ pub fn run_prep(
     city: &str,
     feed_ids: &[String],
     bbbike_name: Option<&str>,
+    osm_url: Option<&str>,
     bbox: (f64, f64, f64, f64),
     output: &Path,
     cache_dir: &Path,
@@ -119,6 +166,7 @@ pub fn run_prep(
             data.routes.len(),
             data.trips.len()
         );
+        warn_if_expired(fid, &data);
         match merged {
             Some(ref mut m) => m.merge(data),
             None => merged = Some(data),
@@ -128,7 +176,7 @@ pub fn run_prep(
 
     // Step 2: Download OSM data
     eprintln!("\n--- Fetching OSM pedestrian data ---");
-    let osm_path = osm::fetch_osm(bbox, cache_dir, city, bbbike_name)?;
+    let osm_path = osm::fetch_osm(bbox, cache_dir, city, bbbike_name, osm_url)?;
     eprintln!("OSM data cached at: {:?}", osm_path);
 
     // Step 3: Parse GTFS

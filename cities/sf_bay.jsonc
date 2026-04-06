@@ -1,0 +1,40 @@
+{
+    "id": "sf_bay",
+    "osm_url": "https://download.bbbike.org/osm/extract/planet_-122.6,37.2_-121.75,38.07.osm.pbf",
+    "feed_ids": [
+        "https://api.actransit.org/transit/gtfs/download?token=2512B81107A09D2DC44895CDDC650D47",
+        "http://www.bart.gov/dev/schedules/google_transit.zip",
+        "http://data.trilliumtransit.com/gtfs/caltrain-ca-us/caltrain-ca-us.zip",
+        "http://data.trilliumtransit.com/gtfs/vacavillecitycoach-ca-us/vacavillecitycoach-ca-us.zip",
+        "http://data.trilliumtransit.com/gtfs/commute-ca-us/commute-ca-us.zip",
+        "https://emerygoround.com/data/emerygoround-ca-us.zip",
+        "http://data.trilliumtransit.com/gtfs/fairfield-ca-us/fairfield-ca-us.zip",
+        "https://realtime.goldengate.org/gtfsstatic/GTFSTransitData.zip",
+        "http://webwatch.lavta.org/TMGTFSRealTimeWebService/GTFS-Static/google_transit.zip",
+        "http://www.marintransit.org/data/google_transit.zip",
+        "http://data.trilliumtransit.com/gtfs/missionbaytma-ca-us/missionbaytma-ca-us.zip",
+        "https://gtfs.mvgo.org/gtfs.zip",
+        "https://api.511.org/transit/datafeeds?operator_id=PE&api_key=24b279cd-859b-4abf-81f8-31b77e6cad9c",
+        "http://data.trilliumtransit.com/gtfs/sfbayferry-ca-us/sfbayferry-ca-us.zip",
+        "http://rta.trideltatransit.com/rtt/public/resource/gtfs.zip",
+        "http://api.511.org/transit/datafeeds?operator_id=RG&api_key=24b279cd-859b-4abf-81f8-31b77e6cad9c",
+        "https://gtfs.vta.org/gtfs_vta.zip",
+        "https://santarosa.syncromatics.com/gtfs",
+        "https://soltrans.connexionz.net/rtt/public/resource/gtfs.zip",
+        "http://data.trilliumtransit.com/gtfs/sonomacounty-ca-us/sonomacounty-ca-us.zip",
+        "http://data.trilliumtransit.com/gtfs/smart-ca-us/smart-ca-us.zip",
+        "https://transportation-forms.stanford.edu/google/google_transit.zip",
+        "http://api.511.org/transit/datafeeds?operator_id=UC&api_key=24b279cd-859b-4abf-81f8-31b77e6cad9c",
+        "https://data.trilliumtransit.com/gtfs/vinetransit-ca-us/vinetransit-ca-us.zip",
+        "http://data.trilliumtransit.com/gtfs/westcat-ca-us/westcat-ca-us.zip"
+    ],
+    "name": "San Francisco Bay Area",
+    "file": "sf_bay.bin",
+    "bbox": "-122.6,37.2,-121.75,38.07",
+    "center": [
+        37.77,
+        -122.42
+    ],
+    "zoom": 12,
+    "detail": "BART, Muni, Caltrain, SamTrans, VTA, ..."
+}

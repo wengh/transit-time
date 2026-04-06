@@ -12,15 +12,34 @@ const OVERPASS_URLS: &[&str] = &[
 const BBBIKE_BASE: &str = "https://download.bbbike.org/osm/bbbike";
 
 /// Fetch pedestrian-walkable OSM data for a bounding box, caching the result.
-/// For large areas, downloads a PBF extract from BBBike if a matching city is available.
-/// Falls back to Overpass API for smaller/custom areas.
+/// If `osm_url` is given, downloads directly from that URL.
+/// Otherwise, tries a BBBike PBF extract (if `bbbike_name` is set) then falls back to Overpass.
 pub fn fetch_osm(
     bbox: (f64, f64, f64, f64),
     cache_dir: &Path,
     city: &str,
     bbbike_name: Option<&str>,
+    osm_url: Option<&str>,
 ) -> Result<PathBuf> {
     let (min_lon, min_lat, max_lon, max_lat) = bbox;
+
+    if let Some(url) = osm_url {
+        let ext = if url.contains(".pbf") { "osm.pbf" } else { "osm.xml" };
+        let cache_path = cache_dir.join(format!("{}.{}", sanitize(city), ext));
+        if cache_path.exists() {
+            eprintln!("Using cached OSM: {:?}", cache_path);
+            return Ok(cache_path);
+        }
+        eprintln!("Downloading OSM from: {}", url);
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(600))
+            .user_agent("Mozilla/5.0 (compatible; transit-prep/1.0)")
+            .build()?;
+        let bytes = client.get(url).send()?.error_for_status()?.bytes()?;
+        eprintln!("Downloaded OSM: {:.1} MB", bytes.len() as f64 / 1_048_576.0);
+        std::fs::File::create(&cache_path)?.write_all(&bytes)?;
+        return Ok(cache_path);
+    }
 
     // Check if a PBF cache already exists
     let pbf_cache = cache_dir.join(format!("{}.osm.pbf", sanitize(city)));
