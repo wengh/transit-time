@@ -81,7 +81,7 @@ export const initialState: AppState = {
   mode: 'sampled',
   departureTime: 11 * 3600, // 11:00 AM
   date: new Date().toISOString().slice(0, 10),
-  nSamples: 30,
+  nSamples: 15,
   maxTimeMin: 45,
   transferSlack: 60,
 
