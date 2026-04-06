@@ -19,6 +19,7 @@ const cityModules = import.meta.glob<string>('../../cities/*.jsonc', {
 export const CITIES: City[] = Object.values(cityModules).map((content) => JSONC.parse(content) as City);
 
 export function getCityFromUrl(): City | null {
-  const path = window.location.pathname.replace(/^\//, '').replace(/\/$/, '');
+  const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+  const path = window.location.pathname.replace(new RegExp(`^${base}/`), '').replace(/\/$/, '');
   return CITIES.find((c) => c.id === path) || null;
 }

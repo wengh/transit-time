@@ -9,11 +9,11 @@ export default function CitySelect(): React.ReactNode {
   if (state.currentCity) return null;
 
   async function handleCityClick(city: typeof CITIES[0]) {
-    history.replaceState(null, '', `/${city.id}`);
+    history.replaceState(null, '', `${import.meta.env.BASE_URL}${city.id}`);
     try {
       await loadCity(city, dispatch, false);
     } catch (e) {
-      history.replaceState(null, '', '/');
+      history.replaceState(null, '', import.meta.env.BASE_URL);
       alert(`Failed to load ${city.name}: ${String(e)}`);
     }
   }

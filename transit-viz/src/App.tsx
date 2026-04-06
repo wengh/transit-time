@@ -27,7 +27,7 @@ function AppInner() {
           await loadCity(city, dispatch, true);
         } catch (e) {
           dispatch({ type: 'LOAD_ERROR' });
-          history.replaceState(null, '', '/');
+          history.replaceState(null, '', import.meta.env.BASE_URL);
           alert(`Failed to load ${city.name}: ${String(e)}`);
         }
       })();

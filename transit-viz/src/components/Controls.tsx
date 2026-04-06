@@ -97,7 +97,7 @@ export default function Controls({ onRunQuery, onCopy }: ControlsProps): React.R
   function handleChangeCity() {
     freeSsspList(state.ssspList);
     dispatch({ type: 'CHANGE_CITY' });
-    history.replaceState(null, '', '/');
+    history.replaceState(null, '', import.meta.env.BASE_URL);
   }
 
   return (
