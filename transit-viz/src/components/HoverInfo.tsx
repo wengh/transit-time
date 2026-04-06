@@ -360,10 +360,9 @@ export default function HoverInfo(): React.ReactNode {
   // Title line
   let titleText: string;
   if (selectedSampleIdx !== null) {
-    const p = allPaths[selectedSampleIdx];
-    if (p?.totalTime != null) {
-      const deptOffMin = Math.round((p.departureTime - departureTime) / 60);
-      titleText = `Travel time: ${Math.round(p.totalTime / 60)} min  (+${deptOffMin} min departure)`;
+    if (displayPath?.totalTime != null) {
+      const deptOffMin = Math.round((displayPath.departureTime - departureTime) / 60);
+      titleText = `Travel time: ${Math.round(displayPath.totalTime / 60)} min  (+${deptOffMin} min departure)`;
     } else {
       titleText = 'Unreachable';
     }
