@@ -1,157 +1,198 @@
 # Transit Isochrone Tool
 
-A transit travel-time isochrone visualizer. Given a point on a map and a departure time, it computes how long it takes to reach every other point by walking and public transit, then renders the result as a colored heatmap overlay.
+A browser-based tool that shows how far you can travel from any point on a map using public transit and walking, at any time of day. The entire routing computation runs inside your browser — no server required.
 
-The system has three components:
+Live demo: https://wengh.github.io/transit-time/
 
-- **transit-prep** — Rust CLI that downloads GTFS + OSM data, builds a unified walking/transit graph, and serializes it to a compact binary format
-- **transit-router** — Rust library compiled to WebAssembly that loads the binary and runs time-dependent Dijkstra shortest-path queries
-- **transit-viz** — Web app (Vite + Leaflet) that renders isochrone heatmaps on an interactive map
+## Using the tool
 
-## How It Works
+### Picking a city
 
-### Data Preparation (`transit-prep`)
+The landing page lists available cities. Click one to load it. The city's transit and street data (~1–40 MB compressed depending on city size) downloads and loads in the browser; a progress bar shows the download, then a brief indexing phase (~400 ms for a large city like Chicago).
 
-1. **GTFS download** — Fetches the city's transit feed from a URL specified in the city config (stops, routes, trips, stop_times, calendars, frequencies)
-2. **OSM download** — For large cities, downloads a PBF extract from [BBBike](https://download.bbbike.org/osm/); for small areas, queries the Overpass API. Extracts the pedestrian-walkable street network (footways, sidewalks, paths, corridors, crossings, residential streets, etc.)
-3. **Graph construction** — Builds a walking graph from OSM data. Intersection and endpoint nodes become graph nodes; street segments become edges weighted by haversine distance. Subway entrance nodes (`railway=subway_entrance`) are detected and connected to the street network.
-4. **Stop snapping** — Each GTFS transit stop is snapped to its nearest OSM graph node (max 400m). Stops near subway entrances (within 150m) are preferentially snapped to the entrance node, so routing naturally traverses mapped indoor corridors and stairways.
-5. **Service patterns** — GTFS services are grouped by day-of-week bitmask (e.g. weekday, Saturday, Sunday). For each pattern, a direct-index event array is built: one slot per second of the day, containing all departures at that second with their destination stop, route, and travel time.
-6. **Binary serialization** — Everything is serialized into a gzip-compressed binary format (header `TRNS` v1) containing nodes, edges, stops, stop-to-node mapping, route names, service patterns with event arrays, and route shapes.
+### Setting an origin
 
-### Routing (`transit-router`)
+**Desktop:** Double-click anywhere on the map to set your starting point. A pin appears snapped to the nearest walkable street node.
 
-The router runs **time-dependent Dijkstra (TDD)** over the unified graph:
+**Mobile:** Long-press to set the origin.
 
-- **Walking edges** are weighted by distance / 1.4 m/s (~5 km/h walking speed)
-- **Transit edges** are time-dependent — at each stop node, the router scans the event array for the next departure on each route after the current time
-- **Transfer slack** — When switching between different transit routes, a configurable minimum transfer time (default 60s) is enforced to account for walking between platforms
-- **Max trip duration** is capped at 2 hours
-- The result is a single-source shortest-path tree: for every node in the graph, the arrival time, predecessor, and route taken
+Once an origin is set, the map fills with a color-coded isochrone overlay. Green areas are reachable quickly; the color shifts through yellow and red as travel time increases, fading out where nothing is reachable within the time limit.
 
-The router also supports **sampled mode**: running TDD at multiple departure times across a window (e.g. every 6 minutes over an hour) and averaging the results, smoothing out sensitivity to exact departure timing.
+### Exploring destinations
 
-### Visualization (`transit-viz`)
+**Desktop:** Move your cursor over the map. The route from your origin to the point under the cursor is drawn on the map — walk segments as gray dashed lines, transit segments colored by route. A panel appears showing the travel time and the step-by-step itinerary.
 
-The web app loads the WASM router and binary data, then:
+**Mobile:** Tap to pin a destination.
 
-- Renders each graph node as a colored dot on a canvas overlay (green = nearby, yellow/red = farther, up to 120 min)
-- Click anywhere on the map to set the origin point
-- Adjust departure time, service pattern (weekday/weekend), number of samples, and transfer slack via sliders
-- Hover over any point to see its travel time
+**Pinning:** Single-click (desktop) or tap (mobile) to pin a destination so the route stays visible while you adjust controls. Click/tap again to unpin.
 
-## Prerequisites
+### Controls
 
-- **Rust** (stable, 1.70+)
-- **wasm-pack** — `cargo install wasm-pack`
-- **Node.js** (18+) and npm
+All controls re-run the routing query immediately when changed.
 
-## Quick Start
+**Mode**
+- *Single Departure Time* — computes travel times for one exact departure.
+- *Hour-Window Average* — runs the router at multiple evenly-spaced departure times across a one-hour window and averages the results. This smooths out the "lucky timing" effect and shows more typical travel times. The number of sample departures is adjustable.
 
-### 1. Prepare Data
+**Date** — select any calendar date. The tool activates only the transit schedules valid on that date (weekday, weekend, or holiday service), and shows how many service patterns are active.
 
-```bash
-# Chapel Hill, NC (small city, quick test)
-cargo run --release -p transit-prep -- \
-  --city-file cities/chapel_hill.jsonc \
-  --output transit-viz/public/data/chapel_hill.bin \
-  --cache-dir cache
+**Departure time** — slider from midnight to midnight in 5-minute steps.
 
-# Chicago, IL (large city — downloads ~94 MB PBF)
-cargo run --release -p transit-prep -- \
-  --city-file cities/chicago.jsonc \
-  --output transit-viz/public/data/chicago.bin \
-  --cache-dir cache
+**Samples** — (hour-window average only) number of departure times spread across the hour window. More samples give a smoother average at the cost of longer computation. Default is 15.
+
+**Max travel time** — caps the search at 10–180 minutes. Locations unreachable within this limit are not shown.
+
+**Transfer slack** — minimum connection time required when switching between transit vehicles (0–300 seconds, default 60 s). A higher value avoids tight transfers that might be missed in practice.
+
+### Sawtooth chart (hour-window average)
+
+When a destination is pinned in hour-window average mode, a chart appears below the itinerary. The X-axis is departure time within the hour window; the Y-axis is travel time to the destination. Each diagonal line represents one transit trip: as your departure time gets later and closer to when the vehicle leaves the stop, your wait shrinks and total travel time decreases — that is the downward slope. When you depart late enough to miss that vehicle, travel time jumps up because you must wait for the next one, forming the sawtooth pattern. The dashed horizontal line (if present) is the walk-only time. Hover over the chart to highlight a specific departure and see its route on the map; click to lock it.
+
+### Copying trip info
+
+When a destination is pinned, a "Copy info" button appears. It copies a plain-text summary of the origin, destination, settings, and itinerary to the clipboard.
+
+---
+
+## Data flow
+
+The pipeline has two stages: offline preprocessing and in-browser routing.
+
+### Offline: building city data files
+
+A Rust preprocessing tool (`transit-prep`) takes a city configuration (a `.jsonc` file in `cities/`) and produces a single self-contained `.bin` file for that city.
+
+The city config specifies:
+- One or more GTFS feed URLs (the standard transit schedule format used by most agencies)
+- An OpenStreetMap bounding box for pedestrian street data
+- Display metadata (name, map center, zoom)
+
+The preprocessor downloads and caches both the GTFS feeds and the OSM extract, then performs the following steps:
+
+1. **Parse GTFS** — reads stops, routes, trips, stop times, service calendars, and shapes from the zip archives. Filters stops to the bounding box. Warns if feed data has expired.
+
+2. **Parse OSM** — extracts the pedestrian-walkable street network (footways, paths, sidewalks, crossings, and regular roads that allow foot traffic) within the bounding box.
+
+3. **Snap stops to street nodes** — each transit stop is matched to the nearest point on the street network by inserting a virtual node on the nearest edge and connecting it. This lets the router walk from any street point directly to any stop.
+
+4. **Build service patterns** — trips that share the same stop sequence and service calendar are grouped into a pattern. For each pattern, stop times are stored as a sorted array of time offsets per stop, enabling binary-search-based lookup during routing. Frequency-based routes (trips defined by headway rather than fixed times) are stored separately. The resulting structure enables the router to scan only the relevant events at each stop rather than searching all trips.
+
+5. **Serialize** — all data is written to a custom binary format divided into labeled sections: graph nodes, graph edges, stops, stop-to-node mapping, service patterns (the largest section), route shapes (PCO-compressed), and route metadata. The file is served gzip-compressed; the browser decompresses it on the fly during download.
+
+File sizes for the included cities range from 1.3 MB (Chapel Hill) to 39 MB (NYC and SF Bay), reflecting network and schedule size.
+
+### In-browser: routing and rendering
+
+The city `.bin` file is fetched and streamed through the browser's native gzip decompression. The decompressed bytes are handed to a WebAssembly module (~700 KB) compiled from the Rust routing engine.
+
+**Loading and indexing (~400 ms for Chicago):** The WASM module parses all sections and builds two additional in-memory structures: an adjacency list for the street graph (for walking), and a spatial grid index over all nodes (for snapping a clicked lat/lon to the nearest node in ~78 µs). The in-memory footprint for Chicago is about 250 MB, dominated by the pattern event index (~103 MB) and the adjacency list (~44 MB).
+
+**Routing — time-dependent Dijkstra:** When an origin is set, the router runs a shortest-path search over the combined graph. Walking edges have a fixed cost based on distance at 1.4 m/s (~5 km/h). At each node that is a transit stop, the router scans the event arrays for all active service patterns and boards vehicles. The search is time-dependent: the cost of boarding a transit vehicle is the wait time until its next departure plus the scheduled ride time. A transfer between different vehicles requires at least the configured transfer slack. The router tracks, for each reached node, the arrival time, the incoming route, the boarding time, and the latest possible home-departure time that still makes the connection.
+
+For a city the size of Chicago (817K nodes, 1.2M edges, 200 routes, 6.2M raw trip events), a single query takes about 220 ms and reaches roughly 530K nodes.
+
+**Hour-window average mode** runs multiple queries in parallel using a Rayon thread pool initialized via WebAssembly threads (SharedArrayBuffer). If the browser does not support shared memory, it falls back to sequential execution.
+
+**Rendering:** After routing, each node's travel time is sent to a WebGL shader that maps it to a color. Points are rendered onto an offscreen canvas at a size proportional to the map zoom level, producing a continuous-looking coverage surface. The canvas is then composited onto the Leaflet map as an image overlay. Route polylines are drawn using the GTFS shape data where available, falling back to straight-line segments between stops.
+
+---
+
+## Building
+
+**Prerequisites:**
+- Rust (nightly toolchain, for the WASM build)
+- [wasm-pack](https://rustwasm.github.io/wasm-pack/)
+- Node.js and npm
+
+**Build the WASM module** (only needed when the routing logic changes):
+```
+make wasm
 ```
 
-Options:
-| Flag | Description |
-|------|-------------|
-| `--city-file` | Path to city JSON config (e.g. `cities/chicago.jsonc`) |
-| `--output` | Output binary file path (default: `city.bin`) |
-| `--cache-dir` | Directory to cache downloaded GTFS/OSM files (default: `cache`) |
-
-Downloaded GTFS zips and OSM data are cached in `--cache-dir`, so subsequent runs skip the download step.
-
-### 2. Build the WASM Module
-
-```bash
-cd transit-router
-wasm-pack build --target web --out-dir ../transit-viz/pkg
+**Build city data files** (downloads GTFS and OSM data, takes a few minutes per city):
+```
+make data-all
 ```
 
-This produces `transit-viz/pkg/transit_router.js` and `transit_router_bg.wasm`.
-
-### 3. Run the Web App
-
-```bash
-cd transit-viz
-npm install
-npm run dev
+Individual cities can be built with:
+```
+cargo run --release -p transit-prep -- --city-file cities/chicago.jsonc --output transit-viz/public/data/chicago.bin
 ```
 
-Open `http://localhost:3000`. Click on the map to set an origin and see the isochrone.
-
-## Running Tests
-
-Tests use real cached data (no mocking). Run the data prep step first to populate the cache, then:
-
-```bash
-# Unit + integration tests for data prep
-cargo test -p transit-prep -- --nocapture
-
-# Chapel Hill routing tests
-cargo test -p transit-router --test integration_test -- --nocapture
-
-# Chicago routing tests (requires chicago.bin in cache/)
-cargo test -p transit-router --test chicago_test -- --nocapture
+**Start the development server** (builds everything if needed, then serves on port 5173):
+```
+make dev
 ```
 
-The Chicago test verifies a specific route from the West Side to the Loop:
-- Origin: (41.896, -87.778) — near Austin Blvd
-- Destination: (41.884, -87.629) — near LaSalle/Wacker
-- Departure: 11:10 AM Thursday
-- Expected: Walk → Bus 91 → Green Line → Walk, ~45 min
-
-## Project Structure
-
+**Production build:**
 ```
-transit-time/
-├── transit-prep/           # Data preparation CLI (Rust)
-│   └── src/
-│       ├── main.rs         # CLI entry point
-│       ├── osm.rs          # OSM data fetcher (Overpass + BBBike PBF)
-│       ├── gtfs.rs         # GTFS parser + service pattern builder
-│       ├── graph.rs        # OSM graph builder (XML + PBF) + stop snapping
-│       └── binary.rs       # Binary format serialization
-├── transit-router/         # Routing engine (Rust → WASM)
-│   └── src/
-│       ├── lib.rs          # WASM bindings (wasm-bindgen)
-│       ├── router.rs       # Time-dependent Dijkstra implementation
-│       └── data.rs         # Binary format deserialization
-├── transit-viz/            # Web visualization (Vite + Leaflet)
-│   ├── index.html          # Map UI with controls
-│   ├── src/main.js         # WASM integration + canvas rendering
-│   ├── public/data/        # Place city.bin here
-│   └── pkg/                # WASM build output (from wasm-pack)
-└── cache/                  # Cached downloads (gitignored)
+cd transit-viz && npm run build
+```
+The output in `transit-viz/dist/` is a fully static site that can be deployed anywhere.
+
+### Adding a city
+
+Create a `.jsonc` file in `cities/` with the following fields:
+
+```jsonc
+{
+  "id": "my_city",              // used in the URL path
+  "name": "My City, ST",        // display name
+  "file": "my_city.bin",        // output data file name
+  "feed_ids": [
+    "https://example.com/gtfs.zip"   // one or more GTFS feed URLs
+  ],
+  "bbox": "-80.0,43.0,-79.0,44.0",  // min_lon,min_lat,max_lon,max_lat
+  "bbbike_name": "MyCity",      // BBBike extract name (for OSM data), OR
+  // "osm_url": "https://...",  // direct URL to an OSM PBF file
+  "center": [43.65, -79.38],    // map center [lat, lon]
+  "zoom": 12,                   // initial zoom level
+  "detail": "Agency A, Agency B" // shown in city list
+}
 ```
 
-## Binary Format
+OSM pedestrian data is fetched from BBBike by name, or from a direct URL if `osm_url` is given. Then run `make data-all` (or the individual `cargo run` command) to build the `.bin` file.
 
-The `.bin` file is gzip-compressed with the following structure:
+---
 
-| Section | Contents |
-|---------|----------|
-| Header | Magic `TRNS`, version 1, counts for each section |
-| Nodes | OSM node ID, lat, lon, is_entrance flag |
-| Edges | Source/dest node indices, distance in meters |
-| Stops | GTFS stop name, lat, lon, stop index |
-| Stop-to-Node | Mapping from stop indices to graph node indices |
-| Route Names | Short names for each route |
-| Patterns | Day-of-week bitmask, event arrays (one slot per second), frequency routes |
-| Shapes | Route shape polylines (lat/lon sequences) |
+## Performance
 
-## License
+The numbers below are from a release build on a Chicago dataset (33 MB compressed / 250 MB in memory). To reproduce:
 
-MIT
+```
+cargo test --release --test profile_router -- --nocapture
+```
+
+**Load and index time (~393 ms total):**
+
+| Phase | Time |
+|---|---|
+| Parse pattern events and build stop index | 211 ms |
+| Build street adjacency list | 117 ms |
+| Build spatial node grid | 42 ms |
+| Parse nodes + edges + stops | 12 ms |
+
+**Single routing query (Chicago, ~820K nodes):**
+
+| Metric | Value |
+|---|---|
+| Average query time | 218 ms |
+| Min / Max | 208 ms / 230 ms |
+| Nodes reached (average) | 527K of 817K |
+
+**Binary sizes** (`ls -lh transit-viz/public/data/`):
+
+| City | Compressed |
+|---|---|
+| Chapel Hill | 1.3 MB |
+| Waterloo | 5.9 MB |
+| Seattle | 19 MB |
+| Toronto | 18 MB |
+| Chicago | 33 MB |
+| Montreal | 38 MB |
+| NYC | 39 MB |
+| SF Bay | 38 MB |
+
+**WASM module** (`ls -lh transit-viz/pkg/transit_router_bg.wasm`): 659 KB
+
+The largest in-memory structure is the pattern event index (103 MB for Chicago), which stores all 6.2M trip events indexed by stop for O(log n) binary-search access during routing. The raw input buffer (40 MB for Chicago) is retained in memory alongside the parsed structures.
