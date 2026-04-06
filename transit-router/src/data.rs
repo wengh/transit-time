@@ -178,7 +178,7 @@ pub fn load_with_stats(buf: &[u8]) -> Result<(PreparedData, LoadStats), String> 
     }
     pos += 4;
     let version = read_u32(&buf, &mut pos);
-    if version != 4 {
+    if version != 5 {
         return Err(format!("Unsupported version {}", version));
     }
     let num_nodes = read_u32(&buf, &mut pos) as usize;
@@ -191,49 +191,55 @@ pub fn load_with_stats(buf: &[u8]) -> Result<(PreparedData, LoadStats), String> 
     let header_end = pos;
     binary_sections.push(("header", header_end));
 
-    // Nodes (v4): two PCO-compressed f64 arrays (lats, lons), SFC-sorted
+    // Nodes (v5): 32-bit fixed-point 0.1 m resolution, SFC-sorted.
+    // Header: min_lat, min_lon (f64), lat_scale, lon_scale (f64 = units per degree).
     let t0 = Instant::now();
     let pos_before = pos;
-    let lats = read_pco_f64(&buf, &mut pos)?;
-    let lons = read_pco_f64(&buf, &mut pos)?;
-    if lats.len() != num_nodes || lons.len() != num_nodes {
+    let min_lat = read_f64(&buf, &mut pos);
+    let min_lon = read_f64(&buf, &mut pos);
+    let lat_scale = read_f64(&buf, &mut pos);
+    let lon_scale = read_f64(&buf, &mut pos);
+    let lat_u32 = read_pco_u32(&buf, &mut pos)?;
+    let lon_u32 = read_pco_u32(&buf, &mut pos)?;
+    if lat_u32.len() != num_nodes || lon_u32.len() != num_nodes {
         return Err(format!(
-            "Node count mismatch: header says {}, got lats={} lons={}",
-            num_nodes,
-            lats.len(),
-            lons.len()
+            "Node count mismatch: header says {}, got lat={} lon={}",
+            num_nodes, lat_u32.len(), lon_u32.len()
         ));
     }
-    let nodes: Vec<NodeData> = lats
+    let nodes: Vec<NodeData> = lat_u32
         .into_iter()
-        .zip(lons)
-        .map(|(lat, lon)| NodeData { lat, lon })
+        .zip(lon_u32)
+        .map(|(ly, lx)| NodeData {
+            lat: min_lat + ly as f64 / lat_scale,
+            lon: min_lon + lx as f64 / lon_scale,
+        })
         .collect();
     binary_sections.push(("nodes", pos - pos_before));
     timings.push(("parse nodes", t0.elapsed()));
 
-    // Edges (v4): three PCO-compressed u32 arrays (u, delta=u-v, dist_bits),
-    // stored as canonical half-edges with u > v, sorted by (u, delta).
+    // Edges (v5): u, delta=u-v, excess=distance_meters-haversine(u,v) (f32).
+    // Canonical u > v, sorted by (u, delta).
     let t0 = Instant::now();
     let pos_before = pos;
     let edge_u = read_pco_u32(&buf, &mut pos)?;
     let edge_delta = read_pco_u32(&buf, &mut pos)?;
-    let edge_dist_bits = read_pco_u32(&buf, &mut pos)?;
-    if edge_u.len() != num_edges || edge_delta.len() != num_edges || edge_dist_bits.len() != num_edges {
+    let edge_excess = read_pco_f32(&buf, &mut pos)?;
+    if edge_u.len() != num_edges || edge_delta.len() != num_edges || edge_excess.len() != num_edges {
         return Err(format!(
-            "Edge count mismatch: header says {}, got u={} delta={} dist={}",
-            num_edges, edge_u.len(), edge_delta.len(), edge_dist_bits.len()
+            "Edge count mismatch: header says {}, got u={} delta={} excess={}",
+            num_edges, edge_u.len(), edge_delta.len(), edge_excess.len()
         ));
     }
     let edges: Vec<EdgeData> = (0..num_edges)
         .map(|i| {
             let u = edge_u[i];
-            let v = u - edge_delta[i]; // recover v (u > v guaranteed)
-            EdgeData {
-                u,
-                v,
-                distance_meters: f32::from_bits(edge_dist_bits[i]),
-            }
+            let v = u - edge_delta[i];
+            let straight = haversine(
+                nodes[u as usize].lat, nodes[u as usize].lon,
+                nodes[v as usize].lat, nodes[v as usize].lon,
+            );
+            EdgeData { u, v, distance_meters: straight + edge_excess[i] }
         })
         .collect();
     binary_sections.push(("edges", pos - pos_before));
@@ -726,6 +732,16 @@ fn fmt_dur(d: Duration) -> String {
     }
 }
 
+fn haversine(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f32 {
+    const R: f64 = 6_371_000.0;
+    let dlat = (lat2 - lat1).to_radians();
+    let dlon = (lon2 - lon1).to_radians();
+    let a = (dlat / 2.0).sin().powi(2)
+        + lat1.to_radians().cos() * lat2.to_radians().cos() * (dlon / 2.0).sin().powi(2);
+    let c = 2.0 * a.sqrt().atan2((1.0 - a).sqrt());
+    (R * c) as f32
+}
+
 fn read_pco_u32(buf: &[u8], pos: &mut usize) -> Result<Vec<u32>, String> {
     let pco_len = read_u32(buf, pos) as usize;
     let result: Vec<u32> = pco::standalone::simple_decompress(&buf[*pos..*pos + pco_len])
@@ -734,9 +750,9 @@ fn read_pco_u32(buf: &[u8], pos: &mut usize) -> Result<Vec<u32>, String> {
     Ok(result)
 }
 
-fn read_pco_f64(buf: &[u8], pos: &mut usize) -> Result<Vec<f64>, String> {
+fn read_pco_f32(buf: &[u8], pos: &mut usize) -> Result<Vec<f32>, String> {
     let pco_len = read_u32(buf, pos) as usize;
-    let result: Vec<f64> = pco::standalone::simple_decompress(&buf[*pos..*pos + pco_len])
+    let result: Vec<f32> = pco::standalone::simple_decompress(&buf[*pos..*pos + pco_len])
         .map_err(|e| format!("pco decompress failed: {}", e))?;
     *pos += pco_len;
     Ok(result)

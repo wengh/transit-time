@@ -1,4 +1,4 @@
-use crate::graph::{OsmEdge, OsmNode};
+use crate::graph::{haversine, OsmEdge, OsmNode};
 use crate::gtfs::{Color, ServicePattern, Stop};
 use anyhow::Result;
 use std::collections::HashMap;
@@ -18,10 +18,10 @@ pub struct PreparedData {
     pub route_shapes: Vec<Vec<String>>, // route_index -> shape_id
 }
 
-// Binary format v4:
+// Binary format v5:
 // Header:
 //   magic: [u8; 4] = "TRNS"
-//   version: u32 = 4
+//   version: u32 = 5
 //   num_nodes: u32
 //   num_edges: u32
 //   num_stops: u32
@@ -30,14 +30,16 @@ pub struct PreparedData {
 //   num_route_names: u32
 //   num_shapes: u32
 //
-// Nodes section (SFC-sorted by Morton curve):
-//   pco_len: u32, pco_data: [u8; pco_len]  // PCO-compressed f64 lats
-//   pco_len: u32, pco_data: [u8; pco_len]  // PCO-compressed f64 lons
+// Nodes section (SFC-sorted by Morton curve, 32-bit fixed-point 0.1 m resolution):
+//   min_lat: f64, min_lon: f64      // bbox origin
+//   lat_scale: f64, lon_scale: f64  // units per degree (1 unit = 0.1 m)
+//   pco_len: u32, pco_data: [u8]    // PCO u32 lat offsets
+//   pco_len: u32, pco_data: [u8]    // PCO u32 lon offsets
 //
 // Edges section (canonical u>v, sorted by (u, u-v)):
-//   pco_len: u32, pco_data: [u8; pco_len]  // PCO-compressed u values
-//   pco_len: u32, pco_data: [u8; pco_len]  // PCO-compressed delta = u-v
-//   pco_len: u32, pco_data: [u8; pco_len]  // PCO-compressed distance_meters as f32 bits
+//   pco_len: u32, pco_data: [u8]  // PCO u32: u values
+//   pco_len: u32, pco_data: [u8]  // PCO u32: delta = u-v
+//   pco_len: u32, pco_data: [u8]  // PCO f32: distance_meters - haversine(u,v) excess
 //
 // Stops section: [Stop; num_stops]
 //   lat: f64, lon: f64, name_len: u32, name: [u8; name_len]
@@ -93,6 +95,13 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
     let max_lon = data.nodes.iter().map(|n| n.lon).fold(f64::NEG_INFINITY, f64::max);
     let lat_range = (max_lat - min_lat).max(1e-10);
     let lon_range = (max_lon - min_lon).max(1e-10);
+
+    // Fixed-point scales: 1 unit = 0.1 m
+    const METERS_PER_DEG_LAT: f64 = 111_320.0;
+    let center_lat = (min_lat + max_lat) / 2.0;
+    let lat_scale = METERS_PER_DEG_LAT * 10.0; // units per degree of latitude
+    let lon_scale = METERS_PER_DEG_LAT * center_lat.to_radians().cos() * 10.0;
+
     let scale = (1u32 << 16) as f64;
 
     let node_morton = |i: usize| -> u32 {
@@ -112,13 +121,18 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
         old_to_new[old_idx as usize] = new_idx as u32;
     }
 
-    // Relabel edges: use new node indices, canonicalize u > v
-    // Sort by (u, u-v) for best delta compression
-    let mut canon_edges: Vec<(u32, u32, u32)> = data.edges.iter().map(|e| {
+    // Relabel edges: use new node indices, canonicalize u > v.
+    // Third element is distance excess over straight-line (f32 bits stored as u32 for sorting key).
+    // Use original f64 node coords for haversine so the delta is as small as possible.
+    let mut canon_edges: Vec<(u32, u32, f32)> = data.edges.iter().map(|e| {
         let new_u = old_to_new[e.u as usize];
         let new_v = old_to_new[e.v as usize];
         let (cu, cv) = if new_u > new_v { (new_u, new_v) } else { (new_v, new_u) };
-        (cu, cu - cv, e.distance_meters.to_bits())
+        let straight = haversine(
+            data.nodes[e.u as usize].lat, data.nodes[e.u as usize].lon,
+            data.nodes[e.v as usize].lat, data.nodes[e.v as usize].lon,
+        ) as f32;
+        (cu, cu - cv, e.distance_meters - straight)
     }).collect();
     canon_edges.sort_unstable_by_key(|&(u, delta, _)| (u, delta));
 
@@ -131,7 +145,7 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
 
     // Header
     buf.extend_from_slice(b"TRNS");
-    write_u32(&mut buf, 4); // version
+    write_u32(&mut buf, 5); // version
     write_u32(&mut buf, num_nodes as u32);
     write_u32(&mut buf, data.edges.len() as u32);
     write_u32(&mut buf, data.stops.len() as u32);
@@ -140,23 +154,31 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
     write_u32(&mut buf, data.route_names.len() as u32);
     write_u32(&mut buf, data.shapes.len() as u32);
 
-    // Nodes (v4): PCO-compressed f64 lats then lons, in SFC order
+    // Nodes (v5): 32-bit fixed-point, 0.1 m resolution, SFC-sorted
     {
-        let lats: Vec<f64> = new_order.iter().map(|&i| data.nodes[i as usize].lat).collect();
-        let lons: Vec<f64> = new_order.iter().map(|&i| data.nodes[i as usize].lon).collect();
-        write_pco_f64(&mut buf, &lats);
-        write_pco_f64(&mut buf, &lons);
+        write_f64(&mut buf, min_lat);
+        write_f64(&mut buf, min_lon);
+        write_f64(&mut buf, lat_scale);
+        write_f64(&mut buf, lon_scale);
+        let lat_u32: Vec<u32> = new_order.iter().map(|&i| {
+            ((data.nodes[i as usize].lat - min_lat) * lat_scale).round() as u32
+        }).collect();
+        let lon_u32: Vec<u32> = new_order.iter().map(|&i| {
+            ((data.nodes[i as usize].lon - min_lon) * lon_scale).round() as u32
+        }).collect();
+        write_pco_u32(&mut buf, &lat_u32);
+        write_pco_u32(&mut buf, &lon_u32);
     }
 
-    // Edges (v4): three PCO-compressed u32 arrays: u, delta (=u-v), dist_bits
+    // Edges (v5): u, delta (=u-v), dist_excess (=distance_meters - haversine(u,v))
     // Sorted by (u, delta), canonical with u > v
     {
         let us: Vec<u32> = canon_edges.iter().map(|&(u, _, _)| u).collect();
         let deltas: Vec<u32> = canon_edges.iter().map(|&(_, d, _)| d).collect();
-        let dist_bits: Vec<u32> = canon_edges.iter().map(|&(_, _, b)| b).collect();
+        let excesses: Vec<f32> = canon_edges.iter().map(|&(_, _, x)| x).collect();
         write_pco_u32(&mut buf, &us);
         write_pco_u32(&mut buf, &deltas);
-        write_pco_u32(&mut buf, &dist_bits);
+        write_pco_f32(&mut buf, &excesses);
     }
 
     // Stops
@@ -455,7 +477,7 @@ fn write_pco_u32(buf: &mut Vec<u8>, data: &[u32]) {
     buf.extend_from_slice(&compressed);
 }
 
-fn write_pco_f64(buf: &mut Vec<u8>, data: &[f64]) {
+fn write_pco_f32(buf: &mut Vec<u8>, data: &[f32]) {
     let compressed = pco::standalone::simple_compress(data, &pco::ChunkConfig::default())
         .expect("pco compress failed");
     write_u32(buf, compressed.len() as u32);
