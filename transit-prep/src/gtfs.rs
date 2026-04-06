@@ -88,48 +88,56 @@ pub struct GtfsData {
 }
 
 impl GtfsData {
-    /// Merge another feed into this one, offsetting numeric indices.
-    /// String-based references (trip_id, route_id, stop_id, service_id) are
-    /// kept as-is — collisions across feeds are unlikely and harmless for
-    /// build_service_patterns which resolves everything by string.
+    /// Merge another feed into this one.
+    ///
+    /// All string IDs in `other` are prefixed with `"<stop_count>:"` before
+    /// insertion so that stop/trip/route/service IDs can never collide across
+    /// feeds. Without this, two feeds that happen to share a stop ID (e.g.
+    /// both use "1234") would have their stop_times cross-mapped to the wrong
+    /// physical location, producing phantom "instant" transit legs.
     pub fn merge(&mut self, other: GtfsData) {
         let stop_offset = self.stops.len() as u32;
         let route_offset = self.routes.len() as u32;
+        // Derive a per-feed prefix from the current stop count — guaranteed
+        // unique because it grows monotonically with each merge call.
+        let p = format!("{}:", stop_offset);
 
         for mut stop in other.stops {
+            stop.id = format!("{p}{}", stop.id);
             stop.index += stop_offset;
             self.stops.push(stop);
         }
         for mut route in other.routes {
+            route.id = format!("{p}{}", route.id);
             route.index += route_offset;
             self.routes.push(route);
         }
-        self.trips.extend(other.trips);
-        self.stop_times.extend(other.stop_times);
-
-        // Merge services: if same service_id exists, combine date exceptions
-        let existing: HashMap<String, usize> = self
-            .services
-            .iter()
-            .enumerate()
-            .map(|(i, s)| (s.id.clone(), i))
-            .collect();
-        for svc in other.services {
-            if let Some(&idx) = existing.get(&svc.id) {
-                self.services[idx].added_dates.extend(svc.added_dates);
-                self.services[idx].removed_dates.extend(svc.removed_dates);
-                for (i, &d) in svc.days.iter().enumerate() {
-                    if d {
-                        self.services[idx].days[i] = true;
-                    }
-                }
-            } else {
-                self.services.push(svc);
-            }
+        for mut trip in other.trips {
+            trip.id = format!("{p}{}", trip.id);
+            trip.route_id = format!("{p}{}", trip.route_id);
+            trip.service_id = format!("{p}{}", trip.service_id);
+            trip.shape_id = trip.shape_id.map(|s| format!("{p}{s}"));
+            self.trips.push(trip);
         }
-
-        self.frequencies.extend(other.frequencies);
-        self.shapes.extend(other.shapes);
+        for mut st in other.stop_times {
+            st.trip_id = format!("{p}{}", st.trip_id);
+            st.stop_id = format!("{p}{}", st.stop_id);
+            self.stop_times.push(st);
+        }
+        for mut svc in other.services {
+            svc.id = format!("{p}{}", svc.id);
+            self.services.push(svc);
+        }
+        for mut freq in other.frequencies {
+            freq.trip_id = format!("{p}{}", freq.trip_id);
+            self.frequencies.push(freq);
+        }
+        let shapes: HashMap<String, Vec<(f64, f64)>> = other
+            .shapes
+            .into_iter()
+            .map(|(k, v)| (format!("{p}{k}"), v))
+            .collect();
+        self.shapes.extend(shapes);
     }
 }
 
@@ -700,7 +708,9 @@ pub fn build_service_patterns(data: &GtfsData) -> Vec<ServicePattern> {
                 // Filter to in-bbox stops first, then window. This ensures stops outside
                 // the bbox (prefix, suffix, or middle gaps) are removed cleanly so that
                 // consecutive in-bbox stops are still directly connected.
-                let valid_times: Vec<&StopTime> = times.iter().copied()
+                let valid_times: Vec<&StopTime> = times
+                    .iter()
+                    .copied()
                     .filter(|st| stop_id_to_idx.contains_key(st.stop_id.as_str()))
                     .collect();
                 // For each consecutive pair of stops, create an event at the departure stop
@@ -763,7 +773,9 @@ pub fn build_service_patterns(data: &GtfsData) -> Vec<ServicePattern> {
                     None => continue,
                 };
                 if let Some(times) = stop_times_by_trip.get(trip.id.as_str()) {
-                    let valid_times: Vec<&StopTime> = times.iter().copied()
+                    let valid_times: Vec<&StopTime> = times
+                        .iter()
+                        .copied()
                         .filter(|st| stop_id_to_idx.contains_key(st.stop_id.as_str()))
                         .collect();
                     for window in valid_times.windows(2) {
