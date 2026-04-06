@@ -78,10 +78,10 @@ export const initialState: AppState = {
   loadingProgress: 0,
 
   // Controls
-  mode: 'single',
+  mode: 'sampled',
   departureTime: 11 * 3600, // 11:00 AM
   date: new Date().toISOString().slice(0, 10),
-  nSamples: 10,
+  nSamples: 30,
   maxTimeMin: 45,
   transferSlack: 60,
 

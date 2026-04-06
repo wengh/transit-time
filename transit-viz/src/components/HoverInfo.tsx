@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useRef, useState, useCallback, useId } from 'react';
 import { useAppState } from '../state/AppContext';
 import type { HoverPath } from '../utils/router';
 import { getMedianPath } from '../utils/hoverInfo';
@@ -228,6 +228,54 @@ function pathIdxAtCanvasX(canvasX: number, canvasWidth: number, info: ChartInfo)
   return walkPathIdx;
 }
 
+// ─── hint button ──────────────────────────────────────────────────────────────
+
+function ChartHintButton(): React.ReactNode {
+  const [open, setOpen] = useState(false);
+  const id = useId();
+  return (
+    <div style={{ position: 'relative', display: 'flex', justifyContent: 'flex-end', marginBottom: 2 }}>
+      <button
+        aria-label="How to read this chart"
+        aria-expanded={open}
+        aria-controls={id}
+        onClick={() => setOpen(v => !v)}
+        style={{
+          background: 'none', border: '1px solid #bbb', borderRadius: '50%',
+          width: 18, height: 18, fontSize: 11, lineHeight: '16px', cursor: 'pointer',
+          color: '#666', padding: 0, flexShrink: 0,
+        }}
+      >?</button>
+      {open && (
+        <div
+          id={id}
+          role="tooltip"
+          style={{
+            position: 'absolute', top: 22, right: 0, zIndex: 10,
+            background: '#fff', border: '1px solid #ccc', borderRadius: 6,
+            padding: '8px 10px', width: 220, fontSize: 11, lineHeight: 1.5,
+            color: '#444', boxShadow: '0 2px 8px rgba(0,0,0,.12)',
+          }}
+        >
+          <strong style={{ display: 'block', marginBottom: 4 }}>How to read this chart</strong>
+          <p style={{ margin: '0 0 4px' }}>
+            <strong>X-axis:</strong> departure time.{' '}
+            <strong>Y-axis:</strong> travel time to this location.
+          </p>
+          <p style={{ margin: '0 0 4px' }}>
+            Each <strong>sawtooth curve</strong> is one transit trip — travel time rises as you
+            depart later and miss the vehicle, then drops when you catch the next one.
+          </p>
+          <p style={{ margin: 0 }}>
+            <strong>Hover</strong> to highlight a departure.{' '}
+            <strong>Click</strong> to pin it and see its route on the map.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── component ────────────────────────────────────────────────────────────────
 
 export default function HoverInfo(): React.ReactNode {
@@ -374,6 +422,7 @@ export default function HoverInfo(): React.ReactNode {
 
       {isSampled && (
         <div id="hover-info-chart" style={{ borderTop: '1px solid #ddd', paddingTop: 8, marginTop: 6 }}>
+          <ChartHintButton />
           <canvas
             ref={canvasRef}
             style={{ width: '100%', aspectRatio: '1 / 1', display: 'block', cursor: 'crosshair' }}
