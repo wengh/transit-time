@@ -586,7 +586,6 @@ pub fn load_with_stats(buf: &[u8]) -> Result<(PreparedData, LoadStats), String> 
     ];
 
     let stats = LoadStats {
-        compressed_size: 0,
         decompressed_size: buf.len(),
         binary_sections,
         memory_sections,
@@ -617,7 +616,6 @@ pub fn load_with_stats(buf: &[u8]) -> Result<(PreparedData, LoadStats), String> 
 }
 
 pub struct LoadStats {
-    pub compressed_size: usize,
     pub decompressed_size: usize,
     /// (section_name, binary_bytes)
     pub binary_sections: Vec<(&'static str, usize)>,
@@ -641,11 +639,6 @@ impl LoadStats {
             "{:<25} {:>12}",
             "TOTAL decompressed",
             fmt_bytes(self.decompressed_size)
-        );
-        println!(
-            "{:<25} {:>12}",
-            "TOTAL compressed (zstd)",
-            fmt_bytes(self.compressed_size)
         );
         println!();
 
