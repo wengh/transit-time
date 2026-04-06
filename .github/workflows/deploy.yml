@@ -1,0 +1,110 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    # Rebuild weekly on Sunday at 03:00 UTC to pick up fresh GTFS feeds
+    - cron: '0 3 * * 0'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Only one deployment at a time; a new push cancels an in-flight run
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── Rust / WASM ────────────────────────────────────────────────────────
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: wasm32-unknown-unknown
+          components: rust-src
+
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      - name: Cache Cargo registry + build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Cache WASM output
+        uses: actions/cache@v4
+        id: wasm-cache
+        with:
+          path: transit-viz/pkg/
+          key: ${{ runner.os }}-wasm-${{ hashFiles('transit-router/src/**', 'transit-router/Cargo.toml', '.cargo/config.toml') }}
+
+      - name: Build WASM
+        if: steps.wasm-cache.outputs.cache-hit != 'true'
+        run: make wasm
+
+      # ── Data (.bin files) ──────────────────────────────────────────────────
+      # Two-layer cache: raw GTFS/OSM downloads (large, reused across builds)
+      # and the compiled .bin files (fast to restore, avoid full rebuild).
+
+      - name: Cache raw GTFS/OSM downloads
+        uses: actions/cache@v4
+        with:
+          path: cache/
+          key: ${{ runner.os }}-downloads-${{ hashFiles('cities/*.jsonc') }}
+          restore-keys: ${{ runner.os }}-downloads-
+
+      - name: Cache compiled .bin files
+        uses: actions/cache@v4
+        id: bin-cache
+        with:
+          path: transit-viz/public/data/
+          key: ${{ runner.os }}-bins-${{ hashFiles('transit-prep/src/**', 'transit-router/src/**', 'cities/*.jsonc') }}
+
+      - name: Build data
+        if: steps.bin-cache.outputs.cache-hit != 'true'
+        run: make data-all
+
+      # ── Frontend ───────────────────────────────────────────────────────────
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: transit-viz/package-lock.json
+
+      - name: Install npm dependencies
+        working-directory: transit-viz
+        run: npm ci
+
+      - name: Build site
+        working-directory: transit-viz
+        run: npx vite build --base /transit-time/
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: transit-viz/dist/
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
