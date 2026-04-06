@@ -150,7 +150,7 @@ pub struct PreparedData {
     pub num_nodes: usize,
     pub num_edges: usize,
     pub num_stops: usize,
-    pub adj: Vec<Vec<(u32, f32)>>,
+    pub adj: JaggedArray<(u32, f32)>,
     pub node_is_stop: Vec<bool>,
     pub node_stop_indices: Vec<Vec<u32>>,
     /// Compressed shapes: JaggedArray of PCO-compressed data (lat/lon pairs as f32 bits)
@@ -178,7 +178,7 @@ pub fn load_with_stats(buf: &[u8]) -> Result<(PreparedData, LoadStats), String> 
     }
     pos += 4;
     let version = read_u32(&buf, &mut pos);
-    if version != 3 {
+    if version != 4 {
         return Err(format!("Unsupported version {}", version));
     }
     let num_nodes = read_u32(&buf, &mut pos) as usize;
@@ -191,32 +191,51 @@ pub fn load_with_stats(buf: &[u8]) -> Result<(PreparedData, LoadStats), String> 
     let header_end = pos;
     binary_sections.push(("header", header_end));
 
-    // Nodes
+    // Nodes (v4): two PCO-compressed f64 arrays (lats, lons), SFC-sorted
     let t0 = Instant::now();
     let pos_before = pos;
-    let mut nodes = Vec::with_capacity(num_nodes);
-    for _ in 0..num_nodes {
-        let lat = read_f64(&buf, &mut pos);
-        let lon = read_f64(&buf, &mut pos);
-        nodes.push(NodeData { lat, lon });
+    let lats = read_pco_f64(&buf, &mut pos)?;
+    let lons = read_pco_f64(&buf, &mut pos)?;
+    if lats.len() != num_nodes || lons.len() != num_nodes {
+        return Err(format!(
+            "Node count mismatch: header says {}, got lats={} lons={}",
+            num_nodes,
+            lats.len(),
+            lons.len()
+        ));
     }
+    let nodes: Vec<NodeData> = lats
+        .into_iter()
+        .zip(lons)
+        .map(|(lat, lon)| NodeData { lat, lon })
+        .collect();
     binary_sections.push(("nodes", pos - pos_before));
     timings.push(("parse nodes", t0.elapsed()));
 
-    // Edges
+    // Edges (v4): three PCO-compressed u32 arrays (u, delta=u-v, dist_bits),
+    // stored as canonical half-edges with u > v, sorted by (u, delta).
     let t0 = Instant::now();
     let pos_before = pos;
-    let mut edges = Vec::with_capacity(num_edges);
-    for _ in 0..num_edges {
-        let u = read_u32(&buf, &mut pos);
-        let v = read_u32(&buf, &mut pos);
-        let distance = read_f32(&buf, &mut pos);
-        edges.push(EdgeData {
-            u,
-            v,
-            distance_meters: distance,
-        });
+    let edge_u = read_pco_u32(&buf, &mut pos)?;
+    let edge_delta = read_pco_u32(&buf, &mut pos)?;
+    let edge_dist_bits = read_pco_u32(&buf, &mut pos)?;
+    if edge_u.len() != num_edges || edge_delta.len() != num_edges || edge_dist_bits.len() != num_edges {
+        return Err(format!(
+            "Edge count mismatch: header says {}, got u={} delta={} dist={}",
+            num_edges, edge_u.len(), edge_delta.len(), edge_dist_bits.len()
+        ));
     }
+    let edges: Vec<EdgeData> = (0..num_edges)
+        .map(|i| {
+            let u = edge_u[i];
+            let v = u - edge_delta[i]; // recover v (u > v guaranteed)
+            EdgeData {
+                u,
+                v,
+                distance_meters: f32::from_bits(edge_dist_bits[i]),
+            }
+        })
+        .collect();
     binary_sections.push(("edges", pos - pos_before));
     timings.push(("parse edges", t0.elapsed()));
 
@@ -458,13 +477,35 @@ pub fn load_with_stats(buf: &[u8]) -> Result<(PreparedData, LoadStats), String> 
     binary_sections.push(("route_shapes", pos - pos_before));
     timings.push(("parse route_shapes", t0.elapsed()));
 
-    // Build adjacency list
+    // Build adjacency list as JaggedArray<(u32, f32)>
     let t0 = Instant::now();
-    let mut adj: Vec<Vec<(u32, f32)>> = vec![Vec::new(); num_nodes];
-    for edge in &edges {
-        adj[edge.u as usize].push((edge.v, edge.distance_meters));
-        adj[edge.v as usize].push((edge.u, edge.distance_meters));
-    }
+    let adj = {
+        // Count degree of each node
+        let mut counts = vec![0u32; num_nodes];
+        for edge in &edges {
+            counts[edge.u as usize] += 1;
+            counts[edge.v as usize] += 1;
+        }
+        // Build prefix-sum offsets
+        let mut offsets = Vec::with_capacity(num_nodes + 1);
+        offsets.push(0u32);
+        for &c in &counts {
+            offsets.push(offsets.last().unwrap() + c);
+        }
+        // Fill data
+        let total = *offsets.last().unwrap() as usize;
+        let mut data: Vec<(u32, f32)> = vec![(0, 0.0); total];
+        let mut pos_fill = offsets[..num_nodes].to_vec();
+        for edge in &edges {
+            let u = edge.u as usize;
+            let v = edge.v as usize;
+            data[pos_fill[u] as usize] = (edge.v, edge.distance_meters);
+            pos_fill[u] += 1;
+            data[pos_fill[v] as usize] = (edge.u, edge.distance_meters);
+            pos_fill[v] += 1;
+        }
+        JaggedArray { offsets, data }
+    };
     timings.push(("build adj list", t0.elapsed()));
 
     // Build spatial grid
@@ -543,12 +584,9 @@ pub fn load_with_stats(buf: &[u8]) -> Result<(PreparedData, LoadStats), String> 
     memory_sections.push(("patterns/freq", pat_freq_mem));
     memory_sections.push(("patterns/other", pat_other_mem));
 
-    // adj list: Vec<Vec<(u32, f32)>>
-    let adj_mem: usize = num_nodes * std::mem::size_of::<Vec<(u32, f32)>>()
-        + adj
-            .iter()
-            .map(|v| v.capacity() * std::mem::size_of::<(u32, f32)>())
-            .sum::<usize>();
+    // adj list: JaggedArray<(u32, f32)> — offsets + flat data
+    let adj_mem: usize = adj.offsets.capacity() * 4
+        + adj.data.capacity() * std::mem::size_of::<(u32, f32)>();
     memory_sections.push(("adj list", adj_mem));
 
     // shapes JaggedArray: compressed PCO data
@@ -696,14 +734,16 @@ fn read_pco_u32(buf: &[u8], pos: &mut usize) -> Result<Vec<u32>, String> {
     Ok(result)
 }
 
-fn read_u32(buf: &[u8], pos: &mut usize) -> u32 {
-    let v = u32::from_le_bytes(buf[*pos..*pos + 4].try_into().unwrap());
-    *pos += 4;
-    v
+fn read_pco_f64(buf: &[u8], pos: &mut usize) -> Result<Vec<f64>, String> {
+    let pco_len = read_u32(buf, pos) as usize;
+    let result: Vec<f64> = pco::standalone::simple_decompress(&buf[*pos..*pos + pco_len])
+        .map_err(|e| format!("pco decompress failed: {}", e))?;
+    *pos += pco_len;
+    Ok(result)
 }
 
-fn read_f32(buf: &[u8], pos: &mut usize) -> f32 {
-    let v = f32::from_le_bytes(buf[*pos..*pos + 4].try_into().unwrap());
+fn read_u32(buf: &[u8], pos: &mut usize) -> u32 {
+    let v = u32::from_le_bytes(buf[*pos..*pos + 4].try_into().unwrap());
     *pos += 4;
     v
 }

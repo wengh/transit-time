@@ -219,7 +219,7 @@ fn run_tdd_inner(
         // Walking edges — leave_home and current_event propagate unchanged.
         // Propagating current_event means: if you were mid-trip and walk to an
         // adjacent node, you can still continue the same trip from there.
-        for &(neighbor, distance) in &data.adj[node as usize] {
+        for &(neighbor, distance) in &data.adj[node] {
             let wt = (distance / WALKING_SPEED_MPS) as u32;
             let arrival = t_current + wt;
             let candidate = NodeResult {
