@@ -5,7 +5,7 @@ rustflags = [
     "-C",
     "link-arg=--shared-memory",
     "-C",
-    "link-arg=--max-memory=1073741824",
+    "link-arg=--max-memory=2147483648",
     "-C",
     "link-arg=--import-memory",
     "-C",

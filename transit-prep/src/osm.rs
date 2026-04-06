@@ -2,6 +2,8 @@ use anyhow::{bail, Result};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use crate::download::with_download_lock;
+
 // Try multiple Overpass servers
 const OVERPASS_URLS: &[&str] = &[
     "https://overpass-api.de/api/interpreter",
@@ -24,21 +26,36 @@ pub fn fetch_osm(
     let (min_lon, min_lat, max_lon, max_lat) = bbox;
 
     if let Some(url) = osm_url {
-        let ext = if url.contains(".pbf") { "osm.pbf" } else { "osm.xml" };
+        let ext = if url.contains(".pbf") {
+            "osm.pbf"
+        } else {
+            "osm.xml"
+        };
         let cache_path = cache_dir.join(format!("{}.{}", sanitize(city), ext));
         if cache_path.exists() {
             eprintln!("Using cached OSM: {:?}", cache_path);
             return Ok(cache_path);
         }
-        eprintln!("Downloading OSM from: {}", url);
-        let client = reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(600))
-            .user_agent("Mozilla/5.0 (compatible; transit-prep/1.0)")
-            .build()?;
-        let bytes = client.get(url).send()?.error_for_status()?.bytes()?;
-        eprintln!("Downloaded OSM: {:.1} MB", bytes.len() as f64 / 1_048_576.0);
-        std::fs::File::create(&cache_path)?.write_all(&bytes)?;
-        return Ok(cache_path);
+        return with_download_lock(&cache_path, |path| {
+            if path.exists() {
+                eprintln!(
+                    "Using cached OSM (downloaded by parallel process): {:?}",
+                    path
+                );
+                return Ok(path.to_path_buf());
+            }
+            eprintln!("Downloading OSM from: {}", url);
+            let client = reqwest::blocking::Client::builder()
+                .timeout(std::time::Duration::from_secs(600))
+                .user_agent("Mozilla/5.0 (compatible; transit-prep/1.0)")
+                .build()?;
+            let bytes = client.get(url).send()?.error_for_status()?.bytes()?;
+            eprintln!("Downloaded OSM: {:.1} MB", bytes.len() as f64 / 1_048_576.0);
+            let tmp = path.with_extension("tmp");
+            std::fs::File::create(&tmp)?.write_all(&bytes)?;
+            std::fs::rename(&tmp, path)?;
+            Ok(path.to_path_buf())
+        });
     }
 
     // Check if a PBF cache already exists

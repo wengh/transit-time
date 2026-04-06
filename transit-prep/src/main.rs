@@ -1,4 +1,5 @@
 mod binary;
+mod download;
 mod graph;
 mod gtfs;
 mod osm;
@@ -25,7 +26,6 @@ struct Cli {
     /// Cache directory
     #[arg(long, default_value = "cache")]
     cache_dir: PathBuf,
-
 }
 
 #[derive(serde::Deserialize)]
@@ -62,10 +62,17 @@ fn yyyymmdd_to_days(date: u32) -> u32 {
 
 /// Warn if the last service date in `data` is more than 1 day before today.
 fn warn_if_expired(feed_id: &str, data: &gtfs::GtfsData) {
-    let last = data.services.iter().flat_map(|s| {
-        s.added_dates.iter().copied()
-            .chain(if s.end_date != 0 { Some(s.end_date) } else { None })
-    }).max();
+    let last = data
+        .services
+        .iter()
+        .flat_map(|s| {
+            s.added_dates.iter().copied().chain(if s.end_date != 0 {
+                Some(s.end_date)
+            } else {
+                None
+            })
+        })
+        .max();
     if let Some(last_date) = last {
         let today = unix_days_now();
         let last_days = yyyymmdd_to_days(last_date);
@@ -89,14 +96,25 @@ fn fetch_gtfs_url(url: &str, cache_dir: &Path) -> Result<PathBuf> {
         eprintln!("Using cached GTFS: {:?}", cache_path);
         return Ok(cache_path);
     }
-    eprintln!("Downloading GTFS from: {}", url);
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(120))
-        .user_agent("Mozilla/5.0 (compatible; transit-prep/1.0)")
-        .build()?;
-    let bytes = client.get(url).send()?.error_for_status()?.bytes()?;
-    std::fs::File::create(&cache_path)?.write_all(&bytes)?;
-    Ok(cache_path)
+    download::with_download_lock(&cache_path, |path| {
+        if path.exists() {
+            eprintln!(
+                "Using cached GTFS (downloaded by parallel process): {:?}",
+                path
+            );
+            return Ok(path.to_path_buf());
+        }
+        eprintln!("Downloading GTFS from: {}", url);
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(120))
+            .user_agent("Mozilla/5.0 (compatible; transit-prep/1.0)")
+            .build()?;
+        let bytes = client.get(url).send()?.error_for_status()?.bytes()?;
+        let tmp = path.with_extension("zip.tmp");
+        std::fs::File::create(&tmp)?.write_all(&bytes)?;
+        std::fs::rename(&tmp, path)?;
+        Ok(path.to_path_buf())
+    })
 }
 
 fn parse_bbox(s: &str) -> Result<(f64, f64, f64, f64)> {

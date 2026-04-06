@@ -1991,6 +1991,7 @@ dependencies = [
  "flate2",
  "hex",
  "jsonc-parser",
+ "libc",
  "osmpbf",
  "pco",
  "quick-xml",
