@@ -95,26 +95,42 @@ impl<T> JaggedArray<T> {
     }
 
     pub fn build(items: Vec<T>, key_fn: impl Fn(&T) -> u32, len: u32) -> Self {
-        let mut buckets: Vec<Vec<T>> = std::iter::repeat_with(Vec::new)
-            .take(len as usize)
+        let n = len as usize;
+        // Count items per bucket
+        let mut counts = vec![0u32; n + 1];
+        for item in &items {
+            let bucket = key_fn(item) as usize;
+            assert!(
+                bucket < n,
+                "key_fn returned out-of-bounds bucket: {} >= {}",
+                bucket,
+                n
+            );
+            counts[bucket] += 1;
+        }
+        // Convert counts to start offsets in-place, then append total as the sentinel.
+        let mut acc = 0u32;
+        for c in &mut counts {
+            let prev = *c;
+            *c = acc;
+            acc += prev;
+        }
+        let offsets = counts;
+        // Scatter items into a MaybeUninit buffer, then transmute once all slots are filled.
+        let mut cursors = offsets[..n].to_vec();
+        let mut data: Vec<std::mem::MaybeUninit<T>> = (0..acc as usize)
+            .map(|_| std::mem::MaybeUninit::uninit())
             .collect();
-        let total_items = items.len();
-
         for item in items {
             let bucket = key_fn(&item) as usize;
-            if bucket < len as usize {
-                buckets[bucket].push(item);
-            }
+            data[cursors[bucket] as usize].write(item);
+            cursors[bucket] += 1;
         }
-
-        let mut offsets = Vec::with_capacity(buckets.len() + 1);
-        let mut data = Vec::with_capacity(total_items);
-
-        for mut bucket in buckets {
-            offsets.push(data.len() as u32);
-            data.append(&mut bucket);
-        }
-        offsets.push(data.len() as u32);
+        // Safety: every slot 0..acc has been written exactly once above.
+        let data = unsafe {
+            let mut md = std::mem::ManuallyDrop::new(data);
+            Vec::from_raw_parts(md.as_mut_ptr() as *mut T, md.len(), md.capacity())
+        };
 
         Self { offsets, data }
     }
@@ -204,7 +220,9 @@ pub fn load_with_stats(buf: &[u8]) -> Result<(PreparedData, LoadStats), String> 
     if lat_u32.len() != num_nodes || lon_u32.len() != num_nodes {
         return Err(format!(
             "Node count mismatch: header says {}, got lat={} lon={}",
-            num_nodes, lat_u32.len(), lon_u32.len()
+            num_nodes,
+            lat_u32.len(),
+            lon_u32.len()
         ));
     }
     let nodes: Vec<NodeData> = lat_u32
@@ -225,10 +243,14 @@ pub fn load_with_stats(buf: &[u8]) -> Result<(PreparedData, LoadStats), String> 
     let edge_u = read_pco_u32(&buf, &mut pos)?;
     let edge_delta = read_pco_u32(&buf, &mut pos)?;
     let edge_excess = read_pco_f32(&buf, &mut pos)?;
-    if edge_u.len() != num_edges || edge_delta.len() != num_edges || edge_excess.len() != num_edges {
+    if edge_u.len() != num_edges || edge_delta.len() != num_edges || edge_excess.len() != num_edges
+    {
         return Err(format!(
             "Edge count mismatch: header says {}, got u={} delta={} excess={}",
-            num_edges, edge_u.len(), edge_delta.len(), edge_excess.len()
+            num_edges,
+            edge_u.len(),
+            edge_delta.len(),
+            edge_excess.len()
         ));
     }
     let edges: Vec<EdgeData> = (0..num_edges)
@@ -236,10 +258,16 @@ pub fn load_with_stats(buf: &[u8]) -> Result<(PreparedData, LoadStats), String> 
             let u = edge_u[i];
             let v = u - edge_delta[i];
             let straight = haversine(
-                nodes[u as usize].lat, nodes[u as usize].lon,
-                nodes[v as usize].lat, nodes[v as usize].lon,
+                nodes[u as usize].lat,
+                nodes[u as usize].lon,
+                nodes[v as usize].lat,
+                nodes[v as usize].lon,
             );
-            EdgeData { u, v, distance_meters: straight + edge_excess[i] }
+            EdgeData {
+                u,
+                v,
+                distance_meters: straight + edge_excess[i],
+            }
         })
         .collect();
     binary_sections.push(("edges", pos - pos_before));
@@ -591,8 +619,8 @@ pub fn load_with_stats(buf: &[u8]) -> Result<(PreparedData, LoadStats), String> 
     memory_sections.push(("patterns/other", pat_other_mem));
 
     // adj list: JaggedArray<(u32, f32)> — offsets + flat data
-    let adj_mem: usize = adj.offsets.capacity() * 4
-        + adj.data.capacity() * std::mem::size_of::<(u32, f32)>();
+    let adj_mem: usize =
+        adj.offsets.capacity() * 4 + adj.data.capacity() * std::mem::size_of::<(u32, f32)>();
     memory_sections.push(("adj list", adj_mem));
 
     // shapes JaggedArray: compressed PCO data
