@@ -19,7 +19,7 @@ export interface PathSegment {
 }
 
 export interface QueryResult {
-  travelTimes: Float64Array;
+  travelTimes: Float32Array;
   ssspList: SsspList;
 }
 
@@ -89,7 +89,7 @@ export function runQuery(router: Router, params: RunQueryParams): QueryResult {
   if (mode === 'single') {
     const sssp = router.run_tdd_full_for_date(sourceNode, departureTime, parseInt(date.replace(/-/g, '')), transferSlack, maxTime);
     const ssspList: SsspList = [sssp];
-    const travelTimes = new Float64Array(numNodes);
+    const travelTimes = new Float32Array(numNodes);
     for (let i = 0; i < numNodes; i++) {
       const arr = router.node_arrival_time(sssp, i);
       travelTimes[i] = arr < 0xffffffff ? arr - departureTime : NaN;
@@ -116,7 +116,7 @@ export function runQuery(router: Router, params: RunQueryParams): QueryResult {
       }
     }
 
-    const sumTimes = new Float64Array(numNodes);
+    const sumTimes = new Float32Array(numNodes);
     const counts = new Uint32Array(numNodes);
     for (const sssp of ssspList) {
       const t = router.sssp_departure_time(sssp);
@@ -128,7 +128,7 @@ export function runQuery(router: Router, params: RunQueryParams): QueryResult {
         }
       }
     }
-    const travelTimes = new Float64Array(numNodes);
+    const travelTimes = new Float32Array(numNodes);
     for (let i = 0; i < numNodes; i++) {
       travelTimes[i] = counts[i] > 0 ? sumTimes[i] / counts[i] : NaN;
     }

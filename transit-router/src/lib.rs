@@ -56,7 +56,12 @@ pub fn reconstruct_path(_data: &PreparedData, sssp: &SsspResult, destination: u3
         if r.arrival_time == u32::MAX {
             return Vec::new();
         }
-        path.push([current, r.edge_type, r.route_index]);
+        let edge_type = if r.route_index == u32::MAX {
+            0u32
+        } else {
+            1u32
+        };
+        path.push([current, edge_type, r.route_index]);
 
         if r.prev_node == u32::MAX || r.prev_node == current {
             break;
@@ -355,8 +360,8 @@ impl TransitRouter {
         sssp.inner.results[node as usize].arrival_time
     }
 
-    pub fn node_leave_home(&self, sssp: &WasmSsspResult, node: u32) -> u32 {
-        sssp.inner.results[node as usize].leave_home
+    pub fn node_leave_home(&self, _sssp: &WasmSsspResult, _node: u32) -> u32 {
+        0 // leave_home is now transient and not retained after routing
     }
 
     pub fn node_boarding_time(&self, sssp: &WasmSsspResult, node: u32) -> u32 {

@@ -66,7 +66,7 @@ export function initWebGL(): GLState | null {
 export function renderIsochrone(
   glState: GLState,
   map: L.Map,
-  travelTimes: Float64Array,
+  travelTimes: Float32Array,
   nodeCoords: Float32Array,
   maxTimeSec: number,
   L: typeof import('leaflet')

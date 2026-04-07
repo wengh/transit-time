@@ -29,14 +29,21 @@ fn test_load_and_route_chapel_hill() {
     assert!(!prepared.patterns.is_empty(), "Should have patterns");
     assert!(!prepared.route_names.is_empty(), "Should have route names");
 
-    eprintln!("Loaded: {} nodes, {} edges, {} stops, {} patterns",
-        prepared.num_nodes, prepared.num_edges, prepared.num_stops, prepared.patterns.len());
+    eprintln!(
+        "Loaded: {} nodes, {} edges, {} stops, {} patterns",
+        prepared.num_nodes,
+        prepared.num_edges,
+        prepared.num_stops,
+        prepared.patterns.len()
+    );
 
     // Run TDD from a node near center of Chapel Hill
     // Snap to a node near UNC campus (35.91, -79.05)
     let source = transit_router::router::snap_to_node(&prepared, 35.91, -79.05);
-    eprintln!("Source node: {} at ({}, {})",
-        source, prepared.nodes[source as usize].lat, prepared.nodes[source as usize].lon);
+    eprintln!(
+        "Source node: {} at ({}, {})",
+        source, prepared.nodes[source as usize].lat, prepared.nodes[source as usize].lon
+    );
 
     // Run TDD at 8:00 AM (28800 seconds) on the first pattern
     let departure_time = 28800u32;
@@ -48,10 +55,13 @@ fn test_load_and_route_chapel_hill() {
     assert!(reachable > 0, "Should reach at least some nodes");
 
     // Source should be reachable with 0 travel time
-    assert_eq!(result[source as usize].arrival_time, departure_time, "Source should have departure time as arrival");
+    assert_eq!(
+        result[source as usize].arrival_time, departure_time,
+        "Source should have departure time as arrival"
+    );
 
     // Check some nodes have transit arrivals
-    let transit_reached = result.iter().filter(|r| r.edge_type == 1).count();
+    let transit_reached = result.iter().filter(|r| r.route_index != u32::MAX).count();
     eprintln!("Nodes reached via transit: {}", transit_reached);
 
     // Verify travel times are reasonable (< 2 hours from departure)
@@ -85,16 +95,28 @@ fn test_router_edge_cases() {
     let result = transit_router::router::run_tdd(&prepared, source, 28800, 999, 60);
     // Should still reach walking nodes
     let reachable = result.iter().filter(|r| r.arrival_time != u32::MAX).count();
-    assert!(reachable > 0, "Should still reach walking nodes with invalid pattern");
+    assert!(
+        reachable > 0,
+        "Should still reach walking nodes with invalid pattern"
+    );
 
     // Test at midnight (0 seconds)
     let result_midnight = transit_router::router::run_tdd(&prepared, source, 0, 0, 60);
-    let reachable_midnight = result_midnight.iter().filter(|r| r.arrival_time != u32::MAX).count();
-    assert!(reachable_midnight > 0, "Should reach nodes even at midnight");
+    let reachable_midnight = result_midnight
+        .iter()
+        .filter(|r| r.arrival_time != u32::MAX)
+        .count();
+    assert!(
+        reachable_midnight > 0,
+        "Should reach nodes even at midnight"
+    );
 
     // Test at late time (23:59)
     let result_late = transit_router::router::run_tdd(&prepared, source, 86340, 0, 60);
-    let reachable_late = result_late.iter().filter(|r| r.arrival_time != u32::MAX).count();
+    let reachable_late = result_late
+        .iter()
+        .filter(|r| r.arrival_time != u32::MAX)
+        .count();
     assert!(reachable_late > 0, "Should reach nodes even at late hour");
 
     eprintln!("Edge case tests passed!");

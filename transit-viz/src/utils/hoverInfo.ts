@@ -9,7 +9,7 @@ export interface TravelTimeSummary {
   total?: number;
 }
 
-export function getTravelTimeSummary(travelTimes: Float64Array | number[], allPaths: HoverPath[]): TravelTimeSummary | null {
+export function getTravelTimeSummary(travelTimes: Float32Array | number[], allPaths: HoverPath[]): TravelTimeSummary | null {
   if (!travelTimes || travelTimes.length === 0) return null;
   const sum = typeof travelTimes[0] === 'number'
     ? (travelTimes as number[]).reduce((a, b) => a + b, 0)

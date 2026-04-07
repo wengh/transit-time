@@ -17,12 +17,9 @@ pub const DEFAULT_MAX_TIME: u32 = 7200; // 2 hours
 pub struct NodeResult {
     pub arrival_time: u32,
     pub prev_node: u32,
-    pub edge_type: u32,   // 0 = walk, 1 = transit
-    pub route_index: u32, // u32::MAX if walk
-    /// Latest time you could leave home and still reach this node at arrival_time.
-    /// Computed as first_transit_departure - walk_to_first_stop when boarding transit.
-    /// 0 means no transit taken yet (still walking from source).
-    pub leave_home: u32,
+    /// u32::MAX = walk edge, otherwise the route index.
+    /// edge_type (0=walk/1=transit) is derived from this at reconstruction time.
+    pub route_index: u32,
     /// Time the transit vehicle departed from the boarding stop.
     /// 0 for walk edges. Used to compute wait times.
     pub boarding_time: u32,
@@ -32,18 +29,17 @@ impl NodeResult {
     pub const UNREACHED: NodeResult = NodeResult {
         arrival_time: u32::MAX,
         prev_node: u32::MAX,
-        edge_type: 0,
         route_index: u32::MAX,
-        leave_home: 0,
         boarding_time: 0,
     };
 
     /// Returns true if `self` is a strictly better path than `other`.
     /// Better = earlier arrival, or same arrival with later leave_home
     /// (= you can leave home later and still make it).
-    fn is_better_than(&self, other: &NodeResult) -> bool {
+    /// leave_home is tracked in a parallel transient Vec, not stored in NodeResult.
+    fn is_better_than(&self, self_lh: u32, other: &NodeResult, other_lh: u32) -> bool {
         self.arrival_time < other.arrival_time
-            || (self.arrival_time == other.arrival_time && self.leave_home > other.leave_home)
+            || (self.arrival_time == other.arrival_time && self_lh > other_lh)
     }
 }
 
@@ -189,9 +185,7 @@ fn run_tdd_inner(
     result[source_node as usize] = NodeResult {
         arrival_time: departure_time,
         prev_node: u32::MAX,
-        edge_type: 0,
         route_index: u32::MAX,
-        leave_home: 0,
         boarding_time: 0,
     };
 
@@ -200,6 +194,10 @@ fn run_tdd_inner(
     // ARRIVED_BY_FREQ = arrived via a frequency route (always requires transfer slack).
     // Any other value = flat event index; only that specific event's continuation is free.
     let mut arrived_by_event = vec![ARRIVED_BY_WALK; n];
+
+    // leave_home: latest departure time from origin that still makes the connection.
+    // Kept as a transient parallel array — not stored in NodeResult to save memory.
+    let mut leave_home = vec![0u32; n];
 
     let mut pq: BinaryHeap<Reverse<(u32, u32)>> = BinaryHeap::new();
     pq.push(Reverse((departure_time, source_node)));
@@ -214,7 +212,7 @@ fn run_tdd_inner(
         }
 
         let current_event = arrived_by_event[node as usize];
-        let current_leave_home = result[node as usize].leave_home;
+        let current_leave_home = leave_home[node as usize];
 
         // Walking edges — leave_home and current_event propagate unchanged.
         // Propagating current_event means: if you were mid-trip and walk to an
@@ -225,13 +223,16 @@ fn run_tdd_inner(
             let candidate = NodeResult {
                 arrival_time: arrival,
                 prev_node: node,
-                edge_type: 0,
                 route_index: u32::MAX,
-                leave_home: current_leave_home,
                 boarding_time: 0,
             };
-            if candidate.is_better_than(&result[neighbor as usize]) {
+            if candidate.is_better_than(
+                current_leave_home,
+                &result[neighbor as usize],
+                leave_home[neighbor as usize],
+            ) {
                 result[neighbor as usize] = candidate;
+                leave_home[neighbor as usize] = current_leave_home;
                 arrived_by_event[neighbor as usize] = current_event;
                 pq.push(Reverse((arrival, neighbor)));
             }
@@ -252,6 +253,7 @@ fn run_tdd_inner(
                         transfer_slack,
                         node,
                         &mut result,
+                        &mut leave_home,
                         &mut arrived_by_event,
                         &mut pq,
                     );
@@ -275,6 +277,7 @@ fn scan_pattern_at_stop(
     transfer_slack: u32,
     node: u32,
     result: &mut Vec<NodeResult>,
+    leave_home: &mut Vec<u32>,
     arrived_by_event: &mut Vec<u32>,
     pq: &mut BinaryHeap<Reverse<(u32, u32)>>,
 ) {
@@ -306,7 +309,7 @@ fn scan_pattern_at_stop(
             let arrival = boarding_time + freq.travel_time;
             let dest_node = data.stop_node_map[freq.next_stop_index as usize];
             if dest_node != u32::MAX {
-                let leave_home = if current_leave_home == 0 {
+                let lh = if current_leave_home == 0 {
                     let walk_to_stop = t_current - departure_time;
                     boarding_time.saturating_sub(walk_to_stop)
                 } else {
@@ -315,13 +318,16 @@ fn scan_pattern_at_stop(
                 let candidate = NodeResult {
                     arrival_time: arrival,
                     prev_node: node,
-                    edge_type: 1,
                     route_index: freq.route_index,
-                    leave_home,
                     boarding_time,
                 };
-                if candidate.is_better_than(&result[dest_node as usize]) {
+                if candidate.is_better_than(
+                    lh,
+                    &result[dest_node as usize],
+                    leave_home[dest_node as usize],
+                ) {
                     result[dest_node as usize] = candidate;
+                    leave_home[dest_node as usize] = lh;
                     arrived_by_event[dest_node as usize] = ARRIVED_BY_FREQ;
                     pq.push(Reverse((arrival, dest_node)));
                 }
@@ -380,7 +386,7 @@ fn scan_pattern_at_stop(
             idx = e.next_event_index;
         }
 
-        let leave_home = if current_leave_home == 0 {
+        let lh = if current_leave_home == 0 {
             let walk_to_stop = t_current - departure_time;
             dep_time.saturating_sub(walk_to_stop)
         } else {
@@ -391,12 +397,13 @@ fn scan_pattern_at_stop(
             data,
             pat,
             route_index,
-            leave_home,
+            lh,
             node,
             event.next_event_index,
             dep_time + event.travel_time,
             dep_time,
             result,
+            leave_home,
             arrived_by_event,
             pq,
         );
@@ -408,12 +415,13 @@ fn ride_trip(
     data: &PreparedData,
     pat: &PatternData,
     route_index: u32,
-    leave_home: u32,
+    trip_leave_home: u32,
     boarding_node: u32,
     mut next_event_idx: u32,
     mut current_arrival: u32,
     boarding_time: u32,
     result: &mut Vec<NodeResult>,
+    leave_home: &mut Vec<u32>,
     arrived_by_event: &mut Vec<u32>,
     pq: &mut BinaryHeap<Reverse<(u32, u32)>>,
 ) {
@@ -428,13 +436,16 @@ fn ride_trip(
                 // stable predecessors. Path reconstruction shows the boarding
                 // stop (from the previous walk segment) and the alighting stop.
                 prev_node: boarding_node,
-                edge_type: 1,
                 route_index,
-                leave_home,
                 boarding_time,
             };
-            if candidate.is_better_than(&result[dest_node as usize]) {
+            if candidate.is_better_than(
+                trip_leave_home,
+                &result[dest_node as usize],
+                leave_home[dest_node as usize],
+            ) {
                 result[dest_node as usize] = candidate;
+                leave_home[dest_node as usize] = trip_leave_home;
                 arrived_by_event[dest_node as usize] = next_event_idx;
                 pq.push(Reverse((current_arrival, dest_node)));
             }

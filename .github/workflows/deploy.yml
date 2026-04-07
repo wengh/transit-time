@@ -75,7 +75,7 @@ jobs:
 
       - name: Build data
         if: steps.bin-cache.outputs.cache-hit != 'true'
-        run: make data-all
+        run: make data-all -j4
 
       # ── Frontend ───────────────────────────────────────────────────────────
       - name: Setup Node.js

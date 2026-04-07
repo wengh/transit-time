@@ -10,7 +10,8 @@ fn build_events_by_stop(
     num_stops: u32,
 ) -> (JaggedArray<EventData>, HashMap<u32, u32>) {
     // Extract just the (trip_id, event) pairs for linking
-    let mut flat_events: Vec<(u32, EventData)> = events_with_routes.iter()
+    let mut flat_events: Vec<(u32, EventData)> = events_with_routes
+        .iter()
         .map(|(trip, event, _)| (*trip, event.clone()))
         .collect();
 
@@ -46,7 +47,11 @@ fn build_events_by_stop(
                 time_offset: e.time_offset,
                 stop_index: e.stop_index,
                 travel_time: e.travel_time,
-                next_event_index: if nei == u32::MAX { u32::MAX } else { inv[nei as usize] },
+                next_event_index: if nei == u32::MAX {
+                    u32::MAX
+                } else {
+                    inv[nei as usize]
+                },
             }
         })
         .collect();
@@ -156,38 +161,80 @@ fn build_test_data(add_extra_green: bool) -> PreparedData {
     // (trip_id, EventData, route_index_if_sentinel) triples
     let mut events = vec![
         // Pink: Stop 0 -> Stop 2
-        (0u32, EventData {
-            time_offset: 300, stop_index: 0,
-            travel_time: 120, next_event_index: u32::MAX,
-        }, 0),
-        (0, EventData {
-            time_offset: 420, stop_index: 2,
-            travel_time: 0, next_event_index: u32::MAX,
-        }, 0), // sentinel, route from Pink
+        (
+            0u32,
+            EventData {
+                time_offset: 300,
+                stop_index: 0,
+                travel_time: 120,
+                next_event_index: u32::MAX,
+            },
+            0,
+        ),
+        (
+            0,
+            EventData {
+                time_offset: 420,
+                stop_index: 2,
+                travel_time: 0,
+                next_event_index: u32::MAX,
+            },
+            0,
+        ), // sentinel, route from Pink
         // Green: Stop 1 -> Stop 2 -> Stop 3
-        (1, EventData {
-            time_offset: 300, stop_index: 1,
-            travel_time: 120, next_event_index: u32::MAX,
-        }, 0),
-        (1, EventData {
-            time_offset: 420, stop_index: 2,
-            travel_time: 120, next_event_index: u32::MAX,
-        }, 0),
-        (1, EventData {
-            time_offset: 540, stop_index: 3,
-            travel_time: 0, next_event_index: u32::MAX,
-        }, 1), // sentinel, route index 1 (Green)
+        (
+            1,
+            EventData {
+                time_offset: 300,
+                stop_index: 1,
+                travel_time: 120,
+                next_event_index: u32::MAX,
+            },
+            0,
+        ),
+        (
+            1,
+            EventData {
+                time_offset: 420,
+                stop_index: 2,
+                travel_time: 120,
+                next_event_index: u32::MAX,
+            },
+            0,
+        ),
+        (
+            1,
+            EventData {
+                time_offset: 540,
+                stop_index: 3,
+                travel_time: 0,
+                next_event_index: u32::MAX,
+            },
+            1,
+        ), // sentinel, route index 1 (Green)
     ];
 
     if add_extra_green {
-        events.push((2, EventData {
-            time_offset: 480, stop_index: 2,
-            travel_time: 60, next_event_index: u32::MAX,
-        }, 0));
-        events.push((2, EventData {
-            time_offset: 540, stop_index: 3,
-            travel_time: 0, next_event_index: u32::MAX,
-        }, 1)); // sentinel, route index 1 (Green)
+        events.push((
+            2,
+            EventData {
+                time_offset: 480,
+                stop_index: 2,
+                travel_time: 60,
+                next_event_index: u32::MAX,
+            },
+            0,
+        ));
+        events.push((
+            2,
+            EventData {
+                time_offset: 540,
+                stop_index: 3,
+                travel_time: 0,
+                next_event_index: u32::MAX,
+            },
+            1,
+        )); // sentinel, route index 1 (Green)
     }
 
     let (events_by_stop, sentinel_routes) = build_events_by_stop(events, num_stops);
@@ -211,18 +258,52 @@ fn build_test_data(add_extra_green: bool) -> PreparedData {
     let num_nodes = 5;
     let num_edges = 5;
 
-    let mut adj: Vec<Vec<(u32, f32)>> = vec![Vec::new(); num_nodes];
+    let mut adj_tmp: Vec<Vec<(u32, f32)>> = vec![Vec::new(); num_nodes];
     for edge in &edges {
-        adj[edge.u as usize].push((edge.v, edge.distance_meters));
-        adj[edge.v as usize].push((edge.u, edge.distance_meters));
+        adj_tmp[edge.u as usize].push((edge.v, edge.distance_meters));
+        adj_tmp[edge.v as usize].push((edge.u, edge.distance_meters));
     }
+    let adj = {
+        let items: Vec<(u32, u32, f32)> = adj_tmp
+            .iter()
+            .enumerate()
+            .flat_map(|(u, neighbors)| neighbors.iter().map(move |&(v, d)| (u as u32, v, d)))
+            .collect();
+        let mut offsets = vec![0u32];
+        let mut data = Vec::new();
+        for neighbors in &adj_tmp {
+            for &(v, d) in neighbors {
+                data.push((v, d));
+            }
+            offsets.push(data.len() as u32);
+        }
+        let _ = items;
+        transit_router::data::JaggedArray { offsets, data }
+    };
 
     let mut node_is_stop = vec![false; num_nodes];
-    let mut node_stop_indices: Vec<Vec<u32>> = vec![Vec::new(); num_nodes];
+    let mut nsi_pairs: Vec<(u32, u32)> = Vec::new(); // (node, stop_idx)
     for (si, &ni) in stop_node_map.iter().enumerate() {
         node_is_stop[ni as usize] = true;
-        node_stop_indices[ni as usize].push(si as u32);
+        nsi_pairs.push((ni, si as u32));
     }
+    nsi_pairs.sort_unstable_by_key(|&(n, _)| n);
+    let mut nsi_offsets = std::collections::HashMap::new();
+    let mut nsi_data: Vec<u32> = Vec::new();
+    let mut i = 0;
+    while i < nsi_pairs.len() {
+        let node = nsi_pairs[i].0;
+        let start = nsi_data.len() as u32;
+        while i < nsi_pairs.len() && nsi_pairs[i].0 == node {
+            nsi_data.push(nsi_pairs[i].1);
+            i += 1;
+        }
+        nsi_offsets.insert(node, (start, nsi_data.len() as u32));
+    }
+    let node_stop_indices = transit_router::data::SparseJaggedArray {
+        offsets: nsi_offsets,
+        data: nsi_data,
+    };
 
     const CELL_SIZE_LAT: f64 = 0.0045;
     const CELL_SIZE_LON: f64 = 0.006;
@@ -273,7 +354,6 @@ fn test_trip_following_better_leave_home() {
     let departure_time = 28800u32;
     let result = run_tdd_multi(&data, 0, departure_time, &[0], 60, 3600);
     assert_eq!(result[4].arrival_time, 29340);
-    assert_eq!(result[4].leave_home, 28920);
 }
 
 #[test]
@@ -286,7 +366,15 @@ fn test_path_reconstruction_through_blocked_stop() {
     let mut current = 4u32;
     loop {
         let r = &result[current as usize];
-        path.push((current, r.edge_type, r.route_index));
+        path.push((
+            current,
+            if r.route_index == u32::MAX {
+                0u32
+            } else {
+                1u32
+            },
+            r.route_index,
+        ));
         if r.prev_node == u32::MAX || r.prev_node == current {
             break;
         }

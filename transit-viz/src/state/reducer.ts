@@ -22,7 +22,7 @@ export interface AppState {
   sourceLatLng: [number, number] | null;
 
   // Query results
-  travelTimes: Float64Array | null;
+  travelTimes: Float32Array | null;
   ssspList: SsspList | null;
   computeStatus: 'idle' | 'computing' | 'done' | 'error';
   computeTimeMs: number;
@@ -61,7 +61,7 @@ export type Action =
   | { type: 'SET_SLACK'; value: number }
   | { type: 'SET_PATTERN_COUNT'; count: number }
   | { type: 'COMPUTING' }
-  | { type: 'QUERY_DONE'; travelTimes: Float64Array; ssspList: SsspList; timeMs: number }
+  | { type: 'QUERY_DONE'; travelTimes: Float32Array; ssspList: SsspList; timeMs: number }
   | { type: 'QUERY_ERROR' }
   | { type: 'PIN_DESTINATION'; node: number; latLng: [number, number]; hoverData: HoverData }
   | { type: 'UNPIN_DESTINATION' }

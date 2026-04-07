@@ -95,44 +95,67 @@ fn hhmm(h: u32, m: u32) -> u32 {
 
 #[test]
 fn montreal_debug_patterns() {
-    let Some(data) = load_city("montreal") else { return; };
+    let Some(data) = load_city("montreal") else {
+        return;
+    };
     let patterns = router::patterns_for_date(&data, 20260405);
     eprintln!("Patterns for 20260405 (Sunday): {} active", patterns.len());
 
     let src_node = router::snap_to_node(&data, 45.500374, -73.568459);
     let departure = hhmm(11, 0);
-    eprintln!("src_node={} at ({}, {})", src_node,
-        data.nodes[src_node as usize].lat, data.nodes[src_node as usize].lon);
+    eprintln!(
+        "src_node={} at ({}, {})",
+        src_node, data.nodes[src_node as usize].lat, data.nodes[src_node as usize].lon
+    );
 
     let results = router::run_tdd_multi(&data, src_node, departure, &patterns, 60, 7200);
 
-    let reachable = results.iter().filter(|r| r.arrival_time != u32::MAX).count();
-    let via_transit = results.iter().filter(|r| r.edge_type == 1).count();
+    let reachable = results
+        .iter()
+        .filter(|r| r.arrival_time != u32::MAX)
+        .count();
+    let via_transit = results.iter().filter(|r| r.route_index != u32::MAX).count();
     eprintln!("Reachable: {}, via transit: {}", reachable, via_transit);
 
     // Show some transit-reached nodes
     for (i, r) in results.iter().enumerate() {
-        if r.edge_type == 1 && r.arrival_time != u32::MAX {
+        if r.route_index != u32::MAX && r.arrival_time != u32::MAX {
             let route = if (r.route_index as usize) < data.route_names.len() {
                 &data.route_names[r.route_index as usize]
-            } else { "?" };
-            eprintln!("  transit node {} arrival={} route='{}'", i, r.arrival_time, route);
+            } else {
+                "?"
+            };
+            eprintln!(
+                "  transit node {} arrival={} route='{}'",
+                i, r.arrival_time, route
+            );
             // Just show the first 5
-            if via_transit > 0 { break; }
+            if via_transit > 0 {
+                break;
+            }
         }
     }
 
     let dst_node = router::snap_to_node(&data, 45.492700, -73.631000);
-    eprintln!("dst_node={} at ({}, {})", dst_node,
-        data.nodes[dst_node as usize].lat, data.nodes[dst_node as usize].lon);
+    eprintln!(
+        "dst_node={} at ({}, {})",
+        dst_node, data.nodes[dst_node as usize].lat, data.nodes[dst_node as usize].lon
+    );
     let dst_r = &results[dst_node as usize];
-    eprintln!("dst result: arrival={} edge_type={} route={}", dst_r.arrival_time, dst_r.edge_type, dst_r.route_index);
+    eprintln!(
+        "dst result: arrival={} edge_type={} route={}",
+        dst_r.arrival_time,
+        if dst_r.route_index == u32::MAX { 0 } else { 1 },
+        dst_r.route_index
+    );
 
     // Find nearest transit-reached nodes to the destination
     let dst_lat = data.nodes[dst_node as usize].lat;
     let dst_lon = data.nodes[dst_node as usize].lon;
-    let mut near_transit: Vec<(f64, usize, u32)> = results.iter().enumerate()
-        .filter(|(_, r)| r.edge_type == 1 && r.arrival_time != u32::MAX)
+    let mut near_transit: Vec<(f64, usize, u32)> = results
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| r.route_index != u32::MAX && r.arrival_time != u32::MAX)
         .map(|(i, r)| {
             let dlat = data.nodes[i].lat - dst_lat;
             let dlon = data.nodes[i].lon - dst_lon;
@@ -145,9 +168,13 @@ fn montreal_debug_patterns() {
     for (dist, i, arr) in near_transit.iter().take(5) {
         let route = if (results[*i].route_index as usize) < data.route_names.len() {
             &data.route_names[results[*i].route_index as usize]
-        } else { "?" };
-        eprintln!("  node {} dist={:.5} arr={} route='{}'  ({}, {})",
-            i, dist, arr, route, data.nodes[*i].lat, data.nodes[*i].lon);
+        } else {
+            "?"
+        };
+        eprintln!(
+            "  node {} dist={:.5} arr={} route='{}'  ({}, {})",
+            i, dist, arr, route, data.nodes[*i].lat, data.nodes[*i].lon
+        );
     }
 
     // Print min_time/max_time for active patterns
@@ -163,27 +190,39 @@ fn montreal_debug_patterns() {
     }
 
     // Print bounding box of transit-reached nodes
-    let transit_nodes: Vec<(f64, f64)> = results.iter().enumerate()
-        .filter(|(_, r)| r.edge_type == 1 && r.arrival_time != u32::MAX)
+    let transit_nodes: Vec<(f64, f64)> = results
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| r.route_index != u32::MAX && r.arrival_time != u32::MAX)
         .map(|(i, _)| (data.nodes[i].lat, data.nodes[i].lon))
         .collect();
     if !transit_nodes.is_empty() {
         let (min_lat, max_lat, min_lon, max_lon) = transit_nodes.iter().fold(
             (f64::MAX, f64::MIN, f64::MAX, f64::MIN),
             |(mila, mala, milo, malo), (lat, lon)| {
-                (mila.min(*lat), mala.max(*lat), milo.min(*lon), malo.max(*lon))
-            });
-        eprintln!("Transit bbox: lat [{:.4}, {:.4}] lon [{:.4}, {:.4}]",
-            min_lat, max_lat, min_lon, max_lon);
+                (
+                    mila.min(*lat),
+                    mala.max(*lat),
+                    milo.min(*lon),
+                    malo.max(*lon),
+                )
+            },
+        );
+        eprintln!(
+            "Transit bbox: lat [{:.4}, {:.4}] lon [{:.4}, {:.4}]",
+            min_lat, max_lat, min_lon, max_lon
+        );
     }
 
     // What routes are being used for transit-reachable nodes?
     let mut route_counts: std::collections::HashMap<String, u32> = Default::default();
     for r in results.iter() {
-        if r.edge_type == 1 && r.arrival_time != u32::MAX {
+        if r.route_index != u32::MAX && r.arrival_time != u32::MAX {
             let name = if (r.route_index as usize) < data.route_names.len() {
                 data.route_names[r.route_index as usize].clone()
-            } else { "?".into() };
+            } else {
+                "?".into()
+            };
             *route_counts.entry(name).or_default() += 1;
         }
     }
@@ -198,11 +237,19 @@ fn montreal_debug_patterns() {
     eprintln!("\nTotal patterns in data: {}", data.patterns.len());
 
     // Check if any patterns have route_names containing metro keywords
-    let metro_routes: Vec<_> = data.route_names.iter()
-        .filter(|r| r.to_lowercase().contains("orange") || r.to_lowercase().contains("vert") ||
-                    r.to_lowercase().contains("green") || r.to_lowercase().contains("metro") ||
-                    r.to_lowercase().contains("ligne") || r.to_lowercase().contains("bleu"))
-        .take(10).collect();
+    let metro_routes: Vec<_> = data
+        .route_names
+        .iter()
+        .filter(|r| {
+            r.to_lowercase().contains("orange")
+                || r.to_lowercase().contains("vert")
+                || r.to_lowercase().contains("green")
+                || r.to_lowercase().contains("metro")
+                || r.to_lowercase().contains("ligne")
+                || r.to_lowercase().contains("bleu")
+        })
+        .take(10)
+        .collect();
     eprintln!("Metro-like route names: {:?}", metro_routes);
 
     // Check why patterns are inactive - look at their date ranges and day masks
@@ -210,7 +257,9 @@ fn montreal_debug_patterns() {
     let sun_bit = 1u8 << 6; // from patterns_for_date logic
     let mut inactive_reasons: std::collections::HashMap<&str, u32> = Default::default();
     for (i, p) in data.patterns.iter().enumerate() {
-        if patterns.contains(&i) { continue; }
+        if patterns.contains(&i) {
+            continue;
+        }
         if p.stop_index.events_by_stop.is_empty() {
             *inactive_reasons.entry("empty").or_default() += 1;
         } else if p.date_exceptions_remove.contains(&date) {
@@ -228,7 +277,10 @@ fn montreal_debug_patterns() {
     eprintln!("\nInactive pattern reasons: {:?}", inactive_reasons);
 
     // Show date ranges of patterns inactive due to date bounds
-    let mut after_end_dates: Vec<(u32, u32, String)> = data.patterns.iter().enumerate()
+    let mut after_end_dates: Vec<(u32, u32, String)> = data
+        .patterns
+        .iter()
+        .enumerate()
         .filter(|(i, p)| !patterns.contains(i) && p.end_date != 0 && date > p.end_date)
         .map(|(_, p)| {
             let rname = String::new();
@@ -248,7 +300,9 @@ fn montreal_debug_patterns() {
     eprintln!("\nTransit stops within ~800m of source:");
     for (si, stop) in data.stops.iter().enumerate() {
         let sn = data.stop_node_map[si];
-        if sn == u32::MAX { continue; }
+        if sn == u32::MAX {
+            continue;
+        }
         let stop_node = sn as usize;
         let dlat = data.nodes[stop_node].lat - src_lat;
         let dlon = data.nodes[stop_node].lon - src_lon;
@@ -262,20 +316,38 @@ fn montreal_debug_patterns() {
                 if !stop_events.is_empty() {
                     // Find route names for events at this stop
                     for e in stop_events.iter().take(1) {
-                        if let Some(&ri) = p.sentinel_routes.get(&((p.stop_index.events_by_stop.offsets[si] as usize + 0) as u32)) {
-                            routes.push(data.route_names.get(ri as usize).cloned().unwrap_or("?".into()));
+                        if let Some(&ri) = p
+                            .sentinel_routes
+                            .get(&((p.stop_index.events_by_stop.offsets[si] as usize + 0) as u32))
+                        {
+                            routes.push(
+                                data.route_names
+                                    .get(ri as usize)
+                                    .cloned()
+                                    .unwrap_or("?".into()),
+                            );
                         }
                     }
                     routes.push(format!("pat{}", pi));
                 }
             }
-            eprintln!("  stop {} '{}' dist={:.4} ({:.5},{:.5}) routes={:?}",
-                si, stop.name, dist, data.nodes[stop_node].lat, data.nodes[stop_node].lon, routes);
+            eprintln!(
+                "  stop {} '{}' dist={:.4} ({:.5},{:.5}) routes={:?}",
+                si, stop.name, dist, data.nodes[stop_node].lat, data.nodes[stop_node].lon, routes
+            );
         }
     }
 
     // Search for STM metro station stops by name (guard against unmapped stops)
-    let metro_keywords = ["McGill", "Bonaventure", "Atwater", "Guy-Concordia", "Snowdon", "Berri", "Lionel"];
+    let metro_keywords = [
+        "McGill",
+        "Bonaventure",
+        "Atwater",
+        "Guy-Concordia",
+        "Snowdon",
+        "Berri",
+        "Lionel",
+    ];
     eprintln!("\nSTM metro station stops in data:");
     let mut found_any = false;
     for keyword in metro_keywords {
@@ -286,12 +358,18 @@ fn montreal_debug_patterns() {
                 let node_info = if sn == u32::MAX {
                     "(no walk node)".to_string()
                 } else {
-                    format!("node={} ({:.4},{:.4})", sn, data.nodes[sn as usize].lat, data.nodes[sn as usize].lon)
+                    format!(
+                        "node={} ({:.4},{:.4})",
+                        sn, data.nodes[sn as usize].lat, data.nodes[sn as usize].lon
+                    )
                 };
-                let has_active = patterns.iter().any(|&pi| {
-                    !data.patterns[pi].stop_index.events_by_stop[si as u32].is_empty()
-                });
-                eprintln!("  stop {} '{}' {} active={}", si, stop.name, node_info, has_active);
+                let has_active = patterns
+                    .iter()
+                    .any(|&pi| !data.patterns[pi].stop_index.events_by_stop[si as u32].is_empty());
+                eprintln!(
+                    "  stop {} '{}' {} active={}",
+                    si, stop.name, node_info, has_active
+                );
             }
         }
     }
@@ -333,7 +411,10 @@ fn montreal_mcgill_to_snowdon_uses_transit() {
     );
     assert!(!segs.is_empty(), "should find a route");
     let has_transit = segs.iter().any(|s| s.is_transit);
-    assert!(has_transit, "expected transit segment, got walk-only: {segs:?}");
+    assert!(
+        has_transit,
+        "expected transit segment, got walk-only: {segs:?}"
+    );
 }
 
 // ── Toronto ──────────────────────────────────────────────────────────
