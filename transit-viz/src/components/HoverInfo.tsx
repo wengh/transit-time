@@ -310,14 +310,8 @@ export default function HoverInfo(): React.ReactNode {
   const { state, dispatch } = useAppState();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const chartInfoRef = useRef<ChartInfo | null>(null);
-  const [lockedIdx, setLockedIdx] = useState<number | null>(null);
 
-  const { hoverData, maxTimeMin, departureTime, mode, pinnedNode, selectedSampleIdx } = state;
-
-  // Reset lock when destination is cleared
-  useEffect(() => {
-    if (!hoverData) setLockedIdx(null);
-  }, [hoverData]);
+  const { hoverData, maxTimeMin, departureTime, mode, pinnedNode, selectedSampleIdx, lockedSampleIdx } = state;
 
   const isSampled = mode === 'sampled' && (hoverData?.allPaths.length ?? 0) > 1;
 
@@ -335,29 +329,23 @@ export default function HoverInfo(): React.ReactNode {
   }, [hoverData, isSampled, maxTimeMin, departureTime, selectedSampleIdx]);
 
   const handleMouseMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (lockedIdx !== null || pinnedNode === null || !chartInfoRef.current) return;
+    if (lockedSampleIdx !== null || pinnedNode === null || !chartInfoRef.current) return;
     const rect = (e.currentTarget as HTMLCanvasElement).getBoundingClientRect();
     const idx = pathIdxAtCanvasX(e.clientX - rect.left, rect.width, chartInfoRef.current);
     dispatch({ type: 'SELECT_SAMPLE', idx });
-  }, [lockedIdx, pinnedNode, dispatch]);
+  }, [lockedSampleIdx, pinnedNode, dispatch]);
 
   const handleMouseLeave = useCallback(() => {
-    if (lockedIdx !== null || pinnedNode === null) return;
+    if (lockedSampleIdx !== null || pinnedNode === null) return;
     dispatch({ type: 'SELECT_SAMPLE', idx: null });
-  }, [lockedIdx, pinnedNode, dispatch]);
+  }, [lockedSampleIdx, pinnedNode, dispatch]);
 
   const handleClick = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     if (pinnedNode === null || !chartInfoRef.current) return;
     const rect = (e.currentTarget as HTMLCanvasElement).getBoundingClientRect();
     const idx = pathIdxAtCanvasX(e.clientX - rect.left, rect.width, chartInfoRef.current);
-    if (lockedIdx === idx) {
-      setLockedIdx(null);
-      dispatch({ type: 'SELECT_SAMPLE', idx: null });
-    } else {
-      setLockedIdx(idx);
-      dispatch({ type: 'SELECT_SAMPLE', idx });
-    }
-  }, [lockedIdx, pinnedNode, dispatch]);
+    dispatch({ type: 'LOCK_SAMPLE', idx: lockedSampleIdx === idx ? null : idx });
+  }, [lockedSampleIdx, pinnedNode, dispatch]);
 
   if (!hoverData) return null;
   const { allPaths, travelTimes } = hoverData;

@@ -1,5 +1,12 @@
 import type { HoverPath, PathSegment } from './router';
 
+export function getSortedTravelTimes(allPaths: HoverPath[]): number[] {
+  return allPaths
+    .map((p) => p.totalTime)
+    .filter((t): t is number => t !== null && isFinite(t))
+    .sort((a, b) => a - b);
+}
+
 export interface TravelTimeSummary {
   avg: number;
   min?: number;

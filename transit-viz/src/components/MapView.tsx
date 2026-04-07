@@ -4,6 +4,8 @@ import { useAppState } from '../state/AppContext';
 import { initWebGL, renderIsochrone } from '../utils/webgl';
 import { getHoverData, type HoverPath } from '../utils/router';
 import { ROUTE_COLORS, hexToRgb } from '../utils/colors';
+import { getHashParams, setHashParams } from '../utils/urlHash';
+import { getSortedTravelTimes } from '../utils/hoverInfo';
 
 const isTouchDevice = typeof window !== 'undefined' && ('ontouchstart' in window || navigator.maxTouchPoints > 0);
 
@@ -174,10 +176,7 @@ export default function MapView(): React.ReactNode {
       }
 
       const allPaths = getHoverData(s.router, s.ssspList, node);
-      const travelTimes = allPaths
-        .map((p) => p.totalTime)
-        .filter((t): t is number => t !== null && isFinite(t))
-        .sort((a, b) => a - b);
+      const travelTimes = getSortedTravelTimes(allPaths);
 
       drawRouteSegments(allPaths.filter((p) => p.segments.length > 0));
 
@@ -331,6 +330,10 @@ export default function MapView(): React.ReactNode {
 
     function onMoveEnd() {
       renderIso();
+      if (stateRef.current.sourceNode === null) return;
+      const c = map.getCenter();
+      const current = getHashParams();
+      setHashParams({ ...current, zoom: map.getZoom(), center: [c.lat, c.lng] });
     }
 
     map.on('dblclick', onDblClick);
@@ -366,10 +369,11 @@ export default function MapView(): React.ReactNode {
     const city = state.currentCity;
     if (!map || !city || state.loadingState !== 'ready') return;
 
-    // Need to look up city details from state
-    const cityData = state as any; // Get full city data from state
-    if (cityData.currentCity) {
-      map.setView(cityData.currentCity.center, cityData.currentCity.zoom);
+    const hashParams = getHashParams();
+    if (hashParams.center && hashParams.zoom !== undefined) {
+      map.setView(hashParams.center, hashParams.zoom);
+    } else {
+      map.setView(city.center, city.zoom);
     }
 
     // Clean up old overlays
@@ -411,6 +415,32 @@ export default function MapView(): React.ReactNode {
       : hoverData.allPaths.filter(p => p.segments.length > 0);
     drawRouteLayersRef.current(paths);
   }, [state.selectedSampleIdx, state.hoverData, state.pinnedNode]);
+
+  // Draw source marker when sourceNode is set externally (URL restore)
+  useEffect(() => {
+    const { sourceNode, sourceLatLng } = state;
+    if (sourceNode === null || !sourceLatLng || !mapRef.current) return;
+    if (sourceMarkerRef.current) return;
+    sourceMarkerRef.current = L.marker(sourceLatLng, { title: 'Origin' }).addTo(mapRef.current);
+  }, [state.sourceNode, state.sourceLatLng]);
+
+  // Draw dest marker and routes when pinnedNode is set externally (URL restore)
+  useEffect(() => {
+    const { pinnedNode, pinnedLatLng, hoverData } = state;
+    if (pinnedNode === null || !pinnedLatLng || !hoverData || !mapRef.current) return;
+    if (destMarkerRef.current) return;
+    destMarkerRef.current = L.circleMarker(pinnedLatLng, {
+      radius: 6,
+      color: '#fff',
+      fillColor: '#4a90d9',
+      fillOpacity: 1,
+      weight: 2,
+      pane: 'transitLines',
+    }).addTo(mapRef.current);
+    if (drawRouteLayersRef.current) {
+      drawRouteLayersRef.current(hoverData.allPaths.filter((p) => p.segments.length > 0));
+    }
+  }, [state.pinnedNode, state.pinnedLatLng, state.hoverData]);
 
   return <div id="map" ref={mapContainerRef} />;
 }

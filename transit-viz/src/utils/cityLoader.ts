@@ -1,9 +1,14 @@
 import { initWasm, loadRouter } from './router';
+import type { Router } from './router';
 import { dateToYYYYMMDD } from './format';
 import type { Action } from '../state/reducer';
 import type { City } from '../cities';
 
-export async function loadCity(city: City, dispatch: React.Dispatch<Action>, includePatternCount: boolean = false) {
+export async function loadCity(
+  city: City,
+  dispatch: React.Dispatch<Action>,
+  includePatternCount: boolean = false,
+): Promise<{ router: Router; nodeCoords: Float32Array }> {
   dispatch({ type: 'START_LOADING', city });
 
   try {
@@ -29,6 +34,8 @@ export async function loadCity(city: City, dispatch: React.Dispatch<Action>, inc
       const count = router.num_patterns_for_date(dateToYYYYMMDD(today));
       dispatch({ type: 'SET_PATTERN_COUNT', count });
     }
+
+    return { router, nodeCoords };
   } catch (e) {
     dispatch({ type: 'LOAD_ERROR' });
     throw e;

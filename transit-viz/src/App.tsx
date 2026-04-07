@@ -8,9 +8,10 @@ import Legend from './components/Legend';
 import HoverInfo from './components/HoverInfo';
 import { loadCity } from './utils/cityLoader';
 import { getCityFromUrl } from './cities';
-import { runQuery } from './utils/router';
-import { getTravelTimeSummary, getMedianPath, formatSegments } from './utils/hoverInfo';
+import { runQuery, getHoverData } from './utils/router';
+import { getTravelTimeSummary, getMedianPath, formatSegments, getSortedTravelTimes } from './utils/hoverInfo';
 import type { RunQueryParams } from './utils/router';
+import { getHashParams, setHashParams } from './utils/urlHash';
 import './styles.css';
 
 function AppInner() {
@@ -18,13 +19,33 @@ function AppInner() {
   const stateRef = useRef(state);
   stateRef.current = state;
 
-  // Auto-load city from URL on mount
+  const pendingDestRef = useRef<{ latlng: [number, number]; trip: number | null } | null>(null);
+
+  // Auto-load city from URL on mount, restoring state from hash
   useEffect(() => {
     const city = getCityFromUrl();
     if (city) {
       (async () => {
+        const hash = getHashParams();
         try {
-          await loadCity(city, dispatch, true);
+          const { router, nodeCoords } = await loadCity(city, dispatch, true);
+          // Restore controls
+          if (hash.mode) dispatch({ type: 'SET_MODE', mode: hash.mode });
+          if (hash.date) dispatch({ type: 'SET_DATE', value: hash.date });
+          if (hash.time !== undefined) dispatch({ type: 'SET_DEPARTURE_TIME', value: hash.time });
+          if (hash.samples !== undefined) dispatch({ type: 'SET_SAMPLES', value: hash.samples });
+          if (hash.maxtime !== undefined) dispatch({ type: 'SET_MAX_TIME', value: hash.maxtime });
+          if (hash.slack !== undefined) dispatch({ type: 'SET_SLACK', value: hash.slack });
+          // Restore source (triggers query)
+          if (hash.src) {
+            const [lat, lng] = hash.src;
+            const node = router.snap_to_node(lat, lng);
+            if (node !== null) {
+              const latLng: [number, number] = [nodeCoords[node * 2], nodeCoords[node * 2 + 1]];
+              dispatch({ type: 'SET_SOURCE', node, latLng });
+              if (hash.dst) pendingDestRef.current = { latlng: hash.dst, trip: hash.trip ?? null };
+            }
+          }
         } catch (e) {
           dispatch({ type: 'LOAD_ERROR' });
           history.replaceState(null, '', import.meta.env.BASE_URL);
@@ -33,6 +54,44 @@ function AppInner() {
       })();
     }
   }, [dispatch]);
+
+  // Restore pinned destination (and locked trip) after query completes
+  useEffect(() => {
+    if (state.computeStatus !== 'done' || !pendingDestRef.current) return;
+    const { router, ssspList, nodeCoords } = state;
+    if (!router || !ssspList || !nodeCoords) return;
+    const { latlng, trip } = pendingDestRef.current;
+    pendingDestRef.current = null;
+    const [lat, lng] = latlng;
+    const node = router.snap_to_node(lat, lng);
+    if (node === null) return;
+    const latLng: [number, number] = [nodeCoords[node * 2], nodeCoords[node * 2 + 1]];
+    const allPaths = getHoverData(router, ssspList, node);
+    const travelTimes = getSortedTravelTimes(allPaths);
+    dispatch({ type: 'PIN_DESTINATION', node, latLng, hoverData: { allPaths, travelTimes } });
+    if (trip !== null && trip < allPaths.length) {
+      dispatch({ type: 'LOCK_SAMPLE', idx: trip });
+    }
+  }, [state.computeStatus, dispatch]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Sync state to URL hash (only when source is selected)
+  useEffect(() => {
+    if (!state.sourceLatLng) return;
+    const current = getHashParams();
+    setHashParams({
+      src: state.sourceLatLng,
+      dst: state.pinnedLatLng ?? undefined,
+      trip: state.lockedSampleIdx ?? undefined,
+      mode: state.mode,
+      date: state.date,
+      time: state.departureTime,
+      samples: state.nSamples,
+      maxtime: state.maxTimeMin,
+      slack: state.transferSlack,
+      zoom: current.zoom,
+      center: current.center,
+    });
+  }, [state.sourceLatLng, state.pinnedLatLng, state.lockedSampleIdx, state.mode, state.date, state.departureTime, state.nSamples, state.maxTimeMin, state.transferSlack]);
 
   // Run query when source or params change
   const handleRunQuery = useCallback((overrides: Record<string, any> = {}) => {
