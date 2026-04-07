@@ -8,7 +8,7 @@ Live demo: https://wengh.github.io/transit-time/
 
 ### Picking a city
 
-The landing page lists available cities. Click one to load it. The city's transit and street data (~1–40 MB compressed depending on city size) downloads and loads in the browser; a progress bar shows the download, then a brief indexing phase (~400 ms for a large city like Chicago).
+The landing page lists available cities. Click one to load it. The city's transit and street data (~1–30 MB compressed depending on city size) downloads and loads in the browser; a progress bar shows the download, then a brief indexing phase (~400 ms for a large city like Chicago).
 
 ### Setting an origin
 
@@ -93,11 +93,11 @@ File sizes for the included cities range from 1.3 MB (Chapel Hill) to 39 MB (NYC
 
 The city `.bin` file is fetched and streamed through the browser's native gzip decompression. The decompressed bytes are handed to a WebAssembly module (~700 KB) compiled from the Rust routing engine.
 
-**Loading and indexing (~400 ms for Chicago):** The WASM module decodes all PCO-compressed sections and builds two additional in-memory structures: a flat (jagged array) adjacency list for the street graph, and a spatial grid index over all nodes for snapping a clicked lat/lon to the nearest node in ~78 µs. Because nodes are stored in SFC order, walking a neighborhood during Dijkstra accesses nodes that are close together in both geography and memory, improving cache locality. The in-memory footprint for Chicago is about 250 MB, dominated by the pattern event index (~103 MB) and the adjacency list (~44 MB).
+**Loading and indexing (~330 ms for Chicago):** The WASM module decodes all PCO-compressed sections and builds two additional in-memory structures: a flat (jagged array) adjacency list for the street graph, and a spatial grid index over all nodes for snapping a clicked lat/lon to the nearest node in ~8 µs. Because nodes are stored in SFC order, walking a neighborhood during Dijkstra accesses nodes that are close together in both geography and memory, improving cache locality. The in-memory footprint for Chicago is about 186 MB, dominated by the pattern event index (~103 MB), the adjacency list (~21 MB), and the raw input buffer (~17 MB).
 
-**Routing — time-dependent Dijkstra:** When an origin is set, the router runs a shortest-path search over the combined graph. Walking edges have a fixed cost based on distance at 1.4 m/s (~5 km/h). At each node that is a transit stop, the router scans the event arrays for all active service patterns and boards vehicles. The search is time-dependent: the cost of boarding a transit vehicle is the wait time until its next departure plus the scheduled ride time. A transfer between different vehicles requires at least the configured transfer slack. The router tracks, for each reached node, the arrival time, the incoming route, the boarding time, and the latest possible home-departure time that still makes the connection.
+**Routing — time-dependent Dijkstra:** When an origin is set, the router runs a shortest-path search over the combined graph. Walking edges have a fixed cost based on distance at 1.4 m/s (~5 km/h). At each node that is a transit stop, the router scans the event arrays for all active service patterns and boards vehicles. The search is time-dependent: the cost of boarding a transit vehicle is the wait time until its next departure plus the scheduled ride time. A transfer between different vehicles requires at least the configured transfer slack. During the search, the router also tracks the latest possible home-departure time that still makes each connection — this is used to prefer paths that allow leaving later — but it is transient and not retained after the query completes. The result stored per reached node is 12 bytes: two u16 offsets from the query departure time (arrival and boarding times, supporting up to ~18 hours of travel), the incoming route index, and the predecessor node for path reconstruction.
 
-For a city the size of Chicago (817K nodes, 1.2M edges, 200 routes, 6.2M raw trip events), a single query takes about 220 ms and reaches roughly 530K nodes.
+For a city the size of Chicago (817K nodes, 1.2M edges, 200 routes, 6.2M raw trip events), a single query takes about 122 ms and reaches roughly 527K nodes. In hour-window average mode, one result set is kept per sample departure and all are live simultaneously for path reconstruction on hover; at 15 samples (the default) this adds about 150 MB on top of the ~186 MB base footprint.
 
 **Hour-window average mode** runs multiple queries in parallel using a Rayon thread pool initialized via WebAssembly threads (SharedArrayBuffer). If the browser does not support shared memory, it falls back to sequential execution.
 
@@ -165,42 +165,108 @@ OSM pedestrian data is fetched from BBBike by name, or from a direct URL if `osm
 
 ## Performance
 
-The numbers below are from a release build on a Chicago dataset (33 MB compressed / 250 MB in memory). To reproduce:
+The numbers below are from a release build on a Chicago dataset (16 MB compressed / 186 MB in memory). To reproduce:
 
 ```
 cargo test --release --test profile_router -- --nocapture
 ```
 
-**Load and index time (~393 ms total):**
+```
+=== Binary Section Sizes (decompressed) ===
+Section                          Bytes % of total
+header                            36 B     0.0%
+nodes                          1.80 MB    10.7%
+edges                          1.44 MB     8.6%
+stops                         667.4 KB     3.9%
+stop_to_node                  133.9 KB     0.8%
+route_names                     1.4 KB     0.0%
+route_colors                     800 B     0.0%
+patterns                       9.83 MB    58.4%
+shapes                         2.97 MB    17.7%
+route_shapes                    8.5 KB     0.0%
+TOTAL decompressed            16.84 MB
 
-| Phase | Time |
-|---|---|
-| Parse pattern events and build stop index | 211 ms |
-| Build street adjacency list | 117 ms |
-| Build spatial node grid | 42 ms |
-| Parse nodes + edges + stops | 12 ms |
+=== In-Memory Sizes ===
+Structure                        Bytes % of total
+nodes                         12.47 MB     6.7%
+edges                         13.70 MB     7.4%
+stops                        1002.2 KB     0.5%
+stop_node_map                  67.0 KB     0.0%
+node_is_stop                  798.2 KB     0.4%
+node_stop_indices             627.0 KB     0.3%
+route_names                     5.3 KB     0.0%
+route_colors                     800 B     0.0%
+patterns/events              102.97 MB    55.3%
+patterns/freq                  7.91 MB     4.3%
+patterns/other                   436 B     0.0%
+adj list                      21.38 MB    11.5%
+shapes                         3.39 MB     1.8%
+route_shapes                       0 B     0.0%
+node_grid                      5.00 MB     2.7%
+input buf                     16.84 MB     9.0%
+TOTAL in-memory              186.11 MB
 
-**Single routing query (Chicago, ~820K nodes):**
+=== Load Timings ===
+Phase                           Time % of total
+parse nodes                  12.9 ms     4.0%
+parse edges                  67.6 ms    20.8%
+parse stops                   0.9 ms     0.3%
+parse stop_to_node            1.2 ms     0.4%
+parse route_names             0.0 ms     0.0%
+parse route_colors            0.0 ms     0.0%
+parse+index patterns        195.2 ms    59.9%
+parse shapes                  0.3 ms     0.1%
+parse route_shapes            0.0 ms     0.0%
+build adj list               18.8 ms     5.8%
+build node_grid              29.1 ms     8.9%
+TOTAL                       326.0 ms
 
-| Metric | Value |
-|---|---|
-| Average query time | 218 ms |
-| Min / Max | 208 ms / 230 ms |
-| Nodes reached (average) | 527K of 817K |
+=== Counts ===
+nodes                         817408
+edges                        1196933
+stops                          17143
+stop_to_node                   17143
+patterns                         121
+route_names                      200
+shapes                          2319
+total events (raw)           6229513
+sentinel events                    0
+total freq entries                 0
+grid cells                      6352
+snap_to_node: 8µs -> node 722309 (41.88439954326267, -87.62934665014365)
+Monday patterns: 11 total
+
+Depart     Time(ms)    Reached    Transit
+------------------------------------------
+09:00      125.5ms     538391       3095
+09:06      119.6ms     524803       2969
+09:12      120.4ms     534909       2882
+09:18      127.0ms     541287       3072
+09:24      129.2ms     548733       3046
+09:30      118.4ms     508142       3050
+09:36      121.9ms     520956       3024
+09:42      125.4ms     531817       3083
+09:48      113.3ms     513962       2953
+09:54      118.8ms     508236       3118
+
+=== Summary (10 runs) ===
+Avg: 121.9ms  Min: 113.3ms  Max: 129.2ms
+Avg reachable nodes: 527123
+```
 
 **Binary sizes** (`ls -lh transit-viz/public/data/`):
 
 | City | Compressed |
 |---|---|
-| Chapel Hill | 1.3 MB |
-| Waterloo | 5.9 MB |
-| Seattle | 19 MB |
-| Toronto | 18 MB |
-| Chicago | 33 MB |
-| Montreal | 38 MB |
-| NYC | 39 MB |
-| SF Bay | 38 MB |
+| Chapel Hill | 454 KB |
+| Waterloo | 2.3 MB |
+| Seattle | 8.0 MB |
+| Toronto | 11 MB |
+| Chicago | 16 MB |
+| SF Bay | 18 MB |
+| NYC | 20 MB |
+| Montreal | 22 MB |
 
 **WASM module** (`ls -lh transit-viz/pkg/transit_router_bg.wasm`): 659 KB
 
-The largest in-memory structure is the pattern event index (103 MB for Chicago), which stores all 6.2M trip events indexed by stop for O(log n) binary-search access during routing. The raw input buffer (40 MB for Chicago) is retained in memory alongside the parsed structures.
+The largest in-memory structure is the pattern event index (103 MB for Chicago), which stores all 6.2M trip events indexed by stop for O(log n) binary-search access during routing. The raw input buffer (17 MB for Chicago) is retained in memory alongside the parsed structures.
