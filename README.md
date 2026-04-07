@@ -16,7 +16,9 @@ The landing page lists available cities. Click one to load it. The city's transi
 
 **Mobile:** Long-press to set the origin.
 
-Once an origin is set, the map fills with a color-coded isochrone overlay. Green areas are reachable quickly; the color shifts through yellow and red as travel time increases, fading out where nothing is reachable within the time limit.
+Once an origin is set, the map fills with a color-coded isochrone overlay. Green/yellow areas are reachable quickly; the color shifts through orange and red as travel time increases, fading out where nothing is reachable within the time limit.
+
+In **hour-window average** mode the overlay also encodes how consistently a location is reachable across the sampled departure times. Locations reachable from every sampled departure use the warm (yellow→red) scale. Locations reachable from only some departures shift toward cool colors — cyan for nearby spots that are only sometimes served, through blue and purple for farther or less reliably served locations. Locations never reachable in any sample are not shown.
 
 ### Exploring destinations
 
@@ -46,7 +48,9 @@ All controls re-run the routing query immediately when changed.
 
 ### Sawtooth chart (hour-window average)
 
-When a destination is pinned in hour-window average mode, a chart appears below the itinerary. The X-axis is departure time within the hour window; the Y-axis is travel time to the destination. Each diagonal line represents one transit trip: as your departure time gets later and closer to when the vehicle leaves the stop, your wait shrinks and total travel time decreases — that is the downward slope. When you depart late enough to miss that vehicle, travel time jumps up because you must wait for the next one, forming the sawtooth pattern. The dashed horizontal line (if present) is the walk-only time. Hover over the chart to highlight a specific departure and see its route on the map; click to lock it.
+When a destination is pinned in hour-window average mode, a chart appears below the itinerary. The X-axis is departure time within the hour window; the Y-axis is travel time to the destination. Each diagonal line represents one transit trip: as your departure time gets later and closer to when the vehicle leaves the stop, your wait shrinks and total travel time decreases — that is the downward slope. When you depart late enough to miss that vehicle, travel time jumps up because you must wait for the next one, forming the sawtooth pattern. The dashed horizontal line (if present) is the walk-only time. Shaded grey columns mark departure times where no transit option falls within the travel-time limit.
+
+Hover over a transit segment to highlight that departure and see its route on the map; click to lock it.
 
 ### Copying trip info
 
@@ -261,7 +265,7 @@ Avg reachable nodes: 527123
 | Chapel Hill | 454 KB |
 | Waterloo | 2.3 MB |
 | Seattle | 8.0 MB |
-| Toronto | 11 MB |
+| Toronto | 18 MB |
 | Chicago | 16 MB |
 | SF Bay | 18 MB |
 | NYC | 20 MB |
