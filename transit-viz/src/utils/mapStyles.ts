@@ -34,11 +34,25 @@ export const MAP_STYLES: Record<string, MapStyle> = {
     subdomains: 'abcd',
   },
   osm: {
-    label: 'OpenStreetMap',
+    label: 'OSM Standard',
     url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
     attribution: OSM_ATTR,
     subdomains: 'abc',
   },
+  'osm-hot': {
+    label: 'OSM Humanitarian',
+    url: 'https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png',
+    attribution: OSM_ATTR,
+    subdomains: 'abc',
+  },
+  voyager: {
+    label: 'Voyager',
+    url: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
+    attribution: CARTO_ATTR,
+    subdomains: 'abcd',
+  },
 };
 
-export const DEFAULT_MAP_STYLE = 'dark';
+export const DEFAULT_MAP_STYLE = window.matchMedia('(prefers-color-scheme: dark)').matches
+  ? 'dark-labels'
+  : 'light-labels';
