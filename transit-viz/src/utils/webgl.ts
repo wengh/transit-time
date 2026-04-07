@@ -1,4 +1,4 @@
-import { travelTimeColor } from './colors';
+import { isochroneColor } from './colors';
 import type L from 'leaflet';
 
 export interface GLState {
@@ -69,7 +69,9 @@ export function renderIsochrone(
   travelTimes: Float32Array,
   nodeCoords: Float32Array,
   maxTimeSec: number,
-  L: typeof import('leaflet')
+  L: typeof import('leaflet'),
+  sampleCounts?: Uint32Array | null,
+  totalSamples?: number,
 ): RenderResult | null {
   if (!travelTimes || !map || !nodeCoords) return null;
 
@@ -117,7 +119,10 @@ export function renderIsochrone(
     const tt = travelTimes[i];
     if (!(tt >= 0 && tt <= maxTimeSec)) continue;
 
-    const color = travelTimeColor(tt, maxTimeSec);
+    const fraction = sampleCounts != null && totalSamples != null && totalSamples > 1
+      ? sampleCounts[i] / totalSamples
+      : 1.0;
+    const color = isochroneColor(tt, maxTimeSec, fraction);
     const ci2 = i * 2;
     const lat = nodeCoords[ci2];
     const lon = nodeCoords[ci2 + 1];

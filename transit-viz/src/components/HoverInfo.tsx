@@ -90,27 +90,53 @@ function drawChart(
 ): void {
   const rect = canvas.getBoundingClientRect();
   const size = Math.round(rect.width);
-  if (size === 0) return;
+  const height = Math.round(rect.height);
+  if (size === 0 || height === 0) return;
   canvas.width = size;
-  canvas.height = size;
+  canvas.height = height;
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
 
   const { tips, walkTime, walkPathIdx, windowStart, windowEnd, yMax } = info;
-  const W = size, H = size;
+  const W = size, H = height;
   const { top: pT, right: pR, bottom: pB, left: pL } = PAD;
   const plotW = W - pL - pR;
   const plotH = H - pT - pB;
+  const clipY = walkTime !== null ? Math.min(walkTime, yMax) : yMax;
 
   const xToC = (t: number) => pL + ((t - windowStart) / (windowEnd - windowStart)) * plotW;
   const yToC = (y: number) => pT + plotH - (y / yMax) * plotH;
 
   // Background
-  ctx.fillStyle = '#fff';
+  ctx.fillStyle = '#1e1e1e';
   ctx.fillRect(0, 0, W, H);
 
+  // Unreachable zones: only shade when there is no walk path (if walking works, nowhere
+  // is truly unreachable). Use yMax (not walkTime) as the threshold so "transit slower
+  // than walking" zones are not marked unreachable — the dashed walk line covers those.
+  if (walkTime === null || walkTime > yMax) {
+    ctx.fillStyle = 'rgba(80, 80, 100, 0.22)';
+    const reachable: [number, number][] = [];
+    for (const { tipX, tipY } of tips) {
+      if (tipY > yMax) continue;
+      reachable.push([tipX - (yMax - tipY), tipX]);
+    }
+    const shadeGrey = (t0: number, t1: number) => {
+      if (t1 <= t0) return;
+      const x0 = Math.max(pL, xToC(t0));
+      const x1 = Math.min(pL + plotW, xToC(t1));
+      if (x1 > x0) ctx.fillRect(x0, pT, x1 - x0, plotH);
+    };
+    let cursor = windowStart;
+    for (const [rStart, rEnd] of reachable) {
+      shadeGrey(cursor, rStart);
+      cursor = Math.max(cursor, rEnd);
+    }
+    shadeGrey(cursor, windowEnd);
+  }
+
   // Grid
-  ctx.strokeStyle = '#f0f0f0';
+  ctx.strokeStyle = '#2a2a2a';
   ctx.lineWidth = 1;
   for (let min = 0; min <= 60; min += 15) {
     const x = xToC(windowStart + min * 60);
@@ -123,7 +149,7 @@ function drawChart(
   }
 
   // Axes
-  ctx.strokeStyle = '#ccc';
+  ctx.strokeStyle = '#3a3a3a';
   ctx.lineWidth = 1;
   ctx.beginPath();
   ctx.moveTo(pL, pT);
@@ -132,7 +158,7 @@ function drawChart(
   ctx.stroke();
 
   // X-axis labels (minute offsets from window start)
-  ctx.fillStyle = '#999';
+  ctx.fillStyle = '#888';
   ctx.font = `${Math.max(9, Math.round(size / 28))}px sans-serif`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'alphabetic';
@@ -153,7 +179,7 @@ function drawChart(
   if (walkTime !== null) {
     const cy = yToC(walkTime);
     const isSelected = walkPathIdx !== null && selectedIdx === walkPathIdx;
-    ctx.strokeStyle = isSelected ? '#555' : '#bbb';
+    ctx.strokeStyle = isSelected ? '#ccc' : '#555';
     ctx.lineWidth = isSelected ? 2 : 1.5;
     ctx.setLineDash([4, 6]);
     ctx.beginPath();
@@ -166,8 +192,6 @@ function drawChart(
   // Transit trip segments (sawtooth / triangle shapes)
   for (let i = 0; i < tips.length; i++) {
     const { tipX, tipY, pathIdx, color } = tips[i];
-    // Clip transit trips that are slower than walking even at the tip
-    const clipY = walkTime !== null ? Math.min(walkTime, yMax) : yMax;
     if (tipY > clipY) continue;
 
     const prevBoundX = i === 0 ? windowStart : tips[i - 1].tipX;
@@ -202,7 +226,7 @@ function drawChart(
   if (selectedIdx !== null) {
     const tip = tips.find(t => t.pathIdx === selectedIdx);
     if (tip && tip.tipY <= yMax) {
-      ctx.strokeStyle = '#333';
+      ctx.strokeStyle = '#ddd';
       ctx.lineWidth = 1.5;
       ctx.beginPath();
       ctx.arc(xToC(tip.tipX), yToC(tip.tipY), 7, 0, Math.PI * 2);
@@ -214,14 +238,18 @@ function drawChart(
 // ─── x-position → path index ─────────────────────────────────────────────────
 
 function pathIdxAtCanvasX(canvasX: number, canvasWidth: number, info: ChartInfo): number | null {
-  const { tips, walkPathIdx, windowStart, windowEnd } = info;
+  const { tips, walkPathIdx, windowStart, windowEnd, yMax, walkTime } = info;
   const { left: pL, right: pR } = PAD;
   const plotW = canvasWidth - pL - pR;
   const t = windowStart + ((canvasX - pL) / plotW) * (windowEnd - windowStart);
+  const clipY = walkTime !== null ? Math.min(walkTime, yMax) : yMax;
 
   for (let i = 0; i < tips.length; i++) {
     const leftBound = i === 0 ? windowStart : tips[i - 1].tipX;
-    if (t >= leftBound && t <= tips[i].tipX) {
+    const { tipX, tipY } = tips[i];
+    if (t >= leftBound && t <= tipX) {
+      // Entire trip is slower than walk/maxTime, or departure is in the grey zone
+      if (tipY > clipY || t < tipX - (clipY - tipY)) return walkPathIdx;
       return tips[i].pathIdx;
     }
   }
@@ -234,16 +262,16 @@ function ChartHintButton(): React.ReactNode {
   const [open, setOpen] = useState(false);
   const id = useId();
   return (
-    <div style={{ position: 'relative', display: 'flex', justifyContent: 'flex-end', marginBottom: 2 }}>
+    <div style={{ position: 'absolute', top: 10, right: 0, zIndex: 5 }}>
       <button
         aria-label="How to read this chart"
         aria-expanded={open}
         aria-controls={id}
         onClick={() => setOpen(v => !v)}
         style={{
-          background: 'none', border: '1px solid #bbb', borderRadius: '50%',
+          background: 'none', border: '1px solid #444', borderRadius: '50%',
           width: 18, height: 18, fontSize: 11, lineHeight: '16px', cursor: 'pointer',
-          color: '#666', padding: 0, flexShrink: 0,
+          color: '#888', padding: 0, flexShrink: 0,
         }}
       >?</button>
       {open && (
@@ -252,9 +280,9 @@ function ChartHintButton(): React.ReactNode {
           role="tooltip"
           style={{
             position: 'absolute', top: 22, right: 0, zIndex: 10,
-            background: '#fff', border: '1px solid #ccc', borderRadius: 6,
+            background: '#2a2a2a', border: '1px solid #3a3a3a', borderRadius: 6,
             padding: '8px 10px', width: 220, fontSize: 11, lineHeight: 1.5,
-            color: '#444', boxShadow: '0 2px 8px rgba(0,0,0,.12)',
+            color: '#ccc', boxShadow: '0 2px 8px rgba(0,0,0,.4)',
           }}
         >
           <strong style={{ display: 'block', marginBottom: 4 }}>How to read this chart</strong>
@@ -383,27 +411,27 @@ export default function HoverInfo(): React.ReactNode {
   return (
     <div id="hover-info">
       <div id="hover-info-details">
-        <div style={{ fontWeight: 600, marginBottom: 6, fontSize: 13 }}>
+        <div style={{ fontWeight: 600, marginBottom: 6, fontSize: 13, color: '#e0e0e0' }}>
           {titleText}
         </div>
 
         {displayPath && displayPath.segments.length > 0 && (() => {
           return (
-            <div style={{ borderTop: '1px solid #ddd', paddingTop: 6, marginTop: 2 }}>
+            <div style={{ borderTop: '1px solid #2a2a2a', paddingTop: 6, marginTop: 2 }}>
               {displayPath.segments.map((seg, si) => (
                 <div key={si}>
                   {seg.edgeType === 0 ? (
-                    <div style={{ fontSize: 12, color: '#666', padding: '2px 0' }}>
+                    <div style={{ fontSize: 12, color: '#888', padding: '2px 0' }}>
                       Walk {(seg.duration / 60).toFixed(1)} min
                     </div>
                   ) : (
                     <>
                       {seg.waitTime > 0 && (
-                        <div style={{ fontSize: 11, color: '#999', padding: '1px 0', fontStyle: 'italic' }}>
+                        <div style={{ fontSize: 11, color: '#666', padding: '1px 0', fontStyle: 'italic' }}>
                           Wait {(seg.waitTime / 60).toFixed(1)} min
                         </div>
                       )}
-                      <div style={{ fontSize: 12, padding: '2px 0' }}>
+                      <div style={{ fontSize: 12, padding: '2px 0', color: '#e0e0e0' }}>
                         <b>{seg.routeName || 'Transit'}</b>
                         {seg.startStopName && seg.endStopName
                           ? ` · ${seg.startStopName} → ${seg.endStopName}`
@@ -420,11 +448,11 @@ export default function HoverInfo(): React.ReactNode {
       </div>
 
       {isSampled && (
-        <div id="hover-info-chart" style={{ borderTop: '1px solid #ddd', paddingTop: 8, marginTop: 6 }}>
+        <div id="hover-info-chart" style={{ borderTop: '1px solid #2a2a2a', paddingTop: 8, marginTop: 6, position: 'relative' }}>
           <ChartHintButton />
           <canvas
             ref={canvasRef}
-            style={{ width: '100%', aspectRatio: '1 / 1', display: 'block', cursor: 'crosshair' }}
+            style={{ width: '100%', display: 'block', cursor: 'crosshair' }}
             onMouseMove={handleMouseMove}
             onMouseLeave={handleMouseLeave}
             onClick={handleClick}

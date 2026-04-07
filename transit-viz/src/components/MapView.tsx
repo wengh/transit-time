@@ -46,6 +46,11 @@ export default function MapView(): React.ReactNode {
       subdomains: 'abcd',
       crossOrigin: true,
     }).addTo(map);
+    // Custom pane above the isochrone ImageOverlay (which lives in overlayPane at z-index 400;
+    // this pane at 450 is a sibling stacking context that wins regardless of the image's zIndex).
+    map.createPane('transitLines');
+    map.getPane('transitLines')!.style.zIndex = '450';
+
     mapRef.current = map;
 
     return () => {
@@ -128,7 +133,7 @@ export default function MapView(): React.ReactNode {
             dashArray = null;
             weight = 4;
           }
-          const line = L.polyline(seg.coords, { color, weight, opacity: 1, ...(dashArray ? { dashArray } : {}), interactive: false }).addTo(map);
+          const line = L.polyline(seg.coords, { color, weight, opacity: 1, ...(dashArray ? { dashArray } : {}), interactive: false, pane: 'transitLines' }).addTo(map);
           routePolylinesRef.current.push(line);
           // Add circle at end of transit segments to mark transfers
           if (seg.edgeType === 1) {
@@ -143,6 +148,7 @@ export default function MapView(): React.ReactNode {
                 fillOpacity: 0.7,
                 weight: 1,
                 interactive: false,
+                pane: 'transitLines',
               }).addTo(map);
               routePolylinesRef.current.push(circle);
             }
@@ -188,6 +194,7 @@ export default function MapView(): React.ReactNode {
             fillColor: '#4a90d9',
             fillOpacity: 1,
             weight: 2,
+            pane: 'transitLines',
           }).addTo(map);
         }
         dispatch({ type: 'PIN_DESTINATION', node, latLng, hoverData: { allPaths, travelTimes } });
@@ -218,20 +225,14 @@ export default function MapView(): React.ReactNode {
     }
 
     // Desktop: double-click sets source
-    let clickTimer: ReturnType<typeof setTimeout> | null = null;
     function onDblClick(e: L.LeafletMouseEvent) {
       if (!stateRef.current.router) return;
       // Prevent on mobile (handled by long press)
       if (isTouchDevice) return;
-      // Cancel pending single-click
-      if (clickTimer) {
-        clearTimeout(clickTimer);
-        clickTimer = null;
-      }
       setSource(e.latlng.lat, e.latlng.lng);
     }
 
-    // Single click: pin/unpin destination (delayed on desktop to distinguish from dblclick)
+    // Single click: pin/unpin destination
     function onClick(e: L.LeafletMouseEvent) {
       const s = stateRef.current;
       if (!s.router || s.sourceNode === null) return;
@@ -243,27 +244,13 @@ export default function MapView(): React.ReactNode {
         if (elapsed > 400) return;
       }
 
-      function doClick() {
-        const s = stateRef.current;
-        if (s.pinnedNode !== null) {
-          dispatch({ type: 'UNPIN_DESTINATION' });
-        } else {
-          const node = snapToNode(e.latlng.lat, e.latlng.lng);
-          if (node !== null) {
-            showDestination(node, true);
-          }
-        }
-      }
-
-      if (isTouchDevice) {
-        doClick();
+      if (s.pinnedNode !== null) {
+        dispatch({ type: 'UNPIN_DESTINATION' });
       } else {
-        // Delay to allow dblclick to cancel
-        if (clickTimer) clearTimeout(clickTimer);
-        clickTimer = setTimeout(() => {
-          clickTimer = null;
-          doClick();
-        }, 250);
+        const node = snapToNode(e.latlng.lat, e.latlng.lng);
+        if (node !== null) {
+          showDestination(node, true);
+        }
       }
     }
 
@@ -322,7 +309,7 @@ export default function MapView(): React.ReactNode {
         glStateRef.current = initWebGL();
       }
       if (!glStateRef.current) return;
-      const result = renderIsochrone(glStateRef.current, map, s.travelTimes, s.nodeCoords, s.maxTimeMin * 60, L);
+      const result = renderIsochrone(glStateRef.current, map, s.travelTimes, s.nodeCoords, s.maxTimeMin * 60, L, s.sampleCounts, s.totalSamples);
       if (result) {
         const oldOverlay = isoOverlayRef.current;
         isoOverlayRef.current = L.imageOverlay(result.dataUrl, result.renderBounds, {
@@ -356,7 +343,6 @@ export default function MapView(): React.ReactNode {
     container.addEventListener('touchmove', onTouchMove, { passive: true });
 
     return () => {
-      if (clickTimer) clearTimeout(clickTimer);
       map.off('dblclick', onDblClick);
       map.off('click', onClick);
       map.off('mousemove', onMouseMove);

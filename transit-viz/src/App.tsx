@@ -59,6 +59,8 @@ function AppInner() {
           type: 'QUERY_DONE',
           travelTimes: result.travelTimes,
           ssspList: result.ssspList,
+          sampleCounts: result.sampleCounts,
+          totalSamples: result.totalSamples,
           timeMs: performance.now() - start,
         });
         dispatch({ type: 'UNPIN_DESTINATION' });

@@ -57,7 +57,7 @@ export default function Controls({ onRunQuery, onCopy }: ControlsProps): React.R
   const { state, dispatch } = useAppState();
   const { loadingState, mode, departureTime, date, nSamples, maxTimeMin, transferSlack, computeStatus, computeTimeMs, patternCount, nodeCount, stopCount, sourceNode, showCopiedMessage } = state;
 
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(() => window.innerWidth < 600);
 
   if (loadingState !== 'ready') return null;
 

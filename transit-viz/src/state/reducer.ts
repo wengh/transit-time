@@ -24,6 +24,8 @@ export interface AppState {
   // Query results
   travelTimes: Float32Array | null;
   ssspList: SsspList | null;
+  sampleCounts: Uint32Array | null;
+  totalSamples: number;
   computeStatus: 'idle' | 'computing' | 'done' | 'error';
   computeTimeMs: number;
   patternCount: number;
@@ -61,7 +63,7 @@ export type Action =
   | { type: 'SET_SLACK'; value: number }
   | { type: 'SET_PATTERN_COUNT'; count: number }
   | { type: 'COMPUTING' }
-  | { type: 'QUERY_DONE'; travelTimes: Float32Array; ssspList: SsspList; timeMs: number }
+  | { type: 'QUERY_DONE'; travelTimes: Float32Array; ssspList: SsspList; sampleCounts: Uint32Array | null; totalSamples: number; timeMs: number }
   | { type: 'QUERY_ERROR' }
   | { type: 'PIN_DESTINATION'; node: number; latLng: [number, number]; hoverData: HoverData }
   | { type: 'UNPIN_DESTINATION' }
@@ -94,6 +96,8 @@ export const initialState: AppState = {
   // Query results
   travelTimes: null,
   ssspList: null,
+  sampleCounts: null,
+  totalSamples: 1,
   computeStatus: 'idle',
   computeTimeMs: 0,
   patternCount: 0,
@@ -173,7 +177,7 @@ export function reducer(state: AppState, action: Action): AppState {
     case 'COMPUTING':
       return { ...state, computeStatus: 'computing' };
     case 'QUERY_DONE':
-      return { ...state, travelTimes: action.travelTimes, ssspList: action.ssspList, computeStatus: 'done', computeTimeMs: action.timeMs, selectedSampleIdx: null };
+      return { ...state, travelTimes: action.travelTimes, ssspList: action.ssspList, sampleCounts: action.sampleCounts, totalSamples: action.totalSamples, computeStatus: 'done', computeTimeMs: action.timeMs, selectedSampleIdx: null };
     case 'QUERY_ERROR':
       return { ...state, computeStatus: 'error' };
     case 'SELECT_SAMPLE':

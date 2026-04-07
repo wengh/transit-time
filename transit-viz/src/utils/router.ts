@@ -21,6 +21,8 @@ export interface PathSegment {
 export interface QueryResult {
   travelTimes: Float32Array;
   ssspList: SsspList;
+  sampleCounts: Uint32Array | null; // null in single mode; counts[i] = samples that reached node i
+  totalSamples: number;             // ssspList.length in sampled mode, 1 in single
 }
 
 export interface RunQueryParams {
@@ -94,7 +96,7 @@ export function runQuery(router: Router, params: RunQueryParams): QueryResult {
       const arr = router.node_arrival_time(sssp, i);
       travelTimes[i] = arr < 0xffffffff ? arr - departureTime : NaN;
     }
-    return { travelTimes, ssspList };
+    return { travelTimes, ssspList, sampleCounts: null, totalSamples: 1 };
   } else {
     const windowEnd = departureTime + 3600;
     const dateInt = parseInt(date.replace(/-/g, ''));
@@ -132,7 +134,7 @@ export function runQuery(router: Router, params: RunQueryParams): QueryResult {
     for (let i = 0; i < numNodes; i++) {
       travelTimes[i] = counts[i] > 0 ? sumTimes[i] / counts[i] : NaN;
     }
-    return { travelTimes, ssspList };
+    return { travelTimes, ssspList, sampleCounts: counts, totalSamples: ssspList.length };
   }
 }
 
