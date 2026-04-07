@@ -179,83 +179,83 @@ cargo test --release --test profile_router -- --nocapture
 === Binary Section Sizes (decompressed) ===
 Section                          Bytes % of total
 header                            36 B     0.0%
-nodes                          1.80 MB    10.7%
-edges                          1.44 MB     8.6%
-stops                         667.4 KB     3.9%
-stop_to_node                  133.9 KB     0.8%
-route_names                     1.4 KB     0.0%
-route_colors                     800 B     0.0%
-patterns                       9.83 MB    58.4%
-shapes                         2.97 MB    17.7%
-route_shapes                    8.5 KB     0.0%
-TOTAL decompressed            16.84 MB
+nodes                          1.80 MB    10.6%
+edges                          1.44 MB     8.5%
+stops                         671.5 KB     3.9%
+stop_to_node                  135.0 KB     0.8%
+route_names                     1.5 KB     0.0%
+route_colors                     844 B     0.0%
+patterns                       9.91 MB    58.5%
+shapes                         2.99 MB    17.7%
+route_shapes                    8.7 KB     0.0%
+TOTAL decompressed            16.94 MB
 
 === In-Memory Sizes ===
 Structure                        Bytes % of total
-nodes                         12.47 MB     6.7%
-edges                         13.70 MB     7.4%
-stops                        1002.2 KB     0.5%
-stop_node_map                  67.0 KB     0.0%
-node_is_stop                  798.2 KB     0.4%
-node_stop_indices             627.0 KB     0.3%
-route_names                     5.3 KB     0.0%
-route_colors                     800 B     0.0%
-patterns/events              102.97 MB    55.3%
-patterns/freq                  7.91 MB     4.3%
-patterns/other                   436 B     0.0%
-adj list                      21.38 MB    11.5%
+nodes                         12.47 MB     6.6%
+edges                         13.70 MB     7.3%
+stops                        1008.9 KB     0.5%
+stop_node_map                  67.5 KB     0.0%
+node_is_stop                  798.3 KB     0.4%
+node_stop_indices             627.5 KB     0.3%
+route_names                     5.6 KB     0.0%
+route_colors                     844 B     0.0%
+patterns/events              104.52 MB    55.4%
+patterns/freq                  8.90 MB     4.7%
+patterns/other                   468 B     0.0%
+adj list                      21.38 MB    11.3%
 shapes                         3.39 MB     1.8%
 route_shapes                       0 B     0.0%
 node_grid                      5.00 MB     2.7%
-input buf                     16.84 MB     9.0%
-TOTAL in-memory              186.11 MB
+input buf                     16.94 MB     9.0%
+TOTAL in-memory              188.76 MB
 
 === Load Timings ===
 Phase                           Time % of total
-parse nodes                  12.9 ms     4.0%
-parse edges                  67.6 ms    20.8%
-parse stops                   0.9 ms     0.3%
-parse stop_to_node            1.2 ms     0.4%
+parse nodes                  11.7 ms     3.7%
+parse edges                  67.4 ms    21.3%
+parse stops                   1.3 ms     0.4%
+parse stop_to_node            1.3 ms     0.4%
 parse route_names             0.0 ms     0.0%
 parse route_colors            0.0 ms     0.0%
-parse+index patterns        195.2 ms    59.9%
+parse+index patterns        188.1 ms    59.5%
 parse shapes                  0.3 ms     0.1%
 parse route_shapes            0.0 ms     0.0%
-build adj list               18.8 ms     5.8%
-build node_grid              29.1 ms     8.9%
-TOTAL                       326.0 ms
+build adj list               16.2 ms     5.1%
+build node_grid              29.8 ms     9.4%
+TOTAL                       316.2 ms
 
 === Counts ===
-nodes                         817408
-edges                        1196933
-stops                          17143
-stop_to_node                   17143
-patterns                         121
-route_names                      200
-shapes                          2319
-total events (raw)           6229513
+nodes                         817507
+edges                        1197032
+stops                          17274
+stop_to_node                   17274
+patterns                         135
+route_names                      211
+shapes                          2350
+total events (raw)           6266597
 sentinel events                    0
 total freq entries                 0
 grid cells                      6352
-snap_to_node: 8µs -> node 722309 (41.88439954326267, -87.62934665014365)
-Monday patterns: 11 total
+snap_to_node: 17µs -> node 722404 (41.88439954326267, -87.62934665014365)
+Monday patterns: 12 total
 
 Depart     Time(ms)    Reached    Transit
 ------------------------------------------
-09:00      125.5ms     538391       3095
-09:06      119.6ms     524803       2969
-09:12      120.4ms     534909       2882
-09:18      127.0ms     541287       3072
-09:24      129.2ms     548733       3046
-09:30      118.4ms     508142       3050
-09:36      121.9ms     520956       3024
-09:42      125.4ms     531817       3083
-09:48      113.3ms     513962       2953
-09:54      118.8ms     508236       3118
+09:00      132.3ms     541122       3149
+09:06      125.4ms     537332       2996
+09:12      129.7ms     562554       2865
+09:18      131.3ms     568234       3088
+09:24      129.6ms     553720       3077
+09:30      117.4ms     506895       3104
+09:36      119.9ms     521497       3071
+09:42      125.3ms     534934       3085
+09:48      122.6ms     520163       2879
+09:54      125.3ms     510709       3108
 
 === Summary (10 runs) ===
-Avg: 121.9ms  Min: 113.3ms  Max: 129.2ms
-Avg reachable nodes: 527123
+Avg: 125.9ms  Min: 117.4ms  Max: 132.3ms
+Avg reachable nodes: 535716
 ```
 
 **Binary sizes** (`ls -lh transit-viz/public/data/`):

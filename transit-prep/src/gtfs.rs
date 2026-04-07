@@ -324,6 +324,7 @@ pub fn parse_gtfs(path: &Path) -> Result<GtfsData> {
     {
         let mut rdr = csv::ReaderBuilder::new()
             .flexible(true)
+            .trim(csv::Trim::All)
             .from_reader(stops_csv.as_bytes());
         for result in rdr.deserialize::<StopRecord>() {
             let record = result?;
@@ -355,6 +356,7 @@ pub fn parse_gtfs(path: &Path) -> Result<GtfsData> {
     {
         let mut rdr = csv::ReaderBuilder::new()
             .flexible(true)
+            .trim(csv::Trim::All)
             .from_reader(routes_csv.as_bytes());
         for result in rdr.deserialize::<RouteRecord>() {
             let record = result?;
@@ -381,6 +383,7 @@ pub fn parse_gtfs(path: &Path) -> Result<GtfsData> {
     {
         let mut rdr = csv::ReaderBuilder::new()
             .flexible(true)
+            .trim(csv::Trim::All)
             .from_reader(trips_csv.as_bytes());
         for result in rdr.deserialize::<TripRecord>() {
             let record = result?;
@@ -402,6 +405,7 @@ pub fn parse_gtfs(path: &Path) -> Result<GtfsData> {
     {
         let mut rdr = csv::ReaderBuilder::new()
             .flexible(true)
+            .trim(csv::Trim::All)
             .from_reader(stop_times_csv.as_bytes());
         for result in rdr.deserialize::<StopTimeRecord>() {
             let record = result?;
@@ -424,6 +428,7 @@ pub fn parse_gtfs(path: &Path) -> Result<GtfsData> {
     if let Some(cal_csv) = read_file_from_zip(&mut archive, "calendar.txt")? {
         let mut rdr = csv::ReaderBuilder::new()
             .flexible(true)
+            .trim(csv::Trim::All)
             .from_reader(cal_csv.as_bytes());
         for result in rdr.deserialize::<CalendarRecord>() {
             let record = result?;
@@ -453,6 +458,7 @@ pub fn parse_gtfs(path: &Path) -> Result<GtfsData> {
     if let Some(cal_dates_csv) = read_file_from_zip(&mut archive, "calendar_dates.txt")? {
         let mut rdr = csv::ReaderBuilder::new()
             .flexible(true)
+            .trim(csv::Trim::All)
             .from_reader(cal_dates_csv.as_bytes());
         for result in rdr.deserialize::<CalendarDateRecord>() {
             let record = result?;
@@ -480,6 +486,7 @@ pub fn parse_gtfs(path: &Path) -> Result<GtfsData> {
     if let Some(freq_csv) = read_file_from_zip(&mut archive, "frequencies.txt")? {
         let mut rdr = csv::ReaderBuilder::new()
             .flexible(true)
+            .trim(csv::Trim::All)
             .from_reader(freq_csv.as_bytes());
         for result in rdr.deserialize::<FrequencyRecord>() {
             let record = result?;
@@ -501,6 +508,7 @@ pub fn parse_gtfs(path: &Path) -> Result<GtfsData> {
     if let Some(shapes_csv) = read_file_from_zip(&mut archive, "shapes.txt")? {
         let mut rdr = csv::ReaderBuilder::new()
             .flexible(true)
+            .trim(csv::Trim::All)
             .from_reader(shapes_csv.as_bytes());
         for result in rdr.deserialize::<ShapeRecord>() {
             if let Ok(record) = result {
