@@ -17,6 +17,7 @@ export default function MapView(): React.ReactNode {
   const isoOverlayRef = useRef<L.ImageOverlay | null>(null);
   const sourceMarkerRef = useRef<L.Marker | null>(null);
   const destMarkerRef = useRef<L.CircleMarker | null>(null);
+  const bboxRectRef = useRef<L.Rectangle | null>(null);
   const routePolylinesRef = useRef<L.Path[]>([]);
   const drawRouteLayersRef = useRef<((paths: HoverPath[]) => void) | null>(null);
   const lastHoveredNodeRef = useRef<number | null>(null);
@@ -375,6 +376,17 @@ export default function MapView(): React.ReactNode {
     } else {
       map.setView(city.center, city.zoom);
     }
+
+    // Draw bounding box
+    if (bboxRectRef.current) bboxRectRef.current.remove();
+    const [minLon, minLat, maxLon, maxLat] = city.bbox;
+    bboxRectRef.current = L.rectangle([[minLat, minLon], [maxLat, maxLon]], {
+      color: '#666',
+      weight: 1,
+      fillOpacity: 0,
+      dashArray: '4 6',
+      interactive: false,
+    }).addTo(map);
 
     // Clean up old overlays
     if (sourceMarkerRef.current) {

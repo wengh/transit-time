@@ -16,7 +16,14 @@ const cityModules = import.meta.glob<string>('../../cities/*.jsonc', {
   import: 'default',
 });
 
-export const CITIES: City[] = Object.values(cityModules).map((content) => JSONC.parse(content) as City);
+export const CITIES: City[] = Object.values(cityModules).map((content) => {
+  const city = JSONC.parse(content) as any;
+  // bbox is stored as a comma-separated string in JSONC files
+  if (typeof city.bbox === 'string') {
+    city.bbox = (city.bbox as string).split(',').map(Number);
+  }
+  return city as City;
+});
 
 export function getCityFromUrl(): City | null {
   const id = new URLSearchParams(window.location.search).get('city');
