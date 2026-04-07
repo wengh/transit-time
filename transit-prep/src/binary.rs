@@ -1,4 +1,4 @@
-use crate::graph::{OsmEdge, OsmNode};
+use crate::graph::{haversine, OsmEdge, OsmNode};
 use crate::gtfs::{Color, ServicePattern, Stop};
 use anyhow::Result;
 use std::collections::HashMap;
@@ -18,10 +18,10 @@ pub struct PreparedData {
     pub route_shapes: Vec<Vec<String>>, // route_index -> shape_id
 }
 
-// Binary format:
+// Binary format v5:
 // Header:
 //   magic: [u8; 4] = "TRNS"
-//   version: u32 = 1
+//   version: u32 = 5
 //   num_nodes: u32
 //   num_edges: u32
 //   num_stops: u32
@@ -30,64 +30,155 @@ pub struct PreparedData {
 //   num_route_names: u32
 //   num_shapes: u32
 //
-// Nodes section: [Node; num_nodes]
-//   lat: f64, lon: f64
+// Nodes section (SFC-sorted by Morton curve, 32-bit fixed-point 0.1 m resolution):
+//   min_lat: f64, min_lon: f64      // bbox origin
+//   lat_scale: f64, lon_scale: f64  // units per degree (1 unit = 0.1 m)
+//   pco_len: u32, pco_data: [u8]    // PCO u32 lat offsets
+//   pco_len: u32, pco_data: [u8]    // PCO u32 lon offsets
 //
-// Edges section: [Edge; num_edges]
-//   u: u32, v: u32, distance_meters: f32
+// Edges section (canonical u>v, sorted by (u, u-v)):
+//   pco_len: u32, pco_data: [u8]  // PCO u32: u values
+//   pco_len: u32, pco_data: [u8]  // PCO u32: delta = u-v
+//   pco_len: u32, pco_data: [u8]  // PCO f32: distance_meters - haversine(u,v) excess
 //
 // Stops section: [Stop; num_stops]
 //   lat: f64, lon: f64, name_len: u32, name: [u8; name_len]
 //
-// Stop-to-node mapping: [(u32, u32); num_stop_to_node]
+// Stop-to-node mapping (node indices are new SFC-sorted indices):
+//   [(stop_idx: u32, node_idx: u32); num_stop_to_node]
 //
 // Route names: [name_len: u32, name: [u8; name_len]; num_route_names]
 //
-// Patterns section: for each pattern:
-//   pattern_id: u32
-//   day_mask: u8
+// Route colors: per route: has_color: u8, [r: u8, g: u8, b: u8 if has_color]
+//
+// Patterns section: (unchanged from v3) for each pattern:
+//   pattern_id: u32, day_mask: u8, start_date: u32, end_date: u32
 //   num_date_add: u32, dates_add: [u32; n]
 //   num_date_remove: u32, dates_remove: [u32; n]
-//   min_time: u32
-//   max_time: u32
-//   event_array_len: u32
-//   for each second:
-//     num_events: u16
-//     events: [Event; num_events]
-//       stop_index: u32, route_index: u32, trip_index: u32, next_stop_index: u32, travel_time: u32
-//   num_freq: u32
-//   freq_entries: [FreqEntry; num_freq]
+//   min_time: u32, max_time: u32
+//   num_events: u32
+//   [PCO columns: time_offsets, stop_indices, travel_times, next_event_indices]
+//   [PCO stop_offsets, PCO sentinel_routes]
+//   num_freq: u32, freq_entries: [FreqEntry; num_freq]
 //
 // Shapes section: for each shape:
-//   shape_id_len: u32, shape_id: [u8; n]
-//   num_points: u32
-//   points: [(f64, f64); num_points]
+//   pco_len: u32, pco_data: [u8; pco_len]  // PCO-compressed f32 coord bits
+//
+// Route-to-shape mapping:
+//   num_routes: u32
+//   for each route: num_shapes: u32, [shape_idx: u32; num_shapes]
+
+/// Spread 16-bit integer bits for Morton interleaving.
+fn spread_bits_16(mut x: u32) -> u32 {
+    x &= 0xFFFF;
+    x = (x | (x << 8)) & 0x00FF_00FF;
+    x = (x | (x << 4)) & 0x0F0F_0F0F;
+    x = (x | (x << 2)) & 0x3333_3333;
+    x = (x | (x << 1)) & 0x5555_5555;
+    x
+}
+
+/// Compute 32-bit Morton (Z-order) code from two 16-bit values.
+/// Interleaves bits: result = ...y1x1y0x0 (x in even bits, y in odd bits).
+fn morton_encode(x: u16, y: u16) -> u32 {
+    spread_bits_16(x as u32) | (spread_bits_16(y as u32) << 1)
+}
 
 pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
+    let num_nodes = data.nodes.len();
+
+    // --- SFC reordering of nodes ---
+    // Compute bounding box
+    let min_lat = data.nodes.iter().map(|n| n.lat).fold(f64::INFINITY, f64::min);
+    let max_lat = data.nodes.iter().map(|n| n.lat).fold(f64::NEG_INFINITY, f64::max);
+    let min_lon = data.nodes.iter().map(|n| n.lon).fold(f64::INFINITY, f64::min);
+    let max_lon = data.nodes.iter().map(|n| n.lon).fold(f64::NEG_INFINITY, f64::max);
+    let lat_range = (max_lat - min_lat).max(1e-10);
+    let lon_range = (max_lon - min_lon).max(1e-10);
+
+    // Fixed-point scales: 1 unit = 0.1 m
+    const METERS_PER_DEG_LAT: f64 = 111_320.0;
+    let center_lat = (min_lat + max_lat) / 2.0;
+    let lat_scale = METERS_PER_DEG_LAT * 10.0; // units per degree of latitude
+    let lon_scale = METERS_PER_DEG_LAT * center_lat.to_radians().cos() * 10.0;
+
+    let scale = (1u32 << 16) as f64;
+
+    let node_morton = |i: usize| -> u32 {
+        let n = &data.nodes[i];
+        let x = ((n.lon - min_lon) / lon_range * scale).min(scale - 1.0) as u16;
+        let y = ((n.lat - min_lat) / lat_range * scale).min(scale - 1.0) as u16;
+        morton_encode(x, y)
+    };
+
+    // new_order[new_idx] = old_idx
+    let mut new_order: Vec<u32> = (0..num_nodes as u32).collect();
+    new_order.sort_unstable_by_key(|&i| node_morton(i as usize));
+
+    // old_to_new[old_idx] = new_idx
+    let mut old_to_new = vec![0u32; num_nodes];
+    for (new_idx, &old_idx) in new_order.iter().enumerate() {
+        old_to_new[old_idx as usize] = new_idx as u32;
+    }
+
+    // Relabel edges: use new node indices, canonicalize u > v.
+    // Third element is distance excess over straight-line (f32 bits stored as u32 for sorting key).
+    // Use original f64 node coords for haversine so the delta is as small as possible.
+    let mut canon_edges: Vec<(u32, u32, f32)> = data.edges.iter().map(|e| {
+        let new_u = old_to_new[e.u as usize];
+        let new_v = old_to_new[e.v as usize];
+        let (cu, cv) = if new_u > new_v { (new_u, new_v) } else { (new_v, new_u) };
+        let straight = haversine(
+            data.nodes[e.u as usize].lat, data.nodes[e.u as usize].lon,
+            data.nodes[e.v as usize].lat, data.nodes[e.v as usize].lon,
+        ) as f32;
+        (cu, cu - cv, e.distance_meters - straight)
+    }).collect();
+    canon_edges.sort_unstable_by_key(|&(u, delta, _)| (u, delta));
+
+    // Relabel stop_to_node: update node indices
+    let relabeled_stn: Vec<(u32, u32)> = data.stop_to_node.iter()
+        .map(|&(si, ni)| (si, old_to_new[ni as usize]))
+        .collect();
+
     let mut buf: Vec<u8> = Vec::new();
 
     // Header
     buf.extend_from_slice(b"TRNS");
-    write_u32(&mut buf, 3); // version
-    write_u32(&mut buf, data.nodes.len() as u32);
+    write_u32(&mut buf, 5); // version
+    write_u32(&mut buf, num_nodes as u32);
     write_u32(&mut buf, data.edges.len() as u32);
     write_u32(&mut buf, data.stops.len() as u32);
-    write_u32(&mut buf, data.stop_to_node.len() as u32);
+    write_u32(&mut buf, relabeled_stn.len() as u32);
     write_u32(&mut buf, data.patterns.len() as u32);
     write_u32(&mut buf, data.route_names.len() as u32);
     write_u32(&mut buf, data.shapes.len() as u32);
 
-    // Nodes
-    for node in &data.nodes {
-        write_f64(&mut buf, node.lat);
-        write_f64(&mut buf, node.lon);
+    // Nodes (v5): 32-bit fixed-point, 0.1 m resolution, SFC-sorted
+    {
+        write_f64(&mut buf, min_lat);
+        write_f64(&mut buf, min_lon);
+        write_f64(&mut buf, lat_scale);
+        write_f64(&mut buf, lon_scale);
+        let lat_u32: Vec<u32> = new_order.iter().map(|&i| {
+            ((data.nodes[i as usize].lat - min_lat) * lat_scale).round() as u32
+        }).collect();
+        let lon_u32: Vec<u32> = new_order.iter().map(|&i| {
+            ((data.nodes[i as usize].lon - min_lon) * lon_scale).round() as u32
+        }).collect();
+        write_pco_u32(&mut buf, &lat_u32);
+        write_pco_u32(&mut buf, &lon_u32);
     }
 
-    // Edges
-    for edge in &data.edges {
-        write_u32(&mut buf, edge.u);
-        write_u32(&mut buf, edge.v);
-        write_f32(&mut buf, edge.distance_meters);
+    // Edges (v5): u, delta (=u-v), dist_excess (=distance_meters - haversine(u,v))
+    // Sorted by (u, delta), canonical with u > v
+    {
+        let us: Vec<u32> = canon_edges.iter().map(|&(u, _, _)| u).collect();
+        let deltas: Vec<u32> = canon_edges.iter().map(|&(_, d, _)| d).collect();
+        let excesses: Vec<f32> = canon_edges.iter().map(|&(_, _, x)| x).collect();
+        write_pco_u32(&mut buf, &us);
+        write_pco_u32(&mut buf, &deltas);
+        write_pco_f32(&mut buf, &excesses);
     }
 
     // Stops
@@ -99,8 +190,8 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
         buf.extend_from_slice(name_bytes);
     }
 
-    // Stop-to-node mapping
-    for &(stop_idx, node_idx) in &data.stop_to_node {
+    // Stop-to-node mapping (relabeled to new SFC indices)
+    for &(stop_idx, node_idx) in &relabeled_stn {
         write_u32(&mut buf, stop_idx);
         write_u32(&mut buf, node_idx);
     }
@@ -375,10 +466,20 @@ fn write_u32(buf: &mut Vec<u8>, v: u32) {
     buf.extend_from_slice(&v.to_le_bytes());
 }
 
-fn write_f32(buf: &mut Vec<u8>, v: f32) {
+fn write_f64(buf: &mut Vec<u8>, v: f64) {
     buf.extend_from_slice(&v.to_le_bytes());
 }
 
-fn write_f64(buf: &mut Vec<u8>, v: f64) {
-    buf.extend_from_slice(&v.to_le_bytes());
+fn write_pco_u32(buf: &mut Vec<u8>, data: &[u32]) {
+    let compressed = pco::standalone::simple_compress(data, &pco::ChunkConfig::default())
+        .expect("pco compress failed");
+    write_u32(buf, compressed.len() as u32);
+    buf.extend_from_slice(&compressed);
+}
+
+fn write_pco_f32(buf: &mut Vec<u8>, data: &[f32]) {
+    let compressed = pco::standalone::simple_compress(data, &pco::ChunkConfig::default())
+        .expect("pco compress failed");
+    write_u32(buf, compressed.len() as u32);
+    buf.extend_from_slice(&compressed);
 }
