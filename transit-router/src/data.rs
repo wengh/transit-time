@@ -136,6 +136,22 @@ impl<T> JaggedArray<T> {
     }
 }
 
+/// Sparse map from a node index to a slice of stop indices.
+/// Only nodes that are stops have entries; all stop-index data lives in one flat vec.
+pub struct SparseJaggedArray<T> {
+    pub offsets: std::collections::HashMap<u32, (u32, u32)>, // key -> (start, end) in data
+    pub data: Vec<T>,
+}
+
+impl<T> SparseJaggedArray<T> {
+    pub fn get(&self, key: u32) -> &[T] {
+        match self.offsets.get(&key) {
+            Some(&(start, end)) => &self.data[start as usize..end as usize],
+            None => &[],
+        }
+    }
+}
+
 pub struct PatternStopIndex {
     pub freq_by_stop: JaggedArray<u32>,
     pub events_by_stop: JaggedArray<EventData>,
@@ -168,7 +184,7 @@ pub struct PreparedData {
     pub num_stops: usize,
     pub adj: JaggedArray<(u32, f32)>,
     pub node_is_stop: Vec<bool>,
-    pub node_stop_indices: Vec<Vec<u32>>,
+    pub node_stop_indices: SparseJaggedArray<u32>,
     /// Compressed shapes: JaggedArray of PCO-compressed data (lat/lon pairs as f32 bits)
     pub shapes: JaggedArray<u8>,
     /// route_index -> [shape_indices]
@@ -293,16 +309,34 @@ pub fn load_with_stats(buf: &[u8]) -> Result<(PreparedData, LoadStats), String> 
     let pos_before = pos;
     let mut stop_node_map = vec![u32::MAX; num_stops];
     let mut node_is_stop = vec![false; num_nodes];
-    let mut node_stop_indices: Vec<Vec<u32>> = vec![Vec::new(); num_nodes];
+    let mut pairs: Vec<(u32, u32)> = Vec::with_capacity(num_stop_to_node); // (node_idx, stop_idx)
     for _ in 0..num_stop_to_node {
         let stop_idx = read_u32(&buf, &mut pos);
         let node_idx = read_u32(&buf, &mut pos);
         if (stop_idx as usize) < num_stops && (node_idx as usize) < num_nodes {
             stop_node_map[stop_idx as usize] = node_idx;
             node_is_stop[node_idx as usize] = true;
-            node_stop_indices[node_idx as usize].push(stop_idx);
+            pairs.push((node_idx, stop_idx));
         }
     }
+    // Build SparseJaggedArray: sort by node so we can group runs in one pass.
+    pairs.sort_unstable_by_key(|&(node, _)| node);
+    let mut nsi_offsets = std::collections::HashMap::with_capacity(pairs.len());
+    let mut nsi_data: Vec<u32> = Vec::with_capacity(pairs.len());
+    let mut i = 0;
+    while i < pairs.len() {
+        let node = pairs[i].0;
+        let start = nsi_data.len() as u32;
+        while i < pairs.len() && pairs[i].0 == node {
+            nsi_data.push(pairs[i].1);
+            i += 1;
+        }
+        nsi_offsets.insert(node, (start, nsi_data.len() as u32));
+    }
+    let node_stop_indices = SparseJaggedArray {
+        offsets: nsi_offsets,
+        data: nsi_data,
+    };
     binary_sections.push(("stop_to_node", pos - pos_before));
     timings.push(("parse stop_to_node", t0.elapsed()));
 
@@ -579,12 +613,9 @@ pub fn load_with_stats(buf: &[u8]) -> Result<(PreparedData, LoadStats), String> 
     // node_is_stop
     memory_sections.push(("node_is_stop", node_is_stop.capacity()));
 
-    // node_stop_indices: Vec<Vec<u32>> — outer vec + inner vecs
-    let nsi_mem: usize = num_nodes * std::mem::size_of::<Vec<u32>>()
-        + node_stop_indices
-            .iter()
-            .map(|v| v.capacity() * 4)
-            .sum::<usize>();
+    // node_stop_indices: SparseJaggedArray — hashmap entries + flat data
+    let nsi_mem: usize = node_stop_indices.offsets.capacity() * (4 + 8 + 8) // key + (u32,u32) + hashmap overhead
+        + node_stop_indices.data.capacity() * 4;
     memory_sections.push(("node_stop_indices", nsi_mem));
 
     // route_names

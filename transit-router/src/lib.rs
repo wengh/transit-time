@@ -147,7 +147,7 @@ impl TransitRouter {
     pub fn node_stop_name(&self, node_idx: u32) -> String {
         let idx = node_idx as usize;
         if idx < self.data.node_is_stop.len() && self.data.node_is_stop[idx] {
-            if let Some(&stop_idx) = self.data.node_stop_indices[idx].first() {
+            if let Some(&stop_idx) = self.data.node_stop_indices.get(node_idx).first() {
                 return self.data.stops[stop_idx as usize].name.clone();
             }
         }

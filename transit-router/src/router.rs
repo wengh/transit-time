@@ -239,7 +239,7 @@ fn run_tdd_inner(
 
         // Transit edges (only at stop nodes)
         if data.node_is_stop[node as usize] {
-            for &stop_idx in &data.node_stop_indices[node as usize] {
+            for &stop_idx in data.node_stop_indices.get(node) {
                 for pat in patterns {
                     scan_pattern_at_stop(
                         data,
