@@ -4,15 +4,18 @@
     "feed_ids": [
         "http://opendata.toronto.ca/toronto.transit.commission/ttc-routes-and-schedules/OpenData_TTC_Schedules.zip",
         "https://assets.metrolinx.com/raw/upload/Documents/Metrolinx/Open%20Data/GO-GTFS.zip",
-        "https://assets.metrolinx.com/raw/upload/Documents/Metrolinx/Open%20Data/UP-GTFS.zip"
+        "https://assets.metrolinx.com/raw/upload/Documents/Metrolinx/Open%20Data/UP-GTFS.zip",
+        "https://www.miapp.ca/GTFS/google_transit.zip",
+        "https://www.yrt.ca/google/google_transit.zip",
+        "https://www.arcgis.com/sharing/rest/content/items/a355aabd5a8c490186bdce559c9c75fb/data"
     ],
     "name": "Toronto, ON",
     "file": "toronto.bin",
-    "bbox": "-79.63,43.58,-79.11,43.85",
+    "bbox": "-79.79,43.48,-79,43.92",
     "center": [
         43.65,
         -79.38
     ],
     "zoom": 12,
-    "detail": "TTC, Go Transit, UP Express"
+    "detail": "TTC, Go Transit, UP Express, MiWay, YRT, Brampton Transit"
 }
