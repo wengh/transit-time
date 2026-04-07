@@ -561,6 +561,7 @@ pub fn snap_stops_to_nodes(stops: &[Stop], graph: &mut OsmGraph) -> Vec<(u32, u3
     let mut entrance_mappings: Vec<(u32, u32)> = Vec::new();
     let mut skipped = 0;
     let mut snapped_to_entrance = 0;
+    let mut seen_edges: HashSet<usize> = HashSet::new();
 
     for stop in stops {
         let cell_lat = (stop.lat / CELL_SIZE_LAT).floor() as i32;
@@ -593,7 +594,7 @@ pub fn snap_stops_to_nodes(stops: &[Stop], graph: &mut OsmGraph) -> Vec<(u32, u3
         // Find nearest edge projection
         let mut best_dist = f64::MAX;
         let mut best_snap: Option<SnapResult> = None;
-        let mut seen_edges: HashSet<usize> = HashSet::new();
+        seen_edges.clear();
 
         for dlat in -1..=1 {
             for dlon in -1..=1 {

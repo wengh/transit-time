@@ -635,12 +635,17 @@ pub fn build_service_patterns(data: &GtfsData) -> Vec<ServicePattern> {
     }
     for times in stop_times_by_trip.values_mut() {
         times.sort_by_key(|st| st.stop_sequence);
+        // Pre-filter to in-bbox stops once here so the per-pattern loop never needs to.
+        times.retain(|st| stop_id_to_idx.contains_key(st.stop_id.as_str()));
     }
 
-    // Build trip -> service_id mapping
-    let mut trip_to_service: HashMap<&str, &str> = HashMap::new();
+    // Group trips by service_id for O(1) per-pattern access instead of scanning all trips.
+    let mut trips_by_service_id: HashMap<&str, Vec<&Trip>> = HashMap::new();
     for trip in &data.trips {
-        trip_to_service.insert(&trip.id, &trip.service_id);
+        trips_by_service_id
+            .entry(trip.service_id.as_str())
+            .or_default()
+            .push(trip);
     }
 
     // Frequency-based trip IDs
@@ -687,56 +692,50 @@ pub fn build_service_patterns(data: &GtfsData) -> Vec<ServicePattern> {
         // Collect all departure events
         let mut departure_events: Vec<(u32, Event)> = Vec::new(); // (departure_time, event)
 
-        for trip in &data.trips {
-            if !service_ids.contains(trip.service_id.as_str()) {
+        for service_id in &service_ids {
+            let Some(trips) = trips_by_service_id.get(service_id) else {
                 continue;
-            }
-            if freq_trip_ids.contains(trip.id.as_str()) {
-                continue; // handled separately
-            }
-
-            let route_idx = match route_id_to_idx.get(trip.route_id.as_str()) {
-                Some(&idx) => idx,
-                None => continue,
             };
-            let trip_idx = match trip_id_to_idx.get(trip.id.as_str()) {
-                Some(&idx) => idx,
-                None => continue,
-            };
+            for trip in trips {
+                if freq_trip_ids.contains(trip.id.as_str()) {
+                    continue; // handled separately
+                }
 
-            if let Some(times) = stop_times_by_trip.get(trip.id.as_str()) {
-                // Filter to in-bbox stops first, then window. This ensures stops outside
-                // the bbox (prefix, suffix, or middle gaps) are removed cleanly so that
-                // consecutive in-bbox stops are still directly connected.
-                let valid_times: Vec<&StopTime> = times
-                    .iter()
-                    .copied()
-                    .filter(|st| stop_id_to_idx.contains_key(st.stop_id.as_str()))
-                    .collect();
-                // For each consecutive pair of stops, create an event at the departure stop
-                for window in valid_times.windows(2) {
-                    let from = window[0];
-                    let to = window[1];
+                let route_idx = match route_id_to_idx.get(trip.route_id.as_str()) {
+                    Some(&idx) => idx,
+                    None => continue,
+                };
+                let trip_idx = match trip_id_to_idx.get(trip.id.as_str()) {
+                    Some(&idx) => idx,
+                    None => continue,
+                };
 
-                    let from_idx = stop_id_to_idx[from.stop_id.as_str()];
-                    let to_idx = stop_id_to_idx[to.stop_id.as_str()];
+                // stop_times_by_trip is pre-filtered to in-bbox stops; windows(2) directly.
+                if let Some(times) = stop_times_by_trip.get(trip.id.as_str()) {
+                    for window in times.windows(2) {
+                        let from = window[0];
+                        let to = window[1];
 
-                    let dep_time = from.departure_time;
-                    let travel = to.arrival_time.saturating_sub(dep_time);
+                        let from_idx = stop_id_to_idx[from.stop_id.as_str()];
+                        let to_idx = stop_id_to_idx[to.stop_id.as_str()];
 
-                    min_time = min_time.min(dep_time);
-                    max_time = max_time.max(dep_time);
+                        let dep_time = from.departure_time;
+                        let travel = to.arrival_time.saturating_sub(dep_time);
 
-                    departure_events.push((
-                        dep_time,
-                        Event {
-                            stop_index: from_idx,
-                            route_index: route_idx,
-                            trip_index: trip_idx,
-                            next_stop_index: to_idx,
-                            travel_time: travel,
-                        },
-                    ));
+                        min_time = min_time.min(dep_time);
+                        max_time = max_time.max(dep_time);
+
+                        departure_events.push((
+                            dep_time,
+                            Event {
+                                stop_index: from_idx,
+                                route_index: route_idx,
+                                trip_index: trip_idx,
+                                next_stop_index: to_idx,
+                                travel_time: travel,
+                            },
+                        ));
+                    }
                 }
             }
         }
@@ -773,12 +772,7 @@ pub fn build_service_patterns(data: &GtfsData) -> Vec<ServicePattern> {
                     None => continue,
                 };
                 if let Some(times) = stop_times_by_trip.get(trip.id.as_str()) {
-                    let valid_times: Vec<&StopTime> = times
-                        .iter()
-                        .copied()
-                        .filter(|st| stop_id_to_idx.contains_key(st.stop_id.as_str()))
-                        .collect();
-                    for window in valid_times.windows(2) {
+                    for window in times.windows(2) {
                         let from = window[0];
                         let to = window[1];
                         let from_idx = stop_id_to_idx[from.stop_id.as_str()];
