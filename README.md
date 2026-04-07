@@ -272,5 +272,3 @@ Avg reachable nodes: 535716
 | Montreal | 22 MB |
 
 **WASM module** (`ls -lh transit-viz/pkg/transit_router_bg.wasm`): 659 KB
-
-The largest in-memory structure is the pattern event index (103 MB for Chicago), which stores all 6.2M trip events indexed by stop for O(log n) binary-search access during routing. The raw input buffer (17 MB for Chicago) is retained in memory alongside the parsed structures.
