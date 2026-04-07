@@ -375,7 +375,7 @@ export default function HoverInfo(): React.ReactNode {
       const waitTime = firstTransit.waitTime;
       displayPath!.segments = displayPath!.segments.map((s, i) => {
         if (i === firstTransitIndex) {
-          return { ...s, waitTime: 0, duration: s.duration - waitTime };
+          return { ...s, waitTime: 0 };
         } else {
           return s;
         }
