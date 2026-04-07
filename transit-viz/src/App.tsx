@@ -30,6 +30,7 @@ function AppInner() {
         try {
           const { router, nodeCoords } = await loadCity(city, dispatch, true);
           // Restore controls
+          if (hash.style) dispatch({ type: 'SET_MAP_STYLE', style: hash.style });
           if (hash.mode) dispatch({ type: 'SET_MODE', mode: hash.mode });
           if (hash.date) dispatch({ type: 'SET_DATE', value: hash.date });
           if (hash.time !== undefined) dispatch({ type: 'SET_DEPARTURE_TIME', value: hash.time });
@@ -82,6 +83,7 @@ function AppInner() {
       src: state.sourceLatLng,
       dst: state.pinnedLatLng ?? undefined,
       trip: state.lockedSampleIdx ?? undefined,
+      style: state.mapStyle,
       mode: state.mode,
       date: state.date,
       time: state.departureTime,
@@ -91,7 +93,7 @@ function AppInner() {
       zoom: current.zoom,
       center: current.center,
     });
-  }, [state.sourceLatLng, state.pinnedLatLng, state.lockedSampleIdx, state.mode, state.date, state.departureTime, state.nSamples, state.maxTimeMin, state.transferSlack]);
+  }, [state.sourceLatLng, state.pinnedLatLng, state.lockedSampleIdx, state.mapStyle, state.mode, state.date, state.departureTime, state.nSamples, state.maxTimeMin, state.transferSlack]);
 
   // Run query when source or params change
   const handleRunQuery = useCallback((overrides: Record<string, any> = {}) => {

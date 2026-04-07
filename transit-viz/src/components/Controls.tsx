@@ -2,6 +2,7 @@ import React, { useState, useRef } from 'react';
 import { useAppState } from '../state/AppContext';
 import { formatTime, formatSlack, dateToYYYYMMDD } from '../utils/format';
 import { freeSsspList } from '../utils/router';
+import { MAP_STYLES } from '../utils/mapStyles';
 
 interface RangeSliderProps {
   id: string;
@@ -55,7 +56,7 @@ interface ControlsProps {
 
 export default function Controls({ onRunQuery, onCopy }: ControlsProps): React.ReactNode {
   const { state, dispatch } = useAppState();
-  const { loadingState, mode, departureTime, date, nSamples, maxTimeMin, transferSlack, computeStatus, computeTimeMs, patternCount, nodeCount, stopCount, sourceNode, showCopiedMessage } = state;
+  const { loadingState, mode, mapStyle, departureTime, date, nSamples, maxTimeMin, transferSlack, computeStatus, computeTimeMs, patternCount, nodeCount, stopCount, sourceNode, showCopiedMessage } = state;
 
   const [collapsed, setCollapsed] = useState(() => window.innerWidth < 600);
 
@@ -77,6 +78,10 @@ export default function Controls({ onRunQuery, onCopy }: ControlsProps): React.R
     onCopy();
     dispatch({ type: 'SHOW_COPIED_MESSAGE' });
     setTimeout(() => dispatch({ type: 'HIDE_COPIED_MESSAGE' }), 1500);
+  }
+
+  function handleMapStyleChange(e: React.ChangeEvent<HTMLSelectElement>) {
+    dispatch({ type: 'SET_MAP_STYLE', style: e.target.value });
   }
 
   function handleModeChange(e: React.ChangeEvent<HTMLSelectElement>) {
@@ -106,6 +111,14 @@ export default function Controls({ onRunQuery, onCopy }: ControlsProps): React.R
         {collapsed ? 'Show controls' : 'Hide controls'}
       </div>
       <h3 id="city-title">{state.currentCity && state.currentCity.name}</h3>
+      <div className="control-group">
+        <label>Map Style</label>
+        <select id="map-style" value={mapStyle} onChange={handleMapStyleChange}>
+          {Object.entries(MAP_STYLES).map(([id, s]) => (
+            <option key={id} value={id}>{s.label}</option>
+          ))}
+        </select>
+      </div>
       <div className="control-group">
         <label>Mode</label>
         <select id="mode" value={mode} onChange={handleModeChange}>

@@ -2,6 +2,7 @@ export interface HashParams {
   src?: [number, number];
   dst?: [number, number];
   trip?: number;
+  style?: string;
   mode?: 'single' | 'sampled';
   date?: string;
   time?: number;
@@ -34,6 +35,8 @@ export function getHashParams(): HashParams {
   result.dst = parseLatLng(p.get('dst'));
   result.trip = parseInt2(p.get('trip'));
   result.center = parseLatLng(p.get('center'));
+  const style = p.get('style');
+  if (style) result.style = style;
   const mode = p.get('mode');
   if (mode === 'single' || mode === 'sampled') result.mode = mode;
   const date = p.get('date');
@@ -53,6 +56,7 @@ export function setHashParams(params: HashParams): void {
   if (params.src) p.set('src', `${params.src[0].toFixed(5)},${params.src[1].toFixed(5)}`);
   if (params.dst) p.set('dst', `${params.dst[0].toFixed(5)},${params.dst[1].toFixed(5)}`);
   if (params.trip !== undefined) p.set('trip', String(params.trip));
+  if (params.style) p.set('style', params.style);
   if (params.mode) p.set('mode', params.mode);
   if (params.date) p.set('date', params.date);
   if (params.time !== undefined) p.set('time', String(params.time));

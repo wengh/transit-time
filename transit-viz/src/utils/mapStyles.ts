@@ -1,0 +1,44 @@
+export interface MapStyle {
+  label: string;
+  url: string;
+  attribution: string;
+  subdomains?: string;
+}
+
+const CARTO_ATTR = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/">CARTO</a>';
+const OSM_ATTR = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors';
+
+export const MAP_STYLES: Record<string, MapStyle> = {
+  dark: {
+    label: 'Dark',
+    url: 'https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png',
+    attribution: CARTO_ATTR,
+    subdomains: 'abcd',
+  },
+  'dark-labels': {
+    label: 'Dark + Labels',
+    url: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+    attribution: CARTO_ATTR,
+    subdomains: 'abcd',
+  },
+  light: {
+    label: 'Light',
+    url: 'https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png',
+    attribution: CARTO_ATTR,
+    subdomains: 'abcd',
+  },
+  'light-labels': {
+    label: 'Light + Labels',
+    url: 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
+    attribution: CARTO_ATTR,
+    subdomains: 'abcd',
+  },
+  osm: {
+    label: 'OpenStreetMap',
+    url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+    attribution: OSM_ATTR,
+    subdomains: 'abc',
+  },
+};
+
+export const DEFAULT_MAP_STYLE = 'dark';

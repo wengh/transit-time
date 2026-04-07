@@ -1,5 +1,6 @@
 import type { Router, SsspList, HoverPath } from '../utils/router';
 import type { City } from '../cities';
+import { DEFAULT_MAP_STYLE } from '../utils/mapStyles';
 
 export interface AppState {
   // City loading
@@ -8,6 +9,7 @@ export interface AppState {
   loadingProgress: number;
 
   // Controls
+  mapStyle: string;
   mode: 'single' | 'sampled';
   departureTime: number;
   date: string;
@@ -56,6 +58,7 @@ export type Action =
   | { type: 'LOAD_ERROR' }
   | { type: 'CHANGE_CITY' }
   | { type: 'SET_SOURCE'; node: number; latLng: [number, number] }
+  | { type: 'SET_MAP_STYLE'; style: string }
   | { type: 'SET_MODE'; mode: 'single' | 'sampled' }
   | { type: 'SET_DEPARTURE_TIME'; value: number }
   | { type: 'SET_DATE'; value: string }
@@ -82,6 +85,7 @@ export const initialState: AppState = {
   loadingProgress: 0,
 
   // Controls
+  mapStyle: DEFAULT_MAP_STYLE,
   mode: 'sampled',
   departureTime: 11 * 3600, // 11:00 AM
   date: new Date().toISOString().slice(0, 10),
@@ -165,6 +169,8 @@ export function reducer(state: AppState, action: Action): AppState {
       };
     case 'SET_SOURCE':
       return { ...state, sourceNode: action.node, sourceLatLng: action.latLng, pinnedNode: null, pinnedLatLng: null, hoverData: null, selectedSampleIdx: null, lockedSampleIdx: null };
+    case 'SET_MAP_STYLE':
+      return { ...state, mapStyle: action.style };
     case 'SET_MODE':
       return { ...state, mode: action.mode };
     case 'SET_DEPARTURE_TIME':

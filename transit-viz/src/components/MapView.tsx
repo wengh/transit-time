@@ -6,6 +6,7 @@ import { getHoverData, type HoverPath } from '../utils/router';
 import { ROUTE_COLORS, hexToRgb } from '../utils/colors';
 import { getHashParams, setHashParams } from '../utils/urlHash';
 import { getSortedTravelTimes } from '../utils/hoverInfo';
+import { MAP_STYLES, DEFAULT_MAP_STYLE } from '../utils/mapStyles';
 
 const isTouchDevice = typeof window !== 'undefined' && ('ontouchstart' in window || navigator.maxTouchPoints > 0);
 
@@ -18,6 +19,7 @@ export default function MapView(): React.ReactNode {
   const sourceMarkerRef = useRef<L.Marker | null>(null);
   const destMarkerRef = useRef<L.CircleMarker | null>(null);
   const bboxRectRef = useRef<L.Rectangle | null>(null);
+  const tileLayerRef = useRef<L.TileLayer | null>(null);
   const routePolylinesRef = useRef<L.Path[]>([]);
   const drawRouteLayersRef = useRef<((paths: HoverPath[]) => void) | null>(null);
   const lastHoveredNodeRef = useRef<number | null>(null);
@@ -43,10 +45,11 @@ export default function MapView(): React.ReactNode {
   useEffect(() => {
     if (mapRef.current) return;
     const map = L.map('map', { doubleClickZoom: isTouchDevice }).setView([40, -90], 4);
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png', {
-      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/">CARTO</a>',
+    const initialStyle = MAP_STYLES[DEFAULT_MAP_STYLE];
+    tileLayerRef.current = L.tileLayer(initialStyle.url, {
+      attribution: initialStyle.attribution,
       maxZoom: 20,
-      subdomains: 'abcd',
+      subdomains: initialStyle.subdomains ?? 'abc',
       crossOrigin: true,
     }).addTo(map);
     // Custom pane above the isochrone ImageOverlay (which lives in overlayPane at z-index 400;
@@ -61,6 +64,20 @@ export default function MapView(): React.ReactNode {
       mapRef.current = null;
     };
   }, []);
+
+  // Swap tile layer when map style changes
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const style = MAP_STYLES[state.mapStyle] ?? MAP_STYLES[DEFAULT_MAP_STYLE];
+    if (tileLayerRef.current) tileLayerRef.current.remove();
+    tileLayerRef.current = L.tileLayer(style.url, {
+      attribution: style.attribution,
+      maxZoom: 20,
+      subdomains: style.subdomains ?? 'abc',
+      crossOrigin: true,
+    }).addTo(map);
+  }, [state.mapStyle]);
 
   // Set up map event handlers
   useEffect(() => {
