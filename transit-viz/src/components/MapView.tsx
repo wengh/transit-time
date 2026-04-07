@@ -225,6 +225,7 @@ export default function MapView(): React.ReactNode {
     }
 
     // Desktop: double-click sets source
+    let lastPinTime = 0;
     function onDblClick(e: L.LeafletMouseEvent) {
       if (!stateRef.current.router) return;
       // Prevent on mobile (handled by long press)
@@ -245,10 +246,14 @@ export default function MapView(): React.ReactNode {
       }
 
       if (s.pinnedNode !== null) {
+        // If we just pinned this destination within 300ms, this click is the second
+        // click of a double-click — swallow it so dblclick can set source cleanly.
+        if (!isTouchDevice && Date.now() - lastPinTime < 300) return;
         dispatch({ type: 'UNPIN_DESTINATION' });
       } else {
         const node = snapToNode(e.latlng.lat, e.latlng.lng);
         if (node !== null) {
+          lastPinTime = Date.now();
           showDestination(node, true);
         }
       }
