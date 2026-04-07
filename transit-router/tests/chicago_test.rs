@@ -88,12 +88,15 @@ fn test_chicago_route() {
         max_time,
     );
 
-    let dest_arrival = result[dest_node as usize].arrival_time;
-    if dest_arrival == u32::MAX {
+    let dest_arrival_delta = result[dest_node as usize].arrival_delta;
+    if dest_arrival_delta == u16::MAX {
         eprintln!("ERROR: Destination is unreachable!");
 
         // Check reachability stats
-        let reachable = result.iter().filter(|r| r.arrival_time != u32::MAX).count();
+        let reachable = result
+            .iter()
+            .filter(|r| r.arrival_delta != u16::MAX)
+            .count();
         let transit_reached = result.iter().filter(|r| r.route_index != u32::MAX).count();
         eprintln!(
             "Total reachable: {}, via transit: {}",
@@ -102,7 +105,8 @@ fn test_chicago_route() {
         panic!("Destination unreachable");
     }
 
-    let travel_time_sec = dest_arrival - departure_time;
+    let dest_arrival = departure_time + dest_arrival_delta as u32;
+    let travel_time_sec = dest_arrival_delta as u32;
     let travel_min = travel_time_sec / 60;
     let arrival_h = dest_arrival / 3600;
     let arrival_m = (dest_arrival % 3600) / 60;
@@ -125,7 +129,7 @@ fn test_chicago_route() {
         let node = path_flat[i];
         let edge_type = path_flat[i + 1];
         let route_idx = path_flat[i + 2];
-        let arrival = sssp.results[node as usize].arrival_time;
+        let arrival = departure_time + sssp.results[node as usize].arrival_delta as u32;
         let stop_name = if prepared.node_is_stop[node as usize] {
             prepared
                 .node_stop_indices
@@ -264,16 +268,16 @@ fn test_green_line_no_pink_transfer() {
     );
 
     assert_ne!(
-        result[dest as usize].arrival_time,
-        u32::MAX,
+        result[dest as usize].arrival_delta,
+        u16::MAX,
         "Dest should be reachable"
     );
 
     let dest_r = &result[dest as usize];
     eprintln!(
         "Dest: arrival={} ({}s travel), route={}, edge_type={}",
-        dest_r.arrival_time,
-        dest_r.arrival_time - departure_time,
+        departure_time + dest_r.arrival_delta as u32,
+        dest_r.arrival_delta,
         dest_r.route_index,
         if dest_r.route_index == u32::MAX { 0 } else { 1 }
     );
@@ -292,7 +296,7 @@ fn test_green_line_no_pink_transfer() {
         let node = path_flat[i] as usize;
         let edge_type = path_flat[i + 1];
         let route_idx = path_flat[i + 2];
-        let arrival = sssp.results[node].arrival_time;
+        let arrival = departure_time + sssp.results[node].arrival_delta as u32;
 
         let stop_name = if prepared.node_is_stop[node] {
             prepared
@@ -337,7 +341,9 @@ fn test_green_line_no_pink_transfer() {
         eprintln!("\nDamen (node {}) details:", damen_node);
         eprintln!(
             "  arrival={}, route_index={}, prev_node={}",
-            dr.arrival_time, dr.route_index, prev
+            departure_time + dr.arrival_delta as u32,
+            dr.route_index,
+            prev
         );
         if (prev as usize) < sssp.results.len() {
             let pr = &sssp.results[prev as usize];
@@ -358,7 +364,10 @@ fn test_green_line_no_pink_transfer() {
             };
             eprintln!(
                 "  prev_node {} = '{}' route='{}' arrival={}",
-                prev, prev_stop, prev_route, pr.arrival_time
+                prev,
+                prev_stop,
+                prev_route,
+                departure_time + pr.arrival_delta as u32
             );
         }
     }
@@ -375,7 +384,9 @@ fn test_green_line_no_pink_transfer() {
         eprintln!("\nAshland (node {}) details:", ashland_node);
         eprintln!(
             "  arrival={}, route='{}', prev_node={}",
-            ar.arrival_time, ar_route, ar.prev_node
+            departure_time + ar.arrival_delta as u32,
+            ar_route,
+            ar.prev_node
         );
     }
 

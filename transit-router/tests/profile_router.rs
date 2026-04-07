@@ -75,7 +75,10 @@ fn profile_hour_window() {
         );
         let elapsed = start.elapsed().as_micros();
 
-        let reachable = result.iter().filter(|r| r.arrival_time != u32::MAX).count();
+        let reachable = result
+            .iter()
+            .filter(|r| r.arrival_delta != u16::MAX)
+            .count();
         let via_transit = result.iter().filter(|r| r.route_index != u32::MAX).count();
 
         eprintln!(

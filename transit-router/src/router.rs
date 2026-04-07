@@ -15,22 +15,23 @@ pub const DEFAULT_MAX_TIME: u32 = 7200; // 2 hours
 
 #[derive(Clone, Copy)]
 pub struct NodeResult {
-    pub arrival_time: u32,
-    pub prev_node: u32,
+    /// Seconds elapsed since departure_time. u16::MAX = unreached.
+    pub arrival_delta: u16,
+    /// Seconds since departure_time when the transit vehicle left the boarding stop.
+    /// u16::MAX = no boarding (walk edge or source). Used to compute wait times.
+    pub boarding_delta: u16,
     /// u32::MAX = walk edge, otherwise the route index.
     /// edge_type (0=walk/1=transit) is derived from this at reconstruction time.
     pub route_index: u32,
-    /// Time the transit vehicle departed from the boarding stop.
-    /// 0 for walk edges. Used to compute wait times.
-    pub boarding_time: u32,
+    pub prev_node: u32,
 }
 
 impl NodeResult {
     pub const UNREACHED: NodeResult = NodeResult {
-        arrival_time: u32::MAX,
+        arrival_delta: u16::MAX,
+        boarding_delta: u16::MAX,
         prev_node: u32::MAX,
         route_index: u32::MAX,
-        boarding_time: 0,
     };
 
     /// Returns true if `self` is a strictly better path than `other`.
@@ -38,8 +39,8 @@ impl NodeResult {
     /// (= you can leave home later and still make it).
     /// leave_home is tracked in a parallel transient Vec, not stored in NodeResult.
     fn is_better_than(&self, self_lh: u32, other: &NodeResult, other_lh: u32) -> bool {
-        self.arrival_time < other.arrival_time
-            || (self.arrival_time == other.arrival_time && self_lh > other_lh)
+        self.arrival_delta < other.arrival_delta
+            || (self.arrival_delta == other.arrival_delta && self_lh > other_lh)
     }
 }
 
@@ -183,10 +184,10 @@ fn run_tdd_inner(
     let n = data.num_nodes;
     let mut result = vec![NodeResult::UNREACHED; n];
     result[source_node as usize] = NodeResult {
-        arrival_time: departure_time,
+        arrival_delta: 0,
+        boarding_delta: u16::MAX,
         prev_node: u32::MAX,
         route_index: u32::MAX,
-        boarding_time: 0,
     };
 
     // Tracks which flat event index (into events_by_stop.data) last put us at each node.
@@ -203,7 +204,7 @@ fn run_tdd_inner(
     pq.push(Reverse((departure_time, source_node)));
 
     while let Some(Reverse((t_current, node))) = pq.pop() {
-        if t_current > result[node as usize].arrival_time {
+        if (t_current - departure_time) > result[node as usize].arrival_delta as u32 {
             continue;
         }
 
@@ -221,10 +222,10 @@ fn run_tdd_inner(
             let wt = (distance / WALKING_SPEED_MPS) as u32;
             let arrival = t_current + wt;
             let candidate = NodeResult {
-                arrival_time: arrival,
+                arrival_delta: (arrival - departure_time) as u16,
+                boarding_delta: u16::MAX,
                 prev_node: node,
                 route_index: u32::MAX,
-                boarding_time: 0,
             };
             if candidate.is_better_than(
                 current_leave_home,
@@ -316,10 +317,10 @@ fn scan_pattern_at_stop(
                     current_leave_home
                 };
                 let candidate = NodeResult {
-                    arrival_time: arrival,
+                    arrival_delta: (arrival - departure_time) as u16,
+                    boarding_delta: (boarding_time - departure_time) as u16,
                     prev_node: node,
                     route_index: freq.route_index,
-                    boarding_time,
                 };
                 if candidate.is_better_than(
                     lh,
@@ -402,6 +403,7 @@ fn scan_pattern_at_stop(
             event.next_event_index,
             dep_time + event.travel_time,
             dep_time,
+            departure_time,
             result,
             leave_home,
             arrived_by_event,
@@ -420,6 +422,7 @@ fn ride_trip(
     mut next_event_idx: u32,
     mut current_arrival: u32,
     boarding_time: u32,
+    departure_time: u32,
     result: &mut Vec<NodeResult>,
     leave_home: &mut Vec<u32>,
     arrived_by_event: &mut Vec<u32>,
@@ -430,14 +433,14 @@ fn ride_trip(
         let dest_node = data.stop_node_map[event.stop_index as usize];
         if dest_node != u32::MAX {
             let candidate = NodeResult {
-                arrival_time: current_arrival,
+                arrival_delta: (current_arrival - departure_time) as u16,
+                boarding_delta: (boarding_time - departure_time) as u16,
                 // Always point back to boarding_node. Intermediate stops may be
                 // overwritten by other paths later, so we can't use them as
                 // stable predecessors. Path reconstruction shows the boarding
                 // stop (from the previous walk segment) and the alighting stop.
                 prev_node: boarding_node,
                 route_index,
-                boarding_time,
             };
             if candidate.is_better_than(
                 trip_leave_home,

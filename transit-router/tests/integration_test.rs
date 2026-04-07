@@ -50,14 +50,17 @@ fn test_load_and_route_chapel_hill() {
     let result = transit_router::router::run_tdd(&prepared, source, departure_time, 0, 60);
 
     // Count reachable nodes
-    let reachable = result.iter().filter(|r| r.arrival_time != u32::MAX).count();
+    let reachable = result
+        .iter()
+        .filter(|r| r.arrival_delta != u16::MAX)
+        .count();
     eprintln!("Reachable nodes: {} / {}", reachable, prepared.num_nodes);
     assert!(reachable > 0, "Should reach at least some nodes");
 
     // Source should be reachable with 0 travel time
     assert_eq!(
-        result[source as usize].arrival_time, departure_time,
-        "Source should have departure time as arrival"
+        result[source as usize].arrival_delta, 0,
+        "Source should have zero arrival delta"
     );
 
     // Check some nodes have transit arrivals
@@ -66,9 +69,12 @@ fn test_load_and_route_chapel_hill() {
 
     // Verify travel times are reasonable (< 2 hours from departure)
     for r in &result {
-        if r.arrival_time != u32::MAX {
-            let travel = r.arrival_time - departure_time;
-            assert!(travel <= 7200, "Travel time {} exceeds max", travel);
+        if r.arrival_delta != u16::MAX {
+            assert!(
+                r.arrival_delta as u32 <= 7200,
+                "Travel time {} exceeds max",
+                r.arrival_delta
+            );
         }
     }
 
@@ -94,7 +100,10 @@ fn test_router_edge_cases() {
     let source = transit_router::router::snap_to_node(&prepared, 35.91, -79.05);
     let result = transit_router::router::run_tdd(&prepared, source, 28800, 999, 60);
     // Should still reach walking nodes
-    let reachable = result.iter().filter(|r| r.arrival_time != u32::MAX).count();
+    let reachable = result
+        .iter()
+        .filter(|r| r.arrival_delta != u16::MAX)
+        .count();
     assert!(
         reachable > 0,
         "Should still reach walking nodes with invalid pattern"
@@ -104,7 +113,7 @@ fn test_router_edge_cases() {
     let result_midnight = transit_router::router::run_tdd(&prepared, source, 0, 0, 60);
     let reachable_midnight = result_midnight
         .iter()
-        .filter(|r| r.arrival_time != u32::MAX)
+        .filter(|r| r.arrival_delta != u16::MAX)
         .count();
     assert!(
         reachable_midnight > 0,
@@ -115,7 +124,7 @@ fn test_router_edge_cases() {
     let result_late = transit_router::router::run_tdd(&prepared, source, 86340, 0, 60);
     let reachable_late = result_late
         .iter()
-        .filter(|r| r.arrival_time != u32::MAX)
+        .filter(|r| r.arrival_delta != u16::MAX)
         .count();
     assert!(reachable_late > 0, "Should reach nodes even at late hour");
 

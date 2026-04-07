@@ -112,14 +112,14 @@ fn montreal_debug_patterns() {
 
     let reachable = results
         .iter()
-        .filter(|r| r.arrival_time != u32::MAX)
+        .filter(|r| r.arrival_delta != u16::MAX)
         .count();
     let via_transit = results.iter().filter(|r| r.route_index != u32::MAX).count();
     eprintln!("Reachable: {}, via transit: {}", reachable, via_transit);
 
     // Show some transit-reached nodes
     for (i, r) in results.iter().enumerate() {
-        if r.route_index != u32::MAX && r.arrival_time != u32::MAX {
+        if r.route_index != u32::MAX && r.arrival_delta != u16::MAX {
             let route = if (r.route_index as usize) < data.route_names.len() {
                 &data.route_names[r.route_index as usize]
             } else {
@@ -127,7 +127,9 @@ fn montreal_debug_patterns() {
             };
             eprintln!(
                 "  transit node {} arrival={} route='{}'",
-                i, r.arrival_time, route
+                i,
+                departure + r.arrival_delta as u32,
+                route
             );
             // Just show the first 5
             if via_transit > 0 {
@@ -144,7 +146,7 @@ fn montreal_debug_patterns() {
     let dst_r = &results[dst_node as usize];
     eprintln!(
         "dst result: arrival={} edge_type={} route={}",
-        dst_r.arrival_time,
+        departure + dst_r.arrival_delta as u32,
         if dst_r.route_index == u32::MAX { 0 } else { 1 },
         dst_r.route_index
     );
@@ -155,12 +157,12 @@ fn montreal_debug_patterns() {
     let mut near_transit: Vec<(f64, usize, u32)> = results
         .iter()
         .enumerate()
-        .filter(|(_, r)| r.route_index != u32::MAX && r.arrival_time != u32::MAX)
+        .filter(|(_, r)| r.route_index != u32::MAX && r.arrival_delta != u16::MAX)
         .map(|(i, r)| {
             let dlat = data.nodes[i].lat - dst_lat;
             let dlon = data.nodes[i].lon - dst_lon;
             let dist = (dlat * dlat + dlon * dlon).sqrt();
-            (dist, i, r.arrival_time)
+            (dist, i, departure + r.arrival_delta as u32)
         })
         .collect();
     near_transit.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
@@ -193,7 +195,7 @@ fn montreal_debug_patterns() {
     let transit_nodes: Vec<(f64, f64)> = results
         .iter()
         .enumerate()
-        .filter(|(_, r)| r.route_index != u32::MAX && r.arrival_time != u32::MAX)
+        .filter(|(_, r)| r.route_index != u32::MAX && r.arrival_delta != u16::MAX)
         .map(|(i, _)| (data.nodes[i].lat, data.nodes[i].lon))
         .collect();
     if !transit_nodes.is_empty() {
@@ -217,7 +219,7 @@ fn montreal_debug_patterns() {
     // What routes are being used for transit-reachable nodes?
     let mut route_counts: std::collections::HashMap<String, u32> = Default::default();
     for r in results.iter() {
-        if r.route_index != u32::MAX && r.arrival_time != u32::MAX {
+        if r.route_index != u32::MAX && r.arrival_delta != u16::MAX {
             let name = if (r.route_index as usize) < data.route_names.len() {
                 data.route_names[r.route_index as usize].clone()
             } else {

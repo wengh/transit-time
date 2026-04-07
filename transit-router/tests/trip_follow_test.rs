@@ -344,7 +344,7 @@ fn test_trip_following_prefers_direct_green() {
     let data = build_test_data(false);
     let departure_time = 28800u32;
     let result = run_tdd_multi(&data, 0, departure_time, &[0], 60, 3600);
-    assert_ne!(result[4].arrival_time, u32::MAX);
+    assert_ne!(result[4].arrival_delta, u16::MAX);
     assert_eq!(result[4].route_index, 1);
 }
 
@@ -353,7 +353,7 @@ fn test_trip_following_better_leave_home() {
     let data = build_test_data(true);
     let departure_time = 28800u32;
     let result = run_tdd_multi(&data, 0, departure_time, &[0], 60, 3600);
-    assert_eq!(result[4].arrival_time, 29340);
+    assert_eq!(result[4].arrival_delta, 540u16); // 29340 - 28800 = 540
 }
 
 #[test]

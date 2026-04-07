@@ -53,7 +53,7 @@ pub fn reconstruct_path(_data: &PreparedData, sssp: &SsspResult, destination: u3
 
     loop {
         let r = &sssp.results[current as usize];
-        if r.arrival_time == u32::MAX {
+        if r.arrival_delta == u16::MAX {
             return Vec::new();
         }
         let edge_type = if r.route_index == u32::MAX {
@@ -193,10 +193,10 @@ impl TransitRouter {
         result
             .iter()
             .map(|r| {
-                if r.arrival_time == u32::MAX {
+                if r.arrival_delta == u16::MAX {
                     f64::NAN
                 } else {
-                    (r.arrival_time - departure_time) as f64
+                    r.arrival_delta as f64
                 }
             })
             .collect()
@@ -223,10 +223,10 @@ impl TransitRouter {
         result
             .iter()
             .map(|r| {
-                if r.arrival_time == u32::MAX {
+                if r.arrival_delta == u16::MAX {
                     f64::NAN
                 } else {
-                    (r.arrival_time - departure_time) as f64
+                    r.arrival_delta as f64
                 }
             })
             .collect()
@@ -267,8 +267,8 @@ impl TransitRouter {
             let mut count = vec![0u32; num_nodes];
 
             for (j, r) in result.iter().enumerate() {
-                if r.arrival_time != u32::MAX {
-                    sum_times[j] += r.arrival_time - dep_time;
+                if r.arrival_delta != u16::MAX {
+                    sum_times[j] += r.arrival_delta as u32;
                     count[j] += 1;
                 }
             }
@@ -357,7 +357,12 @@ impl TransitRouter {
     }
 
     pub fn node_arrival_time(&self, sssp: &WasmSsspResult, node: u32) -> u32 {
-        sssp.inner.results[node as usize].arrival_time
+        let r = &sssp.inner.results[node as usize];
+        if r.arrival_delta == u16::MAX {
+            u32::MAX
+        } else {
+            sssp.inner.departure_time + r.arrival_delta as u32
+        }
     }
 
     pub fn node_leave_home(&self, _sssp: &WasmSsspResult, _node: u32) -> u32 {
@@ -365,7 +370,12 @@ impl TransitRouter {
     }
 
     pub fn node_boarding_time(&self, sssp: &WasmSsspResult, node: u32) -> u32 {
-        sssp.inner.results[node as usize].boarding_time
+        let r = &sssp.inner.results[node as usize];
+        if r.boarding_delta == u16::MAX {
+            0 // walk edge or source — no boarding time
+        } else {
+            sssp.inner.departure_time + r.boarding_delta as u32
+        }
     }
 
     pub fn sssp_departure_time(&self, sssp: &WasmSsspResult) -> u32 {
