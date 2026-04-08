@@ -3,6 +3,7 @@ mod download;
 mod graph;
 mod gtfs;
 mod osm;
+mod transitland;
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -15,17 +16,59 @@ use std::path::{Path, PathBuf};
 #[command(name = "transit-prep")]
 #[command(about = "Download and preprocess transit data for a city")]
 struct Cli {
-    /// Path to city JSON file (e.g. cities/chicago.jsonc)
-    #[arg(long)]
-    city_file: PathBuf,
+    #[command(subcommand)]
+    command: Commands,
+}
 
-    /// Output binary file path
-    #[arg(long, default_value = "city.bin")]
-    output: PathBuf,
+#[derive(clap::Subcommand)]
+enum Commands {
+    /// Process a city config into binary transit data
+    Prep {
+        /// Path to city JSON file (e.g. cities/chicago.jsonc)
+        #[arg(long)]
+        city_file: PathBuf,
 
-    /// Cache directory
-    #[arg(long, default_value = "cache")]
-    cache_dir: PathBuf,
+        /// Output binary file path
+        #[arg(long, default_value = "city.bin")]
+        output: PathBuf,
+
+        /// Cache directory
+        #[arg(long, default_value = "cache")]
+        cache_dir: PathBuf,
+    },
+    /// Check if any Transitland feeds have newer versions upstream.
+    /// Exits with code 0 if all feeds are up to date, 1 if any have changed.
+    Check {
+        /// Path to city JSON file
+        #[arg(long)]
+        city_file: PathBuf,
+
+        /// Cache directory
+        #[arg(long, default_value = "cache")]
+        cache_dir: PathBuf,
+    },
+    /// Generate a city config file by querying Transitland for feeds in a geographic area
+    Generate {
+        /// Output JSONC file path (e.g. cities/portland.jsonc)
+        #[arg(long)]
+        output: PathBuf,
+
+        /// City ID (used for naming)
+        #[arg(long)]
+        id: String,
+
+        /// BBBike city name (e.g. "Portland")
+        #[arg(long)]
+        bbbike_name: Option<String>,
+
+        /// Direct OSM PBF URL
+        #[arg(long)]
+        osm_url: Option<String>,
+
+        /// Cache directory
+        #[arg(long, default_value = "cache")]
+        cache_dir: PathBuf,
+    },
 }
 
 #[derive(serde::Deserialize)]
@@ -87,17 +130,94 @@ fn warn_if_expired(feed_id: &str, data: &gtfs::GtfsData) {
     }
 }
 
-fn fetch_gtfs_url(url: &str, cache_dir: &Path) -> Result<PathBuf> {
-    let hash = url.bytes().fold(0xcbf29ce484222325u64, |h, b| {
-        h.wrapping_mul(0x100000001b3) ^ b as u64
-    });
-    let cache_path = cache_dir.join(format!("url_{:016x}.gtfs.zip", hash));
-    if cache_path.exists() {
-        eprintln!("Using cached GTFS: {:?}", cache_path);
-        return Ok(cache_path);
+/// Extract Transitland onestop_id and api_key from a Transitland download URL, if it is one.
+fn parse_transitland_url(url: &str) -> Option<(&str, &str)> {
+    let prefix = "https://api.transit.land/api/v2/rest/feeds/";
+    let suffix = "/download_latest_feed_version?apikey=";
+    if let Some(rest) = url.strip_prefix(prefix) {
+        if let Some(pos) = rest.find(suffix) {
+            let onestop_id = &rest[..pos];
+            let api_key = &rest[pos + suffix.len()..];
+            return Some((onestop_id, api_key));
+        }
     }
+    None
+}
+
+/// FNV-1a hash of a URL.
+fn url_hash(url: &str) -> u64 {
+    url.bytes().fold(0xcbf29ce484222325u64, |h, b| {
+        h.wrapping_mul(0x100000001b3) ^ b as u64
+    })
+}
+
+/// Cache path for the GTFS zip download.
+/// Transitland feeds use the onestop ID as filename; direct URLs use a hash.
+fn gtfs_cache_path(url: &str, cache_dir: &Path) -> PathBuf {
+    if let Some((onestop_id, _)) = parse_transitland_url(url) {
+        cache_dir.join(format!("{}.gtfs.zip", onestop_id))
+    } else {
+        cache_dir.join(format!("url_{:016x}.gtfs.zip", url_hash(url)))
+    }
+}
+
+/// Cache path for the sha1 sidecar (stored in cache_dir/sha1/ so it can be
+/// cached separately from the large download files in CI).
+fn gtfs_sha1_path(url: &str, cache_dir: &Path) -> PathBuf {
+    if let Some((onestop_id, _)) = parse_transitland_url(url) {
+        cache_dir.join("sha1").join(format!("{}.sha1", onestop_id))
+    } else {
+        cache_dir
+            .join("sha1")
+            .join(format!("url_{:016x}.sha1", url_hash(url)))
+    }
+}
+
+fn fetch_gtfs_url(url: &str, cache_dir: &Path) -> Result<PathBuf> {
+    let cache_path = gtfs_cache_path(url, cache_dir);
+    let sha1_path = gtfs_sha1_path(url, cache_dir);
+
+    // If cached, check if Transitland has a newer version
+    if cache_path.exists() {
+        if let Some((onestop_id, api_key)) = parse_transitland_url(url) {
+            let local_sha1 = std::fs::read_to_string(&sha1_path).unwrap_or_default();
+            match transitland::latest_feed_sha1(api_key, onestop_id) {
+                Ok(Some(remote_sha1)) if !local_sha1.is_empty() && local_sha1 == remote_sha1 => {
+                    eprintln!("Using cached GTFS (up to date): {:?}", cache_path);
+                    return Ok(cache_path);
+                }
+                Ok(Some(remote_sha1)) => {
+                    eprintln!(
+                        "Transitland feed '{}' has new version (sha1: {}), re-downloading...",
+                        onestop_id,
+                        &remote_sha1[..12.min(remote_sha1.len())]
+                    );
+                    // Fall through to download
+                }
+                Ok(None) => {
+                    eprintln!(
+                        "Using cached GTFS (no remote sha1 to compare): {:?}",
+                        cache_path
+                    );
+                    return Ok(cache_path);
+                }
+                Err(e) => {
+                    eprintln!("WARNING: could not check Transitland for updates: {}", e);
+                    eprintln!("Using cached GTFS: {:?}", cache_path);
+                    return Ok(cache_path);
+                }
+            }
+        } else {
+            eprintln!("Using cached GTFS: {:?}", cache_path);
+            return Ok(cache_path);
+        }
+    }
+
+    let tl_info = parse_transitland_url(url).map(|(id, key)| (id.to_string(), key.to_string()));
+
     download::with_download_lock(&cache_path, |path| {
-        if path.exists() {
+        // Re-check after acquiring lock (parallel process may have downloaded)
+        if path.exists() && tl_info.is_none() {
             eprintln!(
                 "Using cached GTFS (downloaded by parallel process): {:?}",
                 path
@@ -106,13 +226,24 @@ fn fetch_gtfs_url(url: &str, cache_dir: &Path) -> Result<PathBuf> {
         }
         eprintln!("Downloading GTFS from: {}", url);
         let client = reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(120))
+            .timeout(std::time::Duration::from_secs(300))
             .user_agent("Mozilla/5.0 (compatible; transit-prep/1.0)")
             .build()?;
         let bytes = client.get(url).send()?.error_for_status()?.bytes()?;
         let tmp = path.with_extension("zip.tmp");
         std::fs::File::create(&tmp)?.write_all(&bytes)?;
         std::fs::rename(&tmp, path)?;
+
+        // Save the sha1 for future staleness checks
+        if let Some((onestop_id, api_key)) = &tl_info {
+            match transitland::latest_feed_sha1(api_key, onestop_id) {
+                Ok(Some(sha1)) => {
+                    let _ = std::fs::write(&sha1_path, &sha1);
+                }
+                _ => {}
+            }
+        }
+
         Ok(path.to_path_buf())
     })
 }
@@ -129,33 +260,278 @@ fn parse_bbox(s: &str) -> Result<(f64, f64, f64, f64)> {
     Ok((parts[0], parts[1], parts[2], parts[3]))
 }
 
+/// Resolve a feed ID to a download URL.
+/// Direct URLs pass through; Transitland onestop IDs (starting with "f-") are resolved
+/// to Transitland's download endpoint (which serves a hosted copy of the GTFS zip).
+fn resolve_feed_id(feed_id: &str, api_key: Option<&str>) -> Result<String> {
+    if feed_id.starts_with("http://") || feed_id.starts_with("https://") {
+        return Ok(feed_id.to_string());
+    }
+    if feed_id.starts_with("f-") {
+        let key = api_key.with_context(|| {
+            format!(
+                "Feed '{}' is a Transitland ID but TRANSITLAND_API_KEY is not set",
+                feed_id
+            )
+        })?;
+        let url = transitland::download_url(key, feed_id);
+        eprintln!("Resolved '{}' -> Transitland download", feed_id);
+        return Ok(url);
+    }
+    anyhow::bail!(
+        "Unknown feed_id format: '{}' (expected URL or Transitland onestop ID starting with 'f-')",
+        feed_id
+    )
+}
+
 fn main() -> Result<()> {
+    dotenvy::dotenv().ok();
     let cli = Cli::parse();
 
-    let city_json = std::fs::read_to_string(&cli.city_file)
-        .with_context(|| format!("Failed to read city file: {:?}", cli.city_file))?;
+    match cli.command {
+        Commands::Prep {
+            city_file,
+            output,
+            cache_dir,
+        } => cmd_prep(&city_file, &output, &cache_dir),
+        Commands::Check {
+            city_file,
+            cache_dir,
+        } => {
+            let stale = cmd_check(&city_file, &cache_dir)?;
+            if stale {
+                std::process::exit(1);
+            }
+            Ok(())
+        }
+        Commands::Generate {
+            output,
+            id,
+            bbbike_name,
+            osm_url,
+            cache_dir,
+        } => cmd_generate(
+            &output,
+            &id,
+            bbbike_name.as_deref(),
+            osm_url.as_deref(),
+            &cache_dir,
+        ),
+    }
+}
+
+/// Check if any Transitland feeds have newer versions. Returns true if stale.
+fn cmd_check(city_file: &Path, cache_dir: &Path) -> Result<bool> {
+    let city_json = std::fs::read_to_string(city_file)
+        .with_context(|| format!("Failed to read city file: {:?}", city_file))?;
     let city: CityConfig = parse_to_serde_value(&city_json, &Default::default())
-        .with_context(|| format!("Failed to parse city file: {:?}", cli.city_file))?;
+        .with_context(|| format!("Failed to parse city file: {:?}", city_file))?;
+
+    let api_key = transitland::get_api_key().ok();
+
+    for feed_id in &city.feed_ids {
+        let url = resolve_feed_id(feed_id, api_key.as_deref())?;
+        let Some((onestop_id, api_key)) = parse_transitland_url(&url) else {
+            continue; // direct URLs — no remote check available
+        };
+
+        let sha1_path = gtfs_sha1_path(&url, cache_dir);
+        let local_sha1 = std::fs::read_to_string(&sha1_path).unwrap_or_default();
+
+        if local_sha1.is_empty() {
+            eprintln!("Feed '{}': no local sha1 — needs download", onestop_id);
+            return Ok(true);
+        }
+
+        match transitland::latest_feed_sha1(api_key, onestop_id) {
+            Ok(Some(remote_sha1)) if remote_sha1 != local_sha1 => {
+                eprintln!(
+                    "Feed '{}': stale (local: {}..., remote: {}...)",
+                    onestop_id,
+                    &local_sha1[..12.min(local_sha1.len())],
+                    &remote_sha1[..12.min(remote_sha1.len())]
+                );
+                return Ok(true);
+            }
+            Ok(Some(_)) => {
+                eprintln!("Feed '{}': up to date", onestop_id);
+            }
+            Ok(None) => {
+                eprintln!("Feed '{}': no remote sha1 available", onestop_id);
+            }
+            Err(e) => {
+                eprintln!("WARNING: could not check '{}': {}", onestop_id, e);
+            }
+        }
+    }
+
+    eprintln!("All feeds up to date");
+    Ok(false)
+}
+
+fn cmd_prep(city_file: &Path, output: &Path, cache_dir: &Path) -> Result<()> {
+    let city_json = std::fs::read_to_string(city_file)
+        .with_context(|| format!("Failed to read city file: {:?}", city_file))?;
+    let city: CityConfig = parse_to_serde_value(&city_json, &Default::default())
+        .with_context(|| format!("Failed to parse city file: {:?}", city_file))?;
 
     anyhow::ensure!(
         !city.feed_ids.is_empty(),
         "feed_ids must not be empty in {:?}",
-        cli.city_file
+        city_file
     );
 
     let bbox = parse_bbox(&city.bbox)?;
 
-    std::fs::create_dir_all(&cli.cache_dir)?;
+    std::fs::create_dir_all(cache_dir.join("sha1"))?;
+
+    // Resolve Transitland IDs to URLs
+    let api_key = transitland::get_api_key().ok();
+    let has_transitland_ids = city.feed_ids.iter().any(|f| f.starts_with("f-"));
+    if has_transitland_ids && api_key.is_none() {
+        anyhow::bail!("Config contains Transitland feed IDs but TRANSITLAND_API_KEY is not set");
+    }
+    let resolved_feeds: Vec<String> = city
+        .feed_ids
+        .iter()
+        .map(|fid| resolve_feed_id(fid, api_key.as_deref()))
+        .collect::<Result<Vec<_>>>()?;
 
     run_prep(
         &city.id,
-        &city.feed_ids,
+        &resolved_feeds,
         city.bbbike_name.as_deref(),
         city.osm_url.as_deref(),
         bbox,
-        &cli.output,
-        &cli.cache_dir,
+        output,
+        cache_dir,
     )
+}
+
+fn cmd_generate(
+    output: &Path,
+    id: &str,
+    bbbike_name: Option<&str>,
+    osm_url: Option<&str>,
+    cache_dir: &Path,
+) -> Result<()> {
+    anyhow::ensure!(
+        bbbike_name.is_some() || osm_url.is_some(),
+        "Either --bbbike-name or --osm-url must be provided"
+    );
+
+    let api_key = transitland::get_api_key()?;
+    std::fs::create_dir_all(cache_dir)?;
+
+    // Step 1: Download OSM PBF
+    let pbf_path = if let Some(name) = bbbike_name {
+        let cache_path = cache_dir.join(format!("{}.osm.pbf", osm::sanitize(id)));
+        if cache_path.exists() {
+            eprintln!("Using cached PBF: {:?}", cache_path);
+            cache_path
+        } else {
+            osm::try_bbbike_download(name, &cache_path)?
+        }
+    } else if let Some(url) = osm_url {
+        let cache_path = cache_dir.join(format!("{}.osm.pbf", osm::sanitize(id)));
+        if cache_path.exists() {
+            eprintln!("Using cached PBF: {:?}", cache_path);
+            cache_path
+        } else {
+            eprintln!("Downloading OSM from: {}", url);
+            let client = reqwest::blocking::Client::builder()
+                .timeout(std::time::Duration::from_secs(600))
+                .user_agent("Mozilla/5.0 (compatible; transit-prep/1.0)")
+                .build()?;
+            let bytes = client.get(url).send()?.error_for_status()?.bytes()?;
+            eprintln!("Downloaded PBF: {:.1} MB", bytes.len() as f64 / 1_048_576.0);
+            let tmp = cache_path.with_extension("tmp");
+            std::fs::File::create(&tmp)?.write_all(&bytes)?;
+            std::fs::rename(&tmp, &cache_path)?;
+            cache_path
+        }
+    } else {
+        unreachable!()
+    };
+
+    // Step 2: Extract bbox from PBF header
+    eprintln!("\n--- Extracting bounding box from PBF ---");
+    let (min_lon, min_lat, max_lon, max_lat) = graph::extract_pbf_bbox(&pbf_path)?;
+    eprintln!(
+        "Bounding box: {:.4},{:.4},{:.4},{:.4}",
+        min_lon, min_lat, max_lon, max_lat
+    );
+
+    // Step 3: Query Transitland
+    eprintln!("\n--- Querying Transitland for feeds ---");
+    let bbox = (min_lon, min_lat, max_lon, max_lat);
+    let feeds = transitland::query_feeds_in_bbox(&api_key, bbox)?;
+
+    eprintln!("\n--- Querying Transitland for operators ---");
+    let op_pairs = transitland::query_operators_in_bbox(&api_key, bbox)?;
+    let op_map = transitland::build_feed_operator_map(&op_pairs);
+
+    // Filter to feeds with a download URL
+    let feeds: Vec<_> = feeds
+        .into_iter()
+        .filter(|f| {
+            f.urls
+                .static_current
+                .as_ref()
+                .map(|u| !u.is_empty())
+                .unwrap_or(false)
+        })
+        .collect();
+
+    eprintln!("\n{} feeds with download URLs found", feeds.len());
+
+    // Step 4: Compute center
+    let center_lat = (min_lat + max_lat) / 2.0;
+    let center_lon = (min_lon + max_lon) / 2.0;
+
+    // Step 5: Write JSONC config
+    let mut out = String::new();
+    out.push_str("{\n");
+    out.push_str(&format!("    \"id\": \"{}\",\n", id));
+    if let Some(name) = bbbike_name {
+        out.push_str(&format!("    \"bbbike_name\": \"{}\",\n", name));
+    } else if let Some(url) = osm_url {
+        out.push_str(&format!("    \"osm_url\": \"{}\",\n", url));
+    }
+    out.push_str("    \"feed_ids\": [\n");
+    for (i, feed) in feeds.iter().enumerate() {
+        let comma = if i + 1 < feeds.len() { "," } else { "" };
+        let comment = op_map
+            .get(&feed.onestop_id)
+            .map(|name| format!(" // {}", name))
+            .unwrap_or_default();
+        out.push_str(&format!(
+            "        \"{}\"{}{}\n",
+            feed.onestop_id, comma, comment
+        ));
+    }
+    out.push_str("    ],\n");
+    out.push_str("    \"name\": \"TODO\",\n");
+    out.push_str(&format!("    \"file\": \"{}.bin\",\n", id));
+    out.push_str(&format!(
+        "    \"bbox\": \"{:.4},{:.4},{:.4},{:.4}\",\n",
+        min_lon, min_lat, max_lon, max_lat
+    ));
+    out.push_str(&format!(
+        "    \"center\": [{:.3}, {:.3}],\n",
+        center_lat, center_lon
+    ));
+    out.push_str("    \"zoom\": 12,\n");
+    out.push_str("    \"detail\": \"TODO\"\n");
+    out.push_str("}\n");
+
+    if let Some(parent) = output.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(output, &out)?;
+    eprintln!("\nWrote config to {:?}", output);
+
+    Ok(())
 }
 
 pub fn run_prep(

@@ -1,8 +1,23 @@
-use anyhow::Result;
+use anyhow::{bail, Result};
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+
+/// Extract bounding box from a PBF file's header block.
+/// Returns (min_lon, min_lat, max_lon, max_lat).
+pub fn extract_pbf_bbox(path: &Path) -> Result<(f64, f64, f64, f64)> {
+    use osmpbf::blob::BlobReader;
+    let reader = BlobReader::from_path(path)?;
+    for blob in reader {
+        let blob = blob?;
+        let header = blob.to_headerblock()?;
+        if let Some(bbox) = header.bbox() {
+            return Ok((bbox.left, bbox.bottom, bbox.right, bbox.top));
+        }
+    }
+    bail!("PBF file has no bounding box in header")
+}
 
 use crate::gtfs::Stop;
 

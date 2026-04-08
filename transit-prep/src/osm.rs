@@ -87,7 +87,7 @@ pub fn fetch_osm(
 }
 
 /// Try to download a city PBF extract from BBBike.
-fn try_bbbike_download(bbbike_name: &str, cache_path: &Path) -> Result<PathBuf> {
+pub(crate) fn try_bbbike_download(bbbike_name: &str, cache_path: &Path) -> Result<PathBuf> {
     let url = format!("{}/{}/{}.osm.pbf", BBBIKE_BASE, bbbike_name, bbbike_name);
 
     eprintln!("Trying BBBike extract: {} ...", url);
@@ -161,7 +161,7 @@ out body;"#,
     bail!("All Overpass servers failed")
 }
 
-fn sanitize(s: &str) -> String {
+pub(crate) fn sanitize(s: &str) -> String {
     s.chars()
         .map(|c| {
             if c.is_alphanumeric() || c == '-' || c == '_' {

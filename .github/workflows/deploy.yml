@@ -56,25 +56,56 @@ jobs:
         run: make wasm
 
       # ── Data (.bin files) ──────────────────────────────────────────────────
-      # Two-layer cache: raw GTFS/OSM downloads (large, reused across builds)
-      # and the compiled .bin files (fast to restore, avoid full rebuild).
+      # Three-layer cache:
+      #   1. sha1 sidecars (tiny, always restored — used to check feed freshness)
+      #   2. raw GTFS/OSM downloads (large, only restored when a rebuild is needed)
+      #   3. compiled .bin files (fast to restore, avoid full rebuild)
 
-      - name: Cache raw GTFS/OSM downloads
+      - name: Cache feed version hashes
         uses: actions/cache@v4
         with:
-          path: cache/
-          key: ${{ runner.os }}-downloads-${{ hashFiles('cities/*.jsonc') }}
-          restore-keys: ${{ runner.os }}-downloads-
+          path: cache/sha1/
+          key: ${{ runner.os }}-sha1-${{ github.run_id }}
+          restore-keys: ${{ runner.os }}-sha1-
 
       - name: Cache compiled .bin files
         uses: actions/cache@v4
         id: bin-cache
         with:
           path: transit-viz/public/data/
-          key: ${{ runner.os }}-bins-${{ hashFiles('transit-prep/src/**', 'transit-router/src/**', 'cities/*.jsonc') }}
+          key: ${{ runner.os }}-bins-${{ hashFiles('transit-prep/src/**', 'transit-router/src/**', 'cities/*.jsonc') }}-${{ github.run_id }}
+          restore-keys: ${{ runner.os }}-bins-${{ hashFiles('transit-prep/src/**', 'transit-router/src/**', 'cities/*.jsonc') }}-
+
+      - name: Check for stale Transitland feeds (scheduled/manual runs)
+        id: check-feeds
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        env:
+          TRANSITLAND_API_KEY: ${{ secrets.TRANSITLAND_API_KEY }}
+        run: |
+          cargo build --release -p transit-prep
+          needs_rebuild=false
+          for f in cities/*.jsonc; do
+            city=$(basename "$f" .jsonc)
+            if ! cargo run --release -p transit-prep -- check --city-file "$f" --cache-dir cache; then
+              echo "::notice::$city has updated feeds, will rebuild"
+              rm -f "transit-viz/public/data/${city}.bin"
+              needs_rebuild=true
+            fi
+          done
+          echo "needs_rebuild=$needs_rebuild" >> "$GITHUB_OUTPUT"
+
+      - name: Cache raw GTFS/OSM downloads
+        uses: actions/cache@v4
+        if: github.event_name == 'push' || steps.check-feeds.outputs.needs_rebuild == 'true'
+        with:
+          path: cache/
+          key: ${{ runner.os }}-downloads-${{ hashFiles('cities/*.jsonc') }}
+          restore-keys: ${{ runner.os }}-downloads-
 
       - name: Build data
-        if: steps.bin-cache.outputs.cache-hit != 'true'
+        if: github.event_name == 'push' || steps.check-feeds.outputs.needs_rebuild == 'true'
+        env:
+          TRANSITLAND_API_KEY: ${{ secrets.TRANSITLAND_API_KEY }}
         run: make data-all -j4
 
       # ── Frontend ───────────────────────────────────────────────────────────

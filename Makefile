@@ -14,12 +14,12 @@ wasm: $(WASM_OUT)
 $(WASM_OUT): $(ROUTER_SRC) transit-router/Cargo.toml .cargo/config.toml
 	RUSTUP_TOOLCHAIN=nightly wasm-pack build transit-router --target web --out-dir ../transit-viz/pkg -- -Z build-std=panic_abort,std
 
-# Build all data
+# Build all data (skips up-to-date based on file timestamps)
 data-all: $(BIN_FILES)
 
 transit-viz/public/data/%.bin: $(PREP_SRC) transit-prep/Cargo.toml cities/%.jsonc
 	@echo "Building data for $*..."
-	cargo run --release -p transit-prep --bin transit-prep -- \
+	cargo run --release -p transit-prep --bin transit-prep -- prep \
 		--city-file cities/$*.jsonc \
 		--output $@ \
 		--cache-dir cache
