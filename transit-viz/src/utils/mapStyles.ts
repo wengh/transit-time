@@ -9,6 +9,11 @@ const CARTO_ATTR = '&copy; <a href="https://www.openstreetmap.org/copyright">Ope
 const OSM_ATTR = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors';
 
 export const MAP_STYLES: Record<string, MapStyle> = {
+  default: {
+    label: 'Default (follows system theme)',
+    url: '',           // resolved at runtime via resolveMapStyle()
+    attribution: '',
+  },
   dark: {
     label: 'Dark',
     url: 'https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png',
@@ -53,6 +58,12 @@ export const MAP_STYLES: Record<string, MapStyle> = {
   },
 };
 
-export const DEFAULT_MAP_STYLE = window.matchMedia('(prefers-color-scheme: dark)').matches
-  ? 'dark-labels'
-  : 'light-labels';
+export const DEFAULT_MAP_STYLE = 'default';
+
+export function resolveMapStyle(id: string): MapStyle {
+  if (id === 'default') {
+    const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    return MAP_STYLES[isDark ? 'dark-labels' : 'light-labels'];
+  }
+  return MAP_STYLES[id] ?? MAP_STYLES['light-labels'];
+}

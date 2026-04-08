@@ -6,7 +6,7 @@ import { getHoverData, type HoverPath } from '../utils/router';
 import { ROUTE_COLORS, hexToRgb } from '../utils/colors';
 import { getHashParams, setHashParams } from '../utils/urlHash';
 import { getSortedTravelTimes } from '../utils/hoverInfo';
-import { MAP_STYLES, DEFAULT_MAP_STYLE } from '../utils/mapStyles';
+import { resolveMapStyle, DEFAULT_MAP_STYLE } from '../utils/mapStyles';
 
 const isTouchDevice = typeof window !== 'undefined' && ('ontouchstart' in window || navigator.maxTouchPoints > 0);
 
@@ -45,7 +45,7 @@ export default function MapView(): React.ReactNode {
   useEffect(() => {
     if (mapRef.current) return;
     const map = L.map('map', { doubleClickZoom: isTouchDevice }).setView([40, -90], 4);
-    const initialStyle = MAP_STYLES[DEFAULT_MAP_STYLE];
+    const initialStyle = resolveMapStyle(DEFAULT_MAP_STYLE);
     tileLayerRef.current = L.tileLayer(initialStyle.url, {
       attribution: initialStyle.attribution,
       maxZoom: 20,
@@ -65,18 +65,29 @@ export default function MapView(): React.ReactNode {
     };
   }, []);
 
-  // Swap tile layer when map style changes
+  // Swap tile layer when map style changes or system theme changes (for 'default' style)
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
-    const style = MAP_STYLES[state.mapStyle] ?? MAP_STYLES[DEFAULT_MAP_STYLE];
-    if (tileLayerRef.current) tileLayerRef.current.remove();
-    tileLayerRef.current = L.tileLayer(style.url, {
-      attribution: style.attribution,
-      maxZoom: 20,
-      subdomains: style.subdomains ?? 'abc',
-      crossOrigin: true,
-    }).addTo(map);
+
+    function applyStyle() {
+      const style = resolveMapStyle(state.mapStyle);
+      if (tileLayerRef.current) tileLayerRef.current.remove();
+      tileLayerRef.current = L.tileLayer(style.url, {
+        attribution: style.attribution,
+        maxZoom: 20,
+        subdomains: style.subdomains ?? 'abc',
+        crossOrigin: true,
+      }).addTo(map!);
+    }
+
+    applyStyle();
+
+    if (state.mapStyle === 'default') {
+      const mq = window.matchMedia('(prefers-color-scheme: dark)');
+      mq.addEventListener('change', applyStyle);
+      return () => mq.removeEventListener('change', applyStyle);
+    }
   }, [state.mapStyle]);
 
   // Set up map event handlers
