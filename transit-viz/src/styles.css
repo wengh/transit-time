@@ -1,123 +1,38 @@
-* { margin: 0; padding: 0; box-sizing: border-box; }
-body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #111; color: #e0e0e0; }
-#map { position: absolute; top: 0; left: 0; right: 0; bottom: 0; z-index: 0; background: #090909; }
-#city-select {
-  position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 2000;
-  background: #111;
-  display: flex; align-items: center; justify-content: center;
-}
-#city-select-inner {
-  background: #1e1e1e; padding: 40px; border-radius: 12px;
-  box-shadow: 0 4px 24px rgba(0,0,0,0.5); max-width: 520px; width: 90%;
-  text-align: center;
-}
-#city-select-inner h1 { font-size: 24px; margin-bottom: 8px; color: #e0e0e0; }
-#city-select-inner p { color: #888; margin-bottom: 24px; font-size: 14px; }
-.city-list { list-style: none; padding: 0; }
-.city-list li { margin-bottom: 10px; }
-.city-btn {
-  display: block; width: 100%; padding: 14px 20px;
-  background: #2a2a2a; border: 1px solid #383838; border-radius: 8px;
-  font-size: 15px; cursor: pointer; text-align: left;
-  transition: border-color 0.15s, box-shadow 0.15s; color: #e0e0e0;
-}
-.city-btn:hover {
-  border-color: #4a90d9; box-shadow: 0 0 0 3px rgba(74,144,217,0.2);
-}
-.city-btn .city-name { font-weight: 600; }
-.city-btn .city-detail { font-size: 12px; color: #888; margin-top: 2px; }
-#loading-overlay {
-  position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 1500;
-  background: rgba(17,17,17,0.92);
-  display: none; align-items: center; justify-content: center;
-  font-size: 16px; color: #888;
-}
-#controls {
-  position: absolute; top: 10px; right: 10px; z-index: 1000;
-  background: #1e1e1e; padding: 16px; border-radius: 8px;
-  box-shadow: 0 2px 12px rgba(0,0,0,0.5); min-width: 280px;
-  max-height: calc(100vh - 20px); overflow-y: auto;
-}
-#controls h3 { margin-bottom: 8px; color: #e0e0e0; }
-.control-group { margin-bottom: 0px; }
-.control-group label { display: block; font-size: 13px; margin-bottom: 0px; color: #aaa; }
-.control-group select, .control-group input[type="range"] { margin-bottom: 0px; }
-.control-group select, .control-group input { width: 100%; margin-bottom: 4px; }
-.control-group select,
-.control-group input[type="date"] {
-  background: #2a2a2a; color: #e0e0e0; border: 1px solid #383838;
-  border-radius: 4px; padding: 4px 6px;
-}
-.control-group input[type="date"] { color-scheme: dark; }
-#status { font-size: 12px; color: #666; margin-top: 8px; }
-#pattern-info { font-size: 11px; color: #555; margin-top: 4px; }
-#change-city, #copy-info {
-  padding: 4px 10px; background: #2a2a2a; border: 1px solid #383838; border-radius: 4px;
-  font-size: 12px; cursor: pointer; color: #aaa;
-}
-#change-city:hover, #copy-info:hover { background: #383838; }
-#legend {
-  position: absolute; bottom: 20px; left: 10px; z-index: 1000;
-  background: #1e1e1e; padding: 12px; border-radius: 8px;
-  box-shadow: 0 2px 12px rgba(0,0,0,0.5);
-}
-#legend-gradient {
-  width: 200px; height: 20px; border-radius: 4px;
-}
-#legend-labels { display: flex; justify-content: space-between; font-size: 11px; margin-top: 4px; color: #888; }
-#hover-info {
-  position: absolute; bottom: 20px; right: 10px; z-index: 1000;
-  background: #1e1e1e; padding: 12px; border-radius: 8px;
-  box-shadow: 0 2px 12px rgba(0,0,0,0.5);
-  min-width: 220px; max-width: 320px;
-  display: flex; flex-direction: column;
-}
-#hover-info-details {
-  overflow-y: auto; max-height: 30vh;
-}
-#hover-info-chart {
-  flex-shrink: 0;
-}
-#hover-info-chart canvas { aspect-ratio: 1 / 1; }
+@import "tailwindcss";
 
-/* Leaflet controls dark theme */
+/* ── Map fills the viewport ──────────────────────────────────────────── */
+#map {
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  z-index: 0;
+  background: #090909;
+}
+
+/* ── Leaflet controls – dark theme overrides ─────────────────────────── */
 .leaflet-control-zoom a {
-  background: #1e1e1e !important; color: #e0e0e0 !important;
+  background: #1e1e1e !important;
+  color: #e0e0e0 !important;
   border-color: #383838 !important;
 }
 .leaflet-control-zoom a:hover { background: #2a2a2a !important; }
 .leaflet-bar { border-color: #383838 !important; }
 .leaflet-control-attribution {
-  background: rgba(20,20,20,0.8) !important; color: #555 !important;
+  background: rgba(20,20,20,0.8) !important;
+  color: #555 !important;
 }
 .leaflet-control-attribution a { color: #4a90d9 !important; }
 
-/* Mobile responsive */
-@media (max-width: 600px) {
-  #controls {
-    top: auto; bottom: 0; left: 0; right: 0;
-    border-radius: 12px 12px 0 0;
-    min-width: unset; max-height: 45vh;
+@media (prefers-color-scheme: light) {
+  .leaflet-control-zoom a {
+    background: #ffffff !important;
+    color: #374151 !important;
+    border-color: #d1d5db !important;
   }
-  #controls.collapsed {
-    max-height: 48px; overflow: hidden;
+  .leaflet-control-zoom a:hover { background: #f3f4f6 !important; }
+  .leaflet-bar { border-color: #d1d5db !important; }
+  .leaflet-control-attribution {
+    background: rgba(255,255,255,0.85) !important;
+    color: #6b7280 !important;
   }
-  .controls-toggle {
-    display: block; text-align: center; padding: 4px;
-    font-size: 12px; color: #666; cursor: pointer;
-  }
-  #hover-info {
-    bottom: auto; top: 10px; left: 10px; right: 10px;
-    max-width: unset;
-    max-height: calc(100vh - 90px);
-    overflow-y: auto;
-  }
-  .control-group input[type="range"] {
-    height: 32px;
-  }
-  #hover-info-chart canvas { aspect-ratio: 5 / 2; }
-  #legend { bottom: 60px; }
-}
-@media (min-width: 601px) {
-  .controls-toggle { display: none; }
+  .leaflet-control-attribution a { color: #2563eb !important; }
 }

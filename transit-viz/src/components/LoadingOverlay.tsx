@@ -13,7 +13,13 @@ export default function LoadingOverlay(): React.ReactNode {
       : `Loading ${currentCity && currentCity.name}... ${loadingProgress}%`;
 
   return (
-    <div id="loading-overlay" style={{ display: 'flex' }}>
+    <div
+      id="loading-overlay"
+      className="fixed inset-0 z-[1500] flex items-center justify-center
+        bg-zinc-950/92 dark:bg-zinc-950/92
+        [@media(prefers-color-scheme:light)]:bg-white/92
+        text-base text-zinc-500"
+    >
       <div id="loading-text">{text}</div>
     </div>
   );

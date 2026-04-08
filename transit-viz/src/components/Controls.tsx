@@ -40,6 +40,7 @@ function RangeSlider({ id, min, max, step, defaultValue, formatDisplay, onCommit
         max={max}
         step={step}
         defaultValue={defaultValue}
+        className="w-full mb-1"
         onInput={handleInput}
         onMouseUp={handleCommit}
         onTouchEnd={handleCommit}
@@ -105,33 +106,80 @@ export default function Controls({ onRunQuery, onCopy }: ControlsProps): React.R
     history.replaceState(null, '', import.meta.env.BASE_URL);
   }
 
+  // Base = light theme; dark: overrides for dark theme
+  const selectClass =
+    'w-full mb-1 px-1.5 py-1 rounded border text-sm ' +
+    'bg-white border-zinc-300 text-zinc-900 ' +
+    'dark:bg-zinc-800 dark:border-zinc-700 dark:text-zinc-100';
+
+  const dateClass =
+    'w-full mb-1 px-1.5 py-1 rounded border text-sm ' +
+    'bg-white border-zinc-300 text-zinc-900 ' +
+    'dark:bg-zinc-800 dark:border-zinc-700 dark:text-zinc-100 dark:[color-scheme:dark]';
+
   return (
-    <div id="controls" className={collapsed ? 'collapsed' : ''}>
-      <div className="controls-toggle" onClick={() => setCollapsed(!collapsed)}>
+    <div
+      id="controls"
+      className={[
+        // positioning
+        'absolute z-[1000]',
+        // desktop: top-right panel
+        'top-2.5 right-2.5',
+        // sizing
+        'min-w-[280px] max-h-[calc(100vh-20px)] overflow-y-auto',
+        // appearance
+        'rounded-lg p-4',
+        'bg-white/95 dark:bg-zinc-900/95',
+        'shadow-[0_2px_12px_rgba(0,0,0,0.5)]',
+        // mobile: bottom sheet
+        'max-sm:top-auto max-sm:bottom-0 max-sm:left-0 max-sm:right-0',
+        'max-sm:rounded-t-xl max-sm:rounded-b-none max-sm:min-w-0',
+        collapsed ? 'max-sm:max-h-12 max-sm:overflow-hidden' : 'max-sm:max-h-[45vh]',
+      ].join(' ')}
+    >
+      {/* Toggle button (mobile only) */}
+      <div
+        className="text-center py-1 text-xs text-zinc-500 cursor-pointer sm:hidden"
+        onClick={() => setCollapsed(!collapsed)}
+      >
         {collapsed ? 'Show controls' : 'Hide controls'}
       </div>
-      <h3 id="city-title">{state.currentCity && state.currentCity.name}</h3>
-      <div className="control-group">
-        <label>Map Style</label>
-        <select id="map-style" value={mapStyle} onChange={handleMapStyleChange}>
+
+      <h3 id="city-title" className="mb-2 text-zinc-900 dark:text-zinc-100 font-semibold">
+        {state.currentCity && state.currentCity.name}
+      </h3>
+
+      {/* Map Style */}
+      <div className="mb-0">
+        <label className="block text-[13px] text-zinc-500 dark:text-zinc-400">Map Style</label>
+        <select id="map-style" value={mapStyle} onChange={handleMapStyleChange}
+          className={selectClass}>
           {Object.entries(MAP_STYLES).map(([id, s]) => (
             <option key={id} value={id}>{s.label}</option>
           ))}
         </select>
       </div>
-      <div className="control-group">
-        <label>Mode</label>
-        <select id="mode" value={mode} onChange={handleModeChange}>
+
+      {/* Mode */}
+      <div className="mb-0">
+        <label className="block text-[13px] text-zinc-500 dark:text-zinc-400">Mode</label>
+        <select id="mode" value={mode} onChange={handleModeChange}
+          className={selectClass}>
           <option value="single">Single Departure Time</option>
           <option value="sampled">Hour-Window Average</option>
         </select>
       </div>
-      <div className="control-group">
-        <label>Date</label>
-        <input type="date" id="date-picker" value={date} onChange={handleDateChange} />
+
+      {/* Date */}
+      <div className="mb-0">
+        <label className="block text-[13px] text-zinc-500 dark:text-zinc-400">Date</label>
+        <input type="date" id="date-picker" value={date} onChange={handleDateChange}
+          className={dateClass} />
       </div>
-      <div className="control-group">
-        <label>
+
+      {/* Departure Time */}
+      <div className="mb-0">
+        <label className="block text-[13px] text-zinc-500 dark:text-zinc-400">
           Departure Time:{' '}
           <RangeSlider
             id="time-slider"
@@ -147,9 +195,11 @@ export default function Controls({ onRunQuery, onCopy }: ControlsProps): React.R
           />
         </label>
       </div>
+
+      {/* Samples (sampled mode only) */}
       {mode === 'sampled' && (
-        <div className="control-group">
-          <label>
+        <div className="mb-0">
+          <label className="block text-[13px] text-zinc-500 dark:text-zinc-400">
             Samples:{' '}
             <RangeSlider
               id="samples-slider"
@@ -166,8 +216,10 @@ export default function Controls({ onRunQuery, onCopy }: ControlsProps): React.R
           </label>
         </div>
       )}
-      <div className="control-group">
-        <label>
+
+      {/* Max travel time */}
+      <div className="mb-0">
+        <label className="block text-[13px] text-zinc-500 dark:text-zinc-400">
           Max travel time:{' '}
           <RangeSlider
             id="maxtime-slider"
@@ -183,8 +235,10 @@ export default function Controls({ onRunQuery, onCopy }: ControlsProps): React.R
           />
         </label>
       </div>
-      <div className="control-group">
-        <label>
+
+      {/* Transfer slack */}
+      <div className="mb-0">
+        <label className="block text-[13px] text-zinc-500 dark:text-zinc-400">
           Transfer slack:{' '}
           <RangeSlider
             id="slack-slider"
@@ -200,17 +254,41 @@ export default function Controls({ onRunQuery, onCopy }: ControlsProps): React.R
           />
         </label>
       </div>
-      <div id="pattern-info">
+
+      {/* Pattern info */}
+      <div id="pattern-info" className="text-[11px] text-zinc-500 dark:text-zinc-600 mt-1">
         {date}: {patternCount} service pattern{patternCount !== 1 ? 's' : ''} active
       </div>
-      <div id="status">{statusText}</div>
-      <div style={{ display: 'flex', gap: '8px', marginTop: '8px' }}>
-        <button id="change-city" onClick={handleChangeCity}>
+
+      {/* Status */}
+      <div id="status" className="text-[12px] text-zinc-500 dark:text-zinc-500 mt-2">
+        {statusText}
+      </div>
+
+      {/* Buttons */}
+      <div className="flex gap-2 mt-2">
+        <button
+          id="change-city"
+          onClick={handleChangeCity}
+          className="px-2.5 py-1 text-[12px] rounded border cursor-pointer
+            bg-zinc-100 border-zinc-300 text-zinc-600
+            dark:bg-zinc-800 dark:border-zinc-700 dark:text-zinc-400
+            hover:bg-zinc-200 dark:hover:bg-zinc-700"
+        >
           Change city
         </button>
-        {state.pinnedNode !== null && <button id="copy-info" onClick={handleCopy}>
-          Copy info
-        </button>}
+        {state.pinnedNode !== null && (
+          <button
+            id="copy-info"
+            onClick={handleCopy}
+            className="px-2.5 py-1 text-[12px] rounded border cursor-pointer
+              bg-zinc-100 border-zinc-300 text-zinc-600
+              dark:bg-zinc-800 dark:border-zinc-700 dark:text-zinc-400
+              hover:bg-zinc-200 dark:hover:bg-zinc-700"
+          >
+            Copy info
+          </button>
+        )}
       </div>
     </div>
   );
