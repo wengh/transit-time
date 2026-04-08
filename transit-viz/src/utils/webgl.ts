@@ -10,7 +10,7 @@ export interface GLState {
 }
 
 export interface RenderResult {
-  dataUrl: string;
+  canvas: HTMLCanvasElement;
   renderBounds: L.LatLngBounds;
 }
 
@@ -161,7 +161,7 @@ export function renderIsochrone(
 
   gl.uniform1f(gl.getUniformLocation(program, 'u_pointSize'), dotSize);
   gl.drawArrays(gl.POINTS, 0, count);
-  gl.finish();
+  gl.flush();
 
-  return { dataUrl: canvas.toDataURL(), renderBounds };
+  return { canvas, renderBounds };
 }

@@ -15,7 +15,7 @@ export default function MapView(): React.ReactNode {
   const mapRef = useRef<L.Map | null>(null);
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const glStateRef = useRef<ReturnType<typeof initWebGL> | null>(null);
-  const isoOverlayRef = useRef<L.ImageOverlay | null>(null);
+  const isoOverlayRef = useRef<L.Layer | null>(null);
   const sourceMarkerRef = useRef<L.Marker | null>(null);
   const destMarkerRef = useRef<L.CircleMarker | null>(null);
   const bboxRectRef = useRef<L.Rectangle | null>(null);
@@ -344,13 +344,57 @@ export default function MapView(): React.ReactNode {
       if (!glStateRef.current) return;
       const result = renderIsochrone(glStateRef.current, map, s.travelTimes, s.nodeCoords, s.maxTimeMin * 60, L, s.sampleCounts, s.totalSamples);
       if (result) {
-        const oldOverlay = isoOverlayRef.current;
-        isoOverlayRef.current = L.imageOverlay(result.dataUrl, result.renderBounds, {
-          opacity: 1,
-          interactive: false,
-          zIndex: 500,
-        }).addTo(map);
-        if (oldOverlay) map.removeLayer(oldOverlay);
+        if (isoOverlayRef.current) {
+          // Layer already added — just update its bounds and reposition
+          (isoOverlayRef.current as any)._isoCanvas = result.canvas;
+          (isoOverlayRef.current as any)._isoBounds = result.renderBounds;
+          (isoOverlayRef.current as any)._reset();
+        } else {
+          const CanvasLayer = L.Layer.extend({
+            _isoCanvas: result.canvas as HTMLCanvasElement,
+            _isoBounds: result.renderBounds as L.LatLngBounds,
+            onAdd(m: L.Map) {
+              this._map = m;
+              this._zoomAnimated = (m as any)._zoomAnimated;
+              const pane = m.getPane('overlayPane')!;
+              this._isoCanvas.style.position = 'absolute';
+              this._isoCanvas.style.pointerEvents = 'none';
+              if (this._zoomAnimated) {
+                L.DomUtil.addClass(this._isoCanvas, 'leaflet-zoom-animated');
+              }
+              pane.appendChild(this._isoCanvas);
+              this._reset();
+              return this;
+            },
+            onRemove() {
+              this._isoCanvas.remove();
+              return this;
+            },
+            getEvents() {
+              const events: Record<string, (e: any) => void> = { zoom: this._reset, viewreset: this._reset };
+              if (this._zoomAnimated) {
+                events.zoomanim = this._animateZoom;
+              }
+              return events;
+            },
+            _animateZoom(e: any) {
+              const m: L.Map = this._map;
+              const scale = m.getZoomScale(e.zoom);
+              const offset = (m as any)._latLngBoundsToNewLayerBounds(this._isoBounds, e.zoom, e.center).min;
+              L.DomUtil.setTransform(this._isoCanvas, offset, scale);
+            },
+            _reset() {
+              const m: L.Map = this._map;
+              if (!m) return;
+              const topLeft = m.latLngToLayerPoint(this._isoBounds.getNorthWest());
+              const bottomRight = m.latLngToLayerPoint(this._isoBounds.getSouthEast());
+              L.DomUtil.setTransform(this._isoCanvas, topLeft, 1);
+              this._isoCanvas.style.width = (bottomRight.x - topLeft.x) + 'px';
+              this._isoCanvas.style.height = (bottomRight.y - topLeft.y) + 'px';
+            },
+          });
+          isoOverlayRef.current = (new (CanvasLayer as any)()).addTo(map);
+        }
       }
     }
 
