@@ -67,11 +67,11 @@ The pipeline has two stages: offline preprocessing and in-browser routing.
 A Rust preprocessing tool (`transit-prep`) takes a city configuration (a `.jsonc` file in `cities/`) and produces a single self-contained `.bin` file for that city.
 
 The city config specifies:
-- One or more GTFS feed URLs (the standard transit schedule format used by most agencies)
-- An OpenStreetMap bounding box for pedestrian street data
+- One or more GTFS feeds, either as Transitland onestop IDs (e.g. `f-dp3-cta`) or direct URLs
+- An OpenStreetMap source for pedestrian street data (BBBike extract name or direct PBF URL)
 - Display metadata (name, map center, zoom)
 
-The preprocessor downloads and caches both the GTFS feeds and the OSM extract, then performs the following steps:
+The preprocessor downloads and caches both the GTFS feeds and the OSM extract. For Transitland feeds, it tracks the latest feed version SHA1 and only re-downloads when a new version is published. It then performs the following steps:
 
 1. **Parse GTFS** — reads stops, routes, trips, stop times, service calendars, and shapes from the zip archives. Filters stops to the bounding box. Warns if feed data has expired.
 
@@ -115,20 +115,23 @@ For a city the size of Chicago (817K nodes, 1.2M edges, 200 routes, 6.2M raw tri
 - Rust (nightly toolchain, for the WASM build)
 - [wasm-pack](https://rustwasm.github.io/wasm-pack/)
 - Node.js and npm
+- A [Transitland API key](https://www.transit.land/) in `.env` as `TRANSITLAND_API_KEY` (needed for building city data that uses Transitland feeds)
 
 **Build the WASM module** (only needed when the routing logic changes):
 ```
 make wasm
 ```
 
-**Build city data files** (downloads GTFS and OSM data, takes a few minutes per city):
+**Build city data files** (checks for stale feeds, downloads updates, rebuilds affected cities):
 ```
 make data-all
 ```
 
+This runs the pipeline which: extracts feed IDs from all city configs, checks Transitland for updated feed versions (via SHA1 comparison), downloads only stale or missing GTFS/OSM data, and rebuilds only affected city `.bin` files.
+
 Individual cities can be built with:
 ```
-cargo run --release -p transit-prep -- --city-file cities/chicago.jsonc --output transit-viz/public/data/chicago.bin
+cargo run --release -p transit-prep -- prep --city-file cities/chicago.jsonc --output transit-viz/public/data/chicago.bin
 ```
 
 **Start the development server** (builds everything if needed, then serves on port 5173):
@@ -144,7 +147,16 @@ The output in `transit-viz/dist/` is a fully static site that can be deployed an
 
 ### Adding a city
 
-Create a `.jsonc` file in `cities/` with the following fields:
+The easiest way is to auto-generate a config from a BBBike city name or OSM PBF URL:
+
+```
+cargo run --release -p transit-prep -- generate \
+  --id my_city --bbbike-name MyCity --output cities/my_city.jsonc
+```
+
+This downloads the OSM extract, reads its bounding box, queries Transitland for all transit feeds in that area, and writes a `.jsonc` config with Transitland feed IDs and operator name comments. Edit the generated file to fill in `name`, `detail`, and remove any unwanted feeds.
+
+You can also create a `.jsonc` file manually:
 
 ```jsonc
 {
@@ -152,7 +164,8 @@ Create a `.jsonc` file in `cities/` with the following fields:
   "name": "My City, ST",        // display name
   "file": "my_city.bin",        // output data file name
   "feed_ids": [
-    "https://example.com/gtfs.zip"   // one or more GTFS feed URLs
+    "f-dp3-cta",                     // Transitland onestop ID
+    "https://example.com/gtfs.zip"   // or a direct GTFS feed URL
   ],
   "bbox": "-80.0,43.0,-79.0,44.0",  // min_lon,min_lat,max_lon,max_lat
   "bbbike_name": "MyCity",      // BBBike extract name (for OSM data), OR
@@ -163,7 +176,7 @@ Create a `.jsonc` file in `cities/` with the following fields:
 }
 ```
 
-OSM pedestrian data is fetched from BBBike by name, or from a direct URL if `osm_url` is given. Then run `make data-all` (or the individual `cargo run` command) to build the `.bin` file.
+Feed IDs can be Transitland onestop IDs (e.g. `f-dp3-cta`) or direct GTFS zip URLs. Transitland feeds are checked for updates automatically via SHA1 comparison. OSM pedestrian data is fetched from BBBike by name, or from a direct URL if `osm_url` is given. Then run `make data-all` to build the `.bin` file.
 
 ---
 

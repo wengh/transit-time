@@ -70,43 +70,37 @@ jobs:
 
       - name: Cache compiled .bin files
         uses: actions/cache@v4
-        id: bin-cache
         with:
           path: transit-viz/public/data/
           key: ${{ runner.os }}-bins-${{ hashFiles('transit-prep/src/**', 'transit-router/src/**', 'cities/*.jsonc') }}-${{ github.run_id }}
           restore-keys: ${{ runner.os }}-bins-${{ hashFiles('transit-prep/src/**', 'transit-router/src/**', 'cities/*.jsonc') }}-
 
-      - name: Check for stale Transitland feeds (scheduled/manual runs)
+      - name: Check if rebuild needed
         id: check-feeds
-        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         env:
           TRANSITLAND_API_KEY: ${{ secrets.TRANSITLAND_API_KEY }}
         run: |
           cargo build --release -p transit-prep
-          needs_rebuild=false
-          for f in cities/*.jsonc; do
-            city=$(basename "$f" .jsonc)
-            if ! cargo run --release -p transit-prep -- check --city-file "$f" --cache-dir cache; then
-              echo "::notice::$city has updated feeds, will rebuild"
-              rm -f "transit-viz/public/data/${city}.bin"
-              needs_rebuild=true
-            fi
-          done
-          echo "needs_rebuild=$needs_rebuild" >> "$GITHUB_OUTPUT"
+          if cargo run --release -p transit-prep -- pipeline --check-only \
+              --cities-dir cities/ --output-dir transit-viz/public/data/ --cache-dir cache; then
+            echo "needs_rebuild=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "needs_rebuild=true" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Cache raw GTFS/OSM downloads
         uses: actions/cache@v4
-        if: github.event_name == 'push' || steps.check-feeds.outputs.needs_rebuild == 'true'
+        if: steps.check-feeds.outputs.needs_rebuild == 'true'
         with:
           path: cache/
           key: ${{ runner.os }}-downloads-${{ hashFiles('cities/*.jsonc') }}
           restore-keys: ${{ runner.os }}-downloads-
 
       - name: Build data
-        if: github.event_name == 'push' || steps.check-feeds.outputs.needs_rebuild == 'true'
+        if: steps.check-feeds.outputs.needs_rebuild == 'true'
         env:
           TRANSITLAND_API_KEY: ${{ secrets.TRANSITLAND_API_KEY }}
-        run: make data-all -j4
+        run: make data-all
 
       # ── Frontend ───────────────────────────────────────────────────────────
       - name: Setup Node.js

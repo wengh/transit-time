@@ -13,6 +13,28 @@ const OVERPASS_URLS: &[&str] = &[
 // Known city PBF extract URLs (BBBike)
 const BBBIKE_BASE: &str = "https://download.bbbike.org/osm/bbbike";
 
+/// Return the cache path where OSM data would be stored for a city.
+#[allow(dead_code)] // used from binary crate, not lib
+pub(crate) fn cache_path(cache_dir: &Path, city: &str, osm_url: Option<&str>) -> PathBuf {
+    if let Some(url) = osm_url {
+        let ext = if url.contains(".pbf") {
+            "osm.pbf"
+        } else {
+            "osm.xml"
+        };
+        cache_dir.join(format!("{}.{}", sanitize(city), ext))
+    } else {
+        // bbbike or overpass — bbbike produces .osm.pbf, overpass produces .osm.xml
+        // Check pbf first since it's preferred
+        let pbf = cache_dir.join(format!("{}.osm.pbf", sanitize(city)));
+        if pbf.exists() {
+            return pbf;
+        }
+        // Default to pbf (bbbike path)
+        pbf
+    }
+}
+
 /// Fetch pedestrian-walkable OSM data for a bounding box, caching the result.
 /// If `osm_url` is given, downloads directly from that URL.
 /// Otherwise, tries a BBBike PBF extract (if `bbbike_name` is set) then falls back to Overpass.
