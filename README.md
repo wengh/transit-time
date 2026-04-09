@@ -73,7 +73,7 @@ The city config specifies:
 
 The preprocessor downloads and caches both the GTFS feeds and the OSM extract. For Transitland feeds, it tracks the latest feed version SHA1 and only re-downloads when a new version is published. It then performs the following steps:
 
-1. **Parse GTFS** — reads stops, routes, trips, stop times, service calendars, and shapes from the zip archives. Filters stops to the bounding box. Warns if feed data has expired.
+1. **Parse GTFS** — reads stops, routes, trips, stop times, service calendars, and shapes from the zip archives. Filters stops to the bounding box. Drops trips with fewer than two in-bbox stops and removes their shapes. Trims remaining shapes to the bounding box. Warns if feed data has expired.
 
 2. **Parse OSM** — extracts the pedestrian-walkable street network (footways, paths, sidewalks, crossings, and regular roads that allow foot traffic) within the bounding box.
 
@@ -192,16 +192,16 @@ cargo test --release --test profile_router -- --nocapture
 === Binary Section Sizes (decompressed) ===
 Section                          Bytes % of total
 header                            36 B     0.0%
-nodes                          1.80 MB    10.6%
-edges                          1.44 MB     8.5%
-stops                         671.5 KB     3.9%
+nodes                          1.80 MB    11.0%
+edges                          1.44 MB     8.8%
+stops                         671.5 KB     4.0%
 stop_to_node                  135.0 KB     0.8%
 route_names                     1.5 KB     0.0%
 route_colors                     844 B     0.0%
-patterns                       9.91 MB    58.5%
-shapes                         2.99 MB    17.7%
-route_shapes                    8.7 KB     0.0%
-TOTAL decompressed            16.94 MB
+patterns                       9.91 MB    60.6%
+shapes                         2.40 MB    14.7%
+route_shapes                    8.6 KB     0.1%
+TOTAL decompressed            16.36 MB
 
 === In-Memory Sizes ===
 Structure                        Bytes % of total
@@ -213,30 +213,30 @@ node_is_stop                  798.3 KB     0.4%
 node_stop_indices             627.5 KB     0.3%
 route_names                     5.6 KB     0.0%
 route_colors                     844 B     0.0%
-patterns/events              104.52 MB    55.4%
+patterns/events              104.52 MB    55.5%
 patterns/freq                  8.90 MB     4.7%
 patterns/other                   468 B     0.0%
-adj list                      21.38 MB    11.3%
+adj list                      21.38 MB    11.4%
 shapes                         3.39 MB     1.8%
 route_shapes                       0 B     0.0%
 node_grid                      5.00 MB     2.7%
-input buf                     16.94 MB     9.0%
-TOTAL in-memory              188.76 MB
+input buf                     16.36 MB     8.7%
+TOTAL in-memory              188.17 MB
 
 === Load Timings ===
 Phase                           Time % of total
-parse nodes                  11.7 ms     3.7%
-parse edges                  67.4 ms    21.3%
-parse stops                   1.3 ms     0.4%
-parse stop_to_node            1.3 ms     0.4%
+parse nodes                  11.9 ms     3.5%
+parse edges                  70.2 ms    20.4%
+parse stops                   1.0 ms     0.3%
+parse stop_to_node            1.2 ms     0.4%
 parse route_names             0.0 ms     0.0%
 parse route_colors            0.0 ms     0.0%
-parse+index patterns        188.1 ms    59.5%
-parse shapes                  0.3 ms     0.1%
+parse+index patterns        210.1 ms    61.1%
+parse shapes                  0.2 ms     0.1%
 parse route_shapes            0.0 ms     0.0%
-build adj list               16.2 ms     5.1%
-build node_grid              29.8 ms     9.4%
-TOTAL                       316.2 ms
+build adj list               18.2 ms     5.3%
+build node_grid              30.8 ms     9.0%
+TOTAL                       343.7 ms
 
 === Counts ===
 nodes                         817507
@@ -245,43 +245,44 @@ stops                          17274
 stop_to_node                   17274
 patterns                         135
 route_names                      211
-shapes                          2350
-total events (raw)           6266597
+shapes                          1992
+total events (raw)           6266592
 sentinel events                    0
 total freq entries                 0
 grid cells                      6352
-snap_to_node: 17µs -> node 722404 (41.88439954326267, -87.62934665014365)
+snap_to_node: 13µs -> node 722404 (41.88439954326267, -87.62934665014365)
 Monday patterns: 12 total
 
 Depart     Time(ms)    Reached    Transit
 ------------------------------------------
-09:00      132.3ms     541122       3149
-09:06      125.4ms     537332       2996
-09:12      129.7ms     562554       2865
-09:18      131.3ms     568234       3088
-09:24      129.6ms     553720       3077
-09:30      117.4ms     506895       3104
-09:36      119.9ms     521497       3071
-09:42      125.3ms     534934       3085
-09:48      122.6ms     520163       2879
-09:54      125.3ms     510709       3108
+09:00      128.7ms     541333       3145
+09:06      137.4ms     537402       2994
+09:12      156.7ms     562431       2871
+09:18      149.7ms     568414       3081
+09:24      130.7ms     555310       3053
+09:30      135.8ms     507971       3090
+09:36      139.3ms     521256       3071
+09:42      131.6ms     534851       3072
+09:48      141.4ms     520867       2875
+09:54      132.7ms     510946       3107
 
 === Summary (10 runs) ===
-Avg: 125.9ms  Min: 117.4ms  Max: 132.3ms
-Avg reachable nodes: 535716
+Avg: 138.4ms  Min: 128.7ms  Max: 156.7ms
+Avg reachable nodes: 536078
 ```
 
 **Binary sizes** (`ls -lh transit-viz/public/data/`):
 
 | City | Compressed |
 |---|---|
-| Chapel Hill | 454 KB |
-| Waterloo | 2.3 MB |
-| Seattle | 8.0 MB |
-| Toronto | 18 MB |
-| Chicago | 16 MB |
-| SF Bay | 18 MB |
-| NYC | 20 MB |
-| Montreal | 22 MB |
+| Chapel Hill | 452K |
+| Waterloo | 1.8M |
+| Seattle | 7.0M |
+| Toronto | 18M |
+| Chicago | 16M |
+| SF Bay | 13M |
+| NYC | 23M |
+| Montreal | 22M |
+| Ottawa | 15M |
 
-**WASM module** (`ls -lh transit-viz/pkg/transit_router_bg.wasm`): 659 KB
+**WASM module** (`ls -lh transit-viz/pkg/transit_router_bg.wasm`): 691 KB

@@ -2,12 +2,12 @@
     "id": "toronto",
     "bbbike_name": "Toronto",
     "feed_ids": [
-        "http://opendata.toronto.ca/toronto.transit.commission/ttc-routes-and-schedules/OpenData_TTC_Schedules.zip",
-        "https://assets.metrolinx.com/raw/upload/Documents/Metrolinx/Open%20Data/GO-GTFS.zip",
-        "https://assets.metrolinx.com/raw/upload/Documents/Metrolinx/Open%20Data/UP-GTFS.zip",
-        "https://www.miapp.ca/GTFS/google_transit.zip",
-        "https://www.yrt.ca/google/google_transit.zip",
-        "https://www.arcgis.com/sharing/rest/content/items/a355aabd5a8c490186bdce559c9c75fb/data"
+        "f-dpz8-ttc",
+        "f-dpz-gotransit",
+        "f-dpz2-upexpress",
+        "f-dpz2-miway",
+        "f-dpz-yorkregiontransit",
+        "f-dpz2-bramptontransit"
     ],
     "name": "Toronto, ON",
     "file": "toronto.bin",

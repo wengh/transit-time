@@ -2,39 +2,18 @@
     "id": "sf_bay",
     "osm_url": "https://download.bbbike.org/osm/extract/planet_-122.6,37.2_-121.75,38.07.osm.pbf",
     "feed_ids": [
-        "https://api.actransit.org/transit/gtfs/download?token=2512B81107A09D2DC44895CDDC650D47",
-        "http://www.bart.gov/dev/schedules/google_transit.zip",
-        "http://data.trilliumtransit.com/gtfs/caltrain-ca-us/caltrain-ca-us.zip",
-        "http://data.trilliumtransit.com/gtfs/vacavillecitycoach-ca-us/vacavillecitycoach-ca-us.zip",
-        "http://data.trilliumtransit.com/gtfs/commute-ca-us/commute-ca-us.zip",
-        "https://emerygoround.com/data/emerygoround-ca-us.zip",
-        "http://data.trilliumtransit.com/gtfs/fairfield-ca-us/fairfield-ca-us.zip",
-        "https://realtime.goldengate.org/gtfsstatic/GTFSTransitData.zip",
-        "http://webwatch.lavta.org/TMGTFSRealTimeWebService/GTFS-Static/google_transit.zip",
-        "http://www.marintransit.org/data/google_transit.zip",
-        "http://data.trilliumtransit.com/gtfs/missionbaytma-ca-us/missionbaytma-ca-us.zip",
-        "https://gtfs.mvgo.org/gtfs.zip",
-        "https://api.511.org/transit/datafeeds?operator_id=PE&api_key=24b279cd-859b-4abf-81f8-31b77e6cad9c",
-        "http://data.trilliumtransit.com/gtfs/sfbayferry-ca-us/sfbayferry-ca-us.zip",
-        "http://rta.trideltatransit.com/rtt/public/resource/gtfs.zip",
-        "http://api.511.org/transit/datafeeds?operator_id=RG&api_key=24b279cd-859b-4abf-81f8-31b77e6cad9c",
-        "https://gtfs.vta.org/gtfs_vta.zip",
-        "https://santarosa.syncromatics.com/gtfs",
-        "https://soltrans.connexionz.net/rtt/public/resource/gtfs.zip",
-        "http://data.trilliumtransit.com/gtfs/sonomacounty-ca-us/sonomacounty-ca-us.zip",
-        "http://data.trilliumtransit.com/gtfs/smart-ca-us/smart-ca-us.zip",
-        "https://transportation-forms.stanford.edu/google/google_transit.zip",
-        "http://api.511.org/transit/datafeeds?operator_id=UC&api_key=24b279cd-859b-4abf-81f8-31b77e6cad9c",
-        "https://data.trilliumtransit.com/gtfs/vinetransit-ca-us/vinetransit-ca-us.zip",
-        "http://data.trilliumtransit.com/gtfs/westcat-ca-us/westcat-ca-us.zip"
+        "f-9q9h-stanford~marguerite", // Stanford Marguerite Shuttle
+        "f-presidigo~ca~us", // PresidiGo
+        "f-sf~bay~area~rg", // ACE Altamont Corridor Express, Dumbarton Express, San Francisco Bay Ferry, Golden Gate Ferry, Union City Transit, Napa Valley Transportation Authority (NVTA), Tri Delta Transit, San Francisco International Airport, Alameda-Contra Costa Transit District, Bay Area Rapid Transit, Caltrain, Capitol Corridor Joint Powers Authority, County Connection, Solano County Transit, Golden Gate Bridge, Highway and Transportation District, Livermore Amador Valley Transit Authority (LAVTA), Marin County Transit District, San Mateo County Transit District, San Francisco Municipal Transportation Agency, Commute.org Shuttles, Sonoma Marin Area Rail Transit, Mountain View Transportation Management Association, Western Contra Costa Area Transit, Emery Go-Round, Santa Clara Valley Transportation Authority, City of South San Francisco, Mission Bay TMA, Mountain View Community Shuttle, Presidio Go, Emery Express, San Francisco Recreation and Parks
+        "f-alco~ca~us" // Alameda County Shuttle
     ],
     "name": "San Francisco Bay Area",
     "file": "sf_bay.bin",
-    "bbox": "-122.6,37.2,-121.75,38.07",
+    "bbox": "-122.6000,37.2000,-121.7500,38.0700",
     "center": [
-        37.77,
-        -122.42
+        37.635,
+        -122.175
     ],
-    "zoom": 12,
+    "zoom": 10,
     "detail": "BART, Muni, Caltrain, SamTrans, VTA, ..."
 }

@@ -1,7 +1,7 @@
 {
     "id": "chapel_hill",
     "feed_ids": [
-        "http://mychtransit.org/gtfs"
+        "f-dnru-chapel~hill~transit~nc~us"
     ],
     "name": "Chapel Hill, NC",
     "file": "chapel_hill.bin",

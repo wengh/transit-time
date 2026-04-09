@@ -2,8 +2,8 @@
     "id": "ottawa",
     "bbbike_name": "Ottawa",
     "feed_ids": [
-        "https://oct-gtfs-emasagcnfmcgeham.z01.azurefd.net/public-access/GTFSExport.zip",
-        "https://contenu.sto.ca/GTFS/GTFS.zip"
+        "f-f24-octranspo",
+        "f-f244-sto"
     ],
     "name": "Ottawa, ON",
     "file": "ottawa.bin",

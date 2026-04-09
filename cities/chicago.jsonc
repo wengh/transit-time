@@ -2,9 +2,9 @@
     "id": "chicago",
     "bbbike_name": "Chicago",
     "feed_ids": [
-        "http://www.transitchicago.com/downloads/sch_data/google_transit.zip",
-        "https://www.pacebus.com/gtfsdownload",
-        "https://schedules.metrarail.com/gtfs/schedule.zip"
+        "f-dp3-cta",
+        "f-dp3-pace",
+        "f-dp3-metra"
     ],
     "name": "Chicago, IL",
     "file": "chicago.bin",

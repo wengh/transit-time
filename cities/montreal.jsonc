@@ -2,31 +2,31 @@
     "id": "montreal",
     "bbbike_name": "Montreal",
     "feed_ids": [
-        "https://www.stm.info/sites/default/files/gtfs/gtfs_stm.zip", // STM
-        "https://www.rtl-longueuil.qc.ca/transit/latestfeed/RTL.zip", // RTL
-        "https://www.stl.laval.qc.ca/opendata/GTF_STL.zip", // STL
-        "f-reseau~express~metropolitain", // REM
-        "https://zenbus.net/gtfs/static/download.zip?dataset=saint-jean-sur-richelieu", // Zenbus Saint-Jean-sur-Richelieu
-        // Exo
-        "https://exo.quebec/xdata/citsv/google_transit.zip",
-        "https://exo.quebec/xdata/citso/google_transit.zip",
-        "https://exo.quebec/xdata/citpi/google_transit.zip",
-        "https://exo.quebec/xdata/citla/google_transit.zip",
-        "https://exo.quebec/xdata/trains/google_transit.zip",
-        "https://exo.quebec/xdata/citcrc/google_transit.zip",
-        "https://exo.quebec/xdata/citvr/google_transit.zip",
-        "https://exo.quebec/xdata/omitsju/google_transit.zip",
-        "https://exo.quebec/xdata/mrclm/google_transit.zip",
-        "https://exo.quebec/xdata/lrrs/google_transit.zip",
-        "https://exo.quebec/xdata/mrclasso/google_transit.zip"
+        "f-f25f-rseaudetransportdelongueuil", // Réseau de transport de Longueuil
+        "f-f25e-societedetransportdelaval", // Societe de transport de Laval
+        "f-f25d-socitdetransportdemontral", // Société de transport de Montréal
+        "f-f25f-exo~citchambly~richelieu~carignan", // EXO - Chambly-Richelieu-Carignan
+        "f-f257-exo~citlaurentides", // EXO - Laurentides
+        "f-f256-exo~citlapresquîle", // EXO - La Presqu'île
+        "f-f25-exo~citsorel~varennes", // EXO - Sorel-Varennes
+        "f-f253-exo~citsud~ouest", // EXO - Sud-ouest
+        "f-f25g-exo~citvallée~du~richelieu", // EXO - Vallée-du-Richelieu
+        "f-f25u-exo~mrcdelassomption", // EXO - L'Assomption
+        "f-f25s-exo~mrclesmoulinsurbis", // EXO - Terrebonne-Mascouche
+        "f-f25d-exo~reseaudetransportmetropolitain", // EXO - Réseau de transport métropolitain
+        "f-f25g-exo~omitsainte~julie", // EXO - Sainte-Julie
+        "f-zenbus~saint~jean~sur~richelieu", // Saint Jean Sur Richelieu
+        "f-f25d-exo~richelain~roussillon", // EXO - Richelain / Roussillon
+        "f-reseau~express~metropolitain", // Réseau express métropolitain
+        "f-societe~de~transport~de~salaberry~de~valleyfield" // Société de Transport de Salaberry-de-Valleyfield
     ],
     "name": "Montreal, QC",
     "file": "montreal.bin",
-    "bbox": "-74.086,45.301,-73.268,45.75",
+    "bbox": "-74.0860,45.3010,-73.2680,45.7500",
     "center": [
-        45.501,
-        -73.568
+        45.526,
+        -73.677
     ],
-    "zoom": 12,
+    "zoom": 11,
     "detail": "STM, RTL, STL, REM, Exo"
 }

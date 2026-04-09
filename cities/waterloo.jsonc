@@ -2,8 +2,9 @@
     "id": "waterloo",
     "bbbike_name": "Waterloo",
     "feed_ids": [
-        "http://www.regionofwaterloo.ca/opendatadownloads/GRT_GTFS.zip",
-        "https://assets.metrolinx.com/raw/upload/Documents/Metrolinx/Open%20Data/GO-GTFS.zip"
+        "f-dpwz-grandrivertransit",
+        "f-dpwz-guelphtransit",
+        "f-dpz-gotransit"
     ],
     "name": "Waterloo, ON",
     "file": "waterloo.bin",
@@ -13,5 +14,5 @@
         -80.52
     ],
     "zoom": 12,
-    "detail": "GRT, Go Transit"
+    "detail": "GRT, Guelph Transit, Go Transit"
 }
