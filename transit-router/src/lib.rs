@@ -70,7 +70,19 @@ pub fn reconstruct_path(_data: &PreparedData, sssp: &SsspResult, destination: u3
     }
 
     path.reverse();
-    path.into_iter().flat_map(|[n, e, r]| [n, e, r]).collect()
+
+    // At transit→walk transitions, the alighting node is labeled as transit
+    // (incoming edge type). Re-emit it as a walk node so the walk segment
+    // starts at the alighting stop, not at the next street node.
+    let mut result = Vec::with_capacity(path.len() * 3 + 9);
+    for i in 0..path.len() {
+        let [n, e, r] = path[i];
+        result.extend_from_slice(&[n, e, r]);
+        if e == 1 && i + 1 < path.len() && path[i + 1][1] == 0 {
+            result.extend_from_slice(&[n, 0, u32::MAX]);
+        }
+    }
+    result
 }
 
 // === WASM wrappers ===
