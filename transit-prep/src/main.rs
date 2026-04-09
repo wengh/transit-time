@@ -1033,6 +1033,58 @@ pub fn run_prep(
         gtfs_data.routes.len()
     );
 
+    // Compact stop ids: collect used stop indices, remap to 0..N, drop orphaned stops
+    let mut used_stop_indices: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
+    for pattern in &patterns {
+        for second_events in &pattern.events {
+            for event in second_events {
+                used_stop_indices.insert(event.stop_index);
+                used_stop_indices.insert(event.next_stop_index);
+            }
+        }
+        for freq in &pattern.frequency_routes {
+            used_stop_indices.insert(freq.stop_index);
+            used_stop_indices.insert(freq.next_stop_index);
+        }
+    }
+    let stop_remap: HashMap<u32, u32> = used_stop_indices
+        .iter()
+        .enumerate()
+        .map(|(new_idx, &old_idx)| (old_idx, new_idx as u32))
+        .collect();
+    for pattern in &mut patterns {
+        for second_events in &mut pattern.events {
+            for event in second_events {
+                event.stop_index = stop_remap[&event.stop_index];
+                event.next_stop_index = stop_remap[&event.next_stop_index];
+            }
+        }
+        for freq in &mut pattern.frequency_routes {
+            freq.stop_index = stop_remap[&freq.stop_index];
+            freq.next_stop_index = stop_remap[&freq.next_stop_index];
+        }
+    }
+    let stop_to_node: Vec<(u32, u32)> = stop_to_node
+        .into_iter()
+        .filter_map(|(old_idx, node)| stop_remap.get(&old_idx).map(|&new_idx| (new_idx, node)))
+        .collect();
+    let total_stops = gtfs_data.stops.len();
+    let compacted_stops: Vec<_> = used_stop_indices
+        .iter()
+        .enumerate()
+        .map(|(new_idx, &old_idx)| {
+            let mut stop = gtfs_data.stops[old_idx as usize].clone();
+            stop.index = new_idx as u32;
+            stop
+        })
+        .collect();
+    gtfs_data.stops = compacted_stops;
+    eprintln!(
+        "  {} stops with events (of {} in bbox)",
+        used_stop_indices.len(),
+        total_stops
+    );
+
     // Build compacted route arrays and route_shapes in new-index order
     let mut route_names: Vec<String> = Vec::new();
     let mut route_colors: Vec<Option<gtfs::Color>> = Vec::new();

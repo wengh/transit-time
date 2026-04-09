@@ -127,7 +127,7 @@ make wasm
 make data-all
 ```
 
-This runs the pipeline which: extracts feed IDs from all city configs, checks Transitland for updated feed versions (via SHA1 comparison), downloads only stale or missing GTFS/OSM data, and rebuilds only affected city `.bin` files.
+This runs the pipeline which: extracts feed IDs from all city configs, checks Transitland for updated feed versions (via SHA1 comparison, skipping feeds checked within the last 2 days), downloads only stale or missing GTFS/OSM data in parallel, and rebuilds only affected city `.bin` files in parallel. Orphaned cache files from removed cities/feeds are cleaned up automatically.
 
 Individual cities can be built with:
 ```
