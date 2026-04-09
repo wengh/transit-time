@@ -12,7 +12,8 @@
         "f-dr5-nj~transit~bus",
         "f-dr5-nj~transit~rail",
         "f-dr5-nj~transit~rail",
-        "f-dr5r-path~nj~us",
+        // "f-dr5r-path~nj~us",  // doesn't have shapes
+        "http://data.trilliumtransit.com/gtfs/path-nj-us/path-nj-us.zip", // PATH, with shapes
         "f-dr5re-downtownalliance",
         "f-dr5r7-nycdotsiferry",
         "f-dr5r-nycferry",
@@ -25,6 +26,6 @@
         40.71,
         -74.01
     ],
-    "zoom": 11,
+    "zoom": 12,
     "detail": "MTA, PATH, NJ Transit"
 }

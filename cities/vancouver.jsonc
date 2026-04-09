@@ -1,0 +1,17 @@
+{
+    "id": "vancouver",
+    "bbbike_name": "Vancouver",
+    "feed_ids": [
+        "f-c28-nstranslinkca", // TransLink
+        "f-aquabus~bc~ca" // Aquabus
+    ],
+    "name": "Vancouver, BC",
+    "file": "vancouver.bin",
+    "bbox": "-123.3070,48.9990,-122.6680,49.4160",
+    "center": [
+        49.208,
+        -122.988
+    ],
+    "zoom": 12,
+    "detail": "TransLink"
+}
