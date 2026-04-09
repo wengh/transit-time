@@ -8,7 +8,7 @@ mod transitland;
 use anyhow::{Context, Result};
 use clap::Parser;
 use jsonc_parser::parse_to_serde_value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -947,6 +947,25 @@ pub fn run_prep(
     }
     eprintln!("  {} stops within bbox", gtfs_data.stops.len());
 
+    // Identify trips with ≥2 in-bbox stops; trips with 0-1 are useless (no edges)
+    let in_bbox_stop_ids: HashSet<&str> = gtfs_data.stops.iter().map(|s| s.id.as_str()).collect();
+    let mut stops_per_trip: HashMap<&str, usize> = HashMap::new();
+    for st in &gtfs_data.stop_times {
+        if in_bbox_stop_ids.contains(st.stop_id.as_str()) {
+            *stops_per_trip.entry(st.trip_id.as_str()).or_default() += 1;
+        }
+    }
+    let valid_trip_ids: HashSet<&str> = stops_per_trip
+        .iter()
+        .filter(|(_, &count)| count >= 2)
+        .map(|(&id, _)| id)
+        .collect();
+    eprintln!(
+        "  {} trips with ≥2 in-bbox stops (of {} total)",
+        valid_trip_ids.len(),
+        gtfs_data.trips.len()
+    );
+
     // Step 4: Build OSM graph
     eprintln!("\n--- Building OSM graph ---");
     let mut osm_graph = graph::build_graph(&osm_path, bbox)?;
@@ -1003,9 +1022,12 @@ pub fn run_prep(
     let mut route_names: Vec<String> = Vec::new();
     let mut route_colors: Vec<Option<gtfs::Color>> = Vec::new();
     let mut route_shapes: Vec<Vec<String>> = Vec::new();
-    // Build route_id -> shape_ids from trips (only once, before consuming routes)
-    let mut route_id_to_shapes: HashMap<&str, std::collections::HashSet<&str>> = HashMap::new();
+    // Build route_id -> shape_ids from trips with ≥2 in-bbox stops only
+    let mut route_id_to_shapes: HashMap<&str, HashSet<&str>> = HashMap::new();
     for trip in &gtfs_data.trips {
+        if !valid_trip_ids.contains(trip.id.as_str()) {
+            continue;
+        }
         if let Some(ref shape_id) = trip.shape_id {
             route_id_to_shapes
                 .entry(&trip.route_id)
@@ -1023,6 +1045,35 @@ pub fn run_prep(
             .unwrap_or_default();
         route_shapes.push(shapes);
     }
+
+    // Prune shapes: keep only those referenced by routes, then trim to bbox
+    let referenced_shape_ids: HashSet<&str> = route_shapes
+        .iter()
+        .flat_map(|shapes| shapes.iter().map(|s| s.as_str()))
+        .collect();
+    let total_shapes = gtfs_data.shapes.len();
+    gtfs_data
+        .shapes
+        .retain(|id, _| referenced_shape_ids.contains(id.as_str()));
+    for points in gtfs_data.shapes.values_mut() {
+        let first_in = points.iter().position(|&(lat, lon)| {
+            lat >= min_lat && lat <= max_lat && lon >= min_lon && lon <= max_lon
+        });
+        let last_in = points.iter().rposition(|&(lat, lon)| {
+            lat >= min_lat && lat <= max_lat && lon >= min_lon && lon <= max_lon
+        });
+        if let (Some(f), Some(l)) = (first_in, last_in) {
+            *points = points[f..=l].to_vec();
+        } else {
+            points.clear();
+        }
+    }
+    gtfs_data.shapes.retain(|_, pts| !pts.is_empty());
+    eprintln!(
+        "  {} shapes after pruning and trimming (of {} total)",
+        gtfs_data.shapes.len(),
+        total_shapes
+    );
 
     // Step 7: Serialize to binary
     eprintln!("\n--- Writing binary output ---");
