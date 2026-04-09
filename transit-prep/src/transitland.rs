@@ -103,14 +103,25 @@ pub fn latest_feed_sha1(api_key: &str, onestop_id: &str) -> Result<Option<String
     Ok(sha1)
 }
 
-/// Build the download URL for a Transitland feed, including the API key as a query param
-/// so that the standard GTFS fetcher can download it without special header handling.
-/// The endpoint returns a 302 redirect to Azure blob storage with the latest GTFS zip.
-pub fn download_url(api_key: &str, onestop_id: &str) -> String {
-    format!(
-        "{}/feeds/{}/download_latest_feed_version?apikey={}",
-        API_BASE, onestop_id, api_key
-    )
+/// Download the latest GTFS zip for a Transitland feed using header-based auth.
+/// Returns the raw bytes of the zip file.
+pub fn download_feed(api_key: &str, onestop_id: &str) -> Result<Vec<u8>> {
+    let url = format!(
+        "{}/feeds/{}/download_latest_feed_version",
+        API_BASE, onestop_id
+    );
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(300))
+        .user_agent("Mozilla/5.0 (compatible; transit-prep/1.0)")
+        .build()?;
+    let bytes = client
+        .get(&url)
+        .header("apikey", api_key)
+        .send()?
+        .error_for_status()
+        .with_context(|| format!("Failed to download feed '{}'", onestop_id))?
+        .bytes()?;
+    Ok(bytes.to_vec())
 }
 
 pub fn query_feeds_in_bbox(api_key: &str, bbox: (f64, f64, f64, f64)) -> Result<Vec<Feed>> {

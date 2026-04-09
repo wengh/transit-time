@@ -2064,6 +2064,7 @@ dependencies = [
  "osmpbf",
  "pco",
  "quick-xml",
+ "rayon",
  "reqwest",
  "serde",
  "serde_json",

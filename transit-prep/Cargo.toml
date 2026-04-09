@@ -30,6 +30,7 @@ hex = "0.4"
 jsonc-parser = { version = "0.32.2", features = ["serde"] }
 dotenvy = "0.15"
 chrono = "0.4"
+rayon = "1"
 
 [dev-dependencies]
 tempfile = "3"

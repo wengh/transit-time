@@ -14,25 +14,42 @@ const OVERPASS_URLS: &[&str] = &[
 const BBBIKE_BASE: &str = "https://download.bbbike.org/osm/bbbike";
 
 /// Return the cache path where OSM data would be stored for a city.
+/// Must match the naming logic in `fetch_osm`.
 #[allow(dead_code)] // used from binary crate, not lib
-pub(crate) fn cache_path(cache_dir: &Path, city: &str, osm_url: Option<&str>) -> PathBuf {
+pub(crate) fn cache_path(
+    cache_dir: &Path,
+    city: &str,
+    bbox: (f64, f64, f64, f64),
+    bbbike_name: Option<&str>,
+    osm_url: Option<&str>,
+) -> PathBuf {
     if let Some(url) = osm_url {
         let ext = if url.contains(".pbf") {
             "osm.pbf"
         } else {
             "osm.xml"
         };
-        cache_dir.join(format!("{}.{}", sanitize(city), ext))
-    } else {
-        // bbbike or overpass — bbbike produces .osm.pbf, overpass produces .osm.xml
-        // Check pbf first since it's preferred
-        let pbf = cache_dir.join(format!("{}.osm.pbf", sanitize(city)));
-        if pbf.exists() {
-            return pbf;
-        }
-        // Default to pbf (bbbike path)
-        pbf
+        return cache_dir.join(format!("{}.{}", sanitize(city), ext));
     }
+
+    // BBBike produces .osm.pbf
+    let pbf = cache_dir.join(format!("{}.osm.pbf", sanitize(city)));
+    if bbbike_name.is_some() || pbf.exists() {
+        return pbf;
+    }
+
+    // Overpass fallback uses bbox-based XML name
+    let (min_lon, min_lat, max_lon, max_lat) = bbox;
+    let xml = cache_dir.join(format!(
+        "osm_{:.4}_{:.4}_{:.4}_{:.4}.xml",
+        min_lon, min_lat, max_lon, max_lat
+    ));
+    if xml.exists() {
+        return xml;
+    }
+
+    // Default: pbf (for fresh downloads, bbbike will be tried first)
+    pbf
 }
 
 /// Fetch pedestrian-walkable OSM data for a bounding box, caching the result.

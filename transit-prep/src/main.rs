@@ -149,18 +149,9 @@ fn warn_if_expired(feed_id: &str, data: &gtfs::GtfsData) {
     }
 }
 
-/// Extract Transitland onestop_id and api_key from a Transitland download URL, if it is one.
-fn parse_transitland_url(url: &str) -> Option<(&str, &str)> {
-    let prefix = "https://api.transit.land/api/v2/rest/feeds/";
-    let suffix = "/download_latest_feed_version?apikey=";
-    if let Some(rest) = url.strip_prefix(prefix) {
-        if let Some(pos) = rest.find(suffix) {
-            let onestop_id = &rest[..pos];
-            let api_key = &rest[pos + suffix.len()..];
-            return Some((onestop_id, api_key));
-        }
-    }
-    None
+/// Check if a feed ID is a Transitland onestop ID (starts with "f-").
+fn is_transitland_id(feed_id: &str) -> bool {
+    feed_id.starts_with("f-")
 }
 
 /// FNV-1a hash of a URL.
@@ -172,43 +163,59 @@ fn url_hash(url: &str) -> u64 {
 
 /// Cache path for the GTFS zip download.
 /// Transitland feeds use the onestop ID as filename; direct URLs use a hash.
-fn gtfs_cache_path(url: &str, cache_dir: &Path) -> PathBuf {
-    if let Some((onestop_id, _)) = parse_transitland_url(url) {
-        cache_dir.join(format!("{}.gtfs.zip", onestop_id))
+fn gtfs_cache_path(feed_id: &str, cache_dir: &Path) -> PathBuf {
+    if is_transitland_id(feed_id) {
+        cache_dir.join(format!("{}.gtfs.zip", feed_id))
     } else {
-        cache_dir.join(format!("url_{:016x}.gtfs.zip", url_hash(url)))
+        cache_dir.join(format!("url_{:016x}.gtfs.zip", url_hash(feed_id)))
     }
 }
 
 /// Cache path for the sha1 sidecar (stored in cache_dir/sha1/ so it can be
 /// cached separately from the large download files in CI).
-fn gtfs_sha1_path(url: &str, cache_dir: &Path) -> PathBuf {
-    if let Some((onestop_id, _)) = parse_transitland_url(url) {
-        cache_dir.join("sha1").join(format!("{}.sha1", onestop_id))
+fn gtfs_sha1_path(feed_id: &str, cache_dir: &Path) -> PathBuf {
+    if is_transitland_id(feed_id) {
+        cache_dir.join("sha1").join(format!("{}.sha1", feed_id))
     } else {
         cache_dir
             .join("sha1")
-            .join(format!("url_{:016x}.sha1", url_hash(url)))
+            .join(format!("url_{:016x}.sha1", url_hash(feed_id)))
     }
 }
 
-fn fetch_gtfs_url(url: &str, cache_dir: &Path) -> Result<PathBuf> {
-    let cache_path = gtfs_cache_path(url, cache_dir);
-    let sha1_path = gtfs_sha1_path(url, cache_dir);
+/// Download a GTFS feed (Transitland or direct URL) into the cache directory.
+/// For Transitland feeds, uses header-based auth and saves the SHA1 sidecar.
+fn fetch_gtfs(feed_id: &str, api_key: Option<&str>, cache_dir: &Path) -> Result<PathBuf> {
+    let cache_path = gtfs_cache_path(feed_id, cache_dir);
+    let sha1_path = gtfs_sha1_path(feed_id, cache_dir);
 
-    // If cached, check if Transitland has a newer version
-    if cache_path.exists() {
-        if let Some((onestop_id, api_key)) = parse_transitland_url(url) {
+    if cache_path.exists() && !is_transitland_id(feed_id) {
+        eprintln!("Using cached GTFS: {:?}", cache_path);
+        return Ok(cache_path);
+    }
+
+    if is_transitland_id(feed_id) {
+        let key =
+            api_key.with_context(|| format!("Feed '{}' requires TRANSITLAND_API_KEY", feed_id))?;
+
+        // If cached, check staleness via SHA1 (skip if checked recently)
+        if cache_path.exists() {
+            if sha1_recently_checked(&sha1_path) {
+                eprintln!("Using cached GTFS (checked recently): {:?}", cache_path);
+                return Ok(cache_path);
+            }
             let local_sha1 = std::fs::read_to_string(&sha1_path).unwrap_or_default();
-            match transitland::latest_feed_sha1(api_key, onestop_id) {
+            match transitland::latest_feed_sha1(key, feed_id) {
                 Ok(Some(remote_sha1)) if !local_sha1.is_empty() && local_sha1 == remote_sha1 => {
+                    // Touch the sha1 file to record that we just checked
+                    let _ = std::fs::write(&sha1_path, &remote_sha1);
                     eprintln!("Using cached GTFS (up to date): {:?}", cache_path);
                     return Ok(cache_path);
                 }
                 Ok(Some(remote_sha1)) => {
                     eprintln!(
                         "Transitland feed '{}' has new version (sha1: {}), re-downloading...",
-                        onestop_id,
+                        feed_id,
                         &remote_sha1[..12.min(remote_sha1.len())]
                     );
                     // Fall through to download
@@ -226,45 +233,62 @@ fn fetch_gtfs_url(url: &str, cache_dir: &Path) -> Result<PathBuf> {
                     return Ok(cache_path);
                 }
             }
-        } else {
-            eprintln!("Using cached GTFS: {:?}", cache_path);
-            return Ok(cache_path);
         }
-    }
 
-    let tl_info = parse_transitland_url(url).map(|(id, key)| (id.to_string(), key.to_string()));
-
-    download::with_download_lock(&cache_path, |path| {
-        // Re-check after acquiring lock (parallel process may have downloaded)
-        if path.exists() && tl_info.is_none() {
-            eprintln!(
-                "Using cached GTFS (downloaded by parallel process): {:?}",
-                path
-            );
-            return Ok(path.to_path_buf());
-        }
-        eprintln!("Downloading GTFS from: {}", url);
-        let client = reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(300))
-            .user_agent("Mozilla/5.0 (compatible; transit-prep/1.0)")
-            .build()?;
-        let bytes = client.get(url).send()?.error_for_status()?.bytes()?;
-        let tmp = path.with_extension("zip.tmp");
-        std::fs::File::create(&tmp)?.write_all(&bytes)?;
-        std::fs::rename(&tmp, path)?;
-
-        // Save the sha1 for future staleness checks
-        if let Some((onestop_id, api_key)) = &tl_info {
-            match transitland::latest_feed_sha1(api_key, onestop_id) {
-                Ok(Some(sha1)) => {
-                    let _ = std::fs::write(&sha1_path, &sha1);
+        // Download via Transitland with header auth
+        download::with_download_lock(&cache_path, |path| {
+            if path.exists() {
+                // Check again — parallel process may have just downloaded
+                if sha1_recently_checked(&sha1_path) {
+                    return Ok(path.to_path_buf());
                 }
-                _ => {}
             }
-        }
+            eprintln!("Downloading GTFS from Transitland: {}", feed_id);
+            let bytes = transitland::download_feed(key, feed_id)?;
+            let tmp = path.with_extension("zip.tmp");
+            std::fs::File::create(&tmp)?.write_all(&bytes)?;
+            std::fs::rename(&tmp, path)?;
 
-        Ok(path.to_path_buf())
-    })
+            // Save sha1 for future staleness checks
+            if let Ok(Some(sha1)) = transitland::latest_feed_sha1(key, feed_id) {
+                let _ = std::fs::write(&sha1_path, &sha1);
+            }
+
+            Ok(path.to_path_buf())
+        })
+    } else {
+        // Direct URL download
+        download::with_download_lock(&cache_path, |path| {
+            if path.exists() {
+                eprintln!(
+                    "Using cached GTFS (downloaded by parallel process): {:?}",
+                    path
+                );
+                return Ok(path.to_path_buf());
+            }
+            eprintln!("Downloading GTFS from: {}", feed_id);
+            let client = reqwest::blocking::Client::builder()
+                .timeout(std::time::Duration::from_secs(300))
+                .user_agent("Mozilla/5.0 (compatible; transit-prep/1.0)")
+                .build()?;
+            let bytes = client.get(feed_id).send()?.error_for_status()?.bytes()?;
+            let tmp = path.with_extension("zip.tmp");
+            std::fs::File::create(&tmp)?.write_all(&bytes)?;
+            std::fs::rename(&tmp, path)?;
+            Ok(path.to_path_buf())
+        })
+    }
+}
+
+/// Check if a sha1 sidecar was written/updated less than 2 days ago.
+fn sha1_recently_checked(sha1_path: &Path) -> bool {
+    std::fs::metadata(sha1_path)
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .map(|mtime| {
+            mtime.elapsed().unwrap_or_default() < std::time::Duration::from_secs(2 * 24 * 3600)
+        })
+        .unwrap_or(false)
 }
 
 fn parse_bbox(s: &str) -> Result<(f64, f64, f64, f64)> {
@@ -282,20 +306,17 @@ fn parse_bbox(s: &str) -> Result<(f64, f64, f64, f64)> {
 /// Resolve a feed ID to a download URL.
 /// Direct URLs pass through; Transitland onestop IDs (starting with "f-") are resolved
 /// to Transitland's download endpoint (which serves a hosted copy of the GTFS zip).
-fn resolve_feed_id(feed_id: &str, api_key: Option<&str>) -> Result<String> {
+fn validate_feed_id(feed_id: &str, api_key: Option<&str>) -> Result<()> {
     if feed_id.starts_with("http://") || feed_id.starts_with("https://") {
-        return Ok(feed_id.to_string());
+        return Ok(());
     }
     if feed_id.starts_with("f-") {
-        let key = api_key.with_context(|| {
-            format!(
-                "Feed '{}' is a Transitland ID but TRANSITLAND_API_KEY is not set",
-                feed_id
-            )
-        })?;
-        let url = transitland::download_url(key, feed_id);
-        eprintln!("Resolved '{}' -> Transitland download", feed_id);
-        return Ok(url);
+        anyhow::ensure!(
+            api_key.is_some(),
+            "Feed '{}' is a Transitland ID but TRANSITLAND_API_KEY is not set",
+            feed_id
+        );
+        return Ok(());
     }
     anyhow::bail!(
         "Unknown feed_id format: '{}' (expected URL or Transitland onestop ID starting with 'f-')",
@@ -361,37 +382,45 @@ fn cmd_check(city_file: &Path, cache_dir: &Path) -> Result<bool> {
     let api_key = transitland::get_api_key().ok();
 
     for feed_id in &city.feed_ids {
-        let url = resolve_feed_id(feed_id, api_key.as_deref())?;
-        let Some((onestop_id, api_key)) = parse_transitland_url(&url) else {
+        if !is_transitland_id(feed_id) {
             continue; // direct URLs — no remote check available
-        };
+        }
+        let key = api_key
+            .as_deref()
+            .with_context(|| format!("Feed '{}' requires TRANSITLAND_API_KEY", feed_id))?;
 
-        let sha1_path = gtfs_sha1_path(&url, cache_dir);
+        let sha1_path = gtfs_sha1_path(feed_id, cache_dir);
+
+        if sha1_recently_checked(&sha1_path) {
+            eprintln!("Feed '{}': fresh (checked recently)", feed_id);
+            continue;
+        }
+
         let local_sha1 = std::fs::read_to_string(&sha1_path).unwrap_or_default();
 
         if local_sha1.is_empty() {
-            eprintln!("Feed '{}': no local sha1 — needs download", onestop_id);
+            eprintln!("Feed '{}': no local sha1 — needs download", feed_id);
             return Ok(true);
         }
 
-        match transitland::latest_feed_sha1(api_key, onestop_id) {
+        match transitland::latest_feed_sha1(key, feed_id) {
             Ok(Some(remote_sha1)) if remote_sha1 != local_sha1 => {
                 eprintln!(
                     "Feed '{}': stale (local: {}..., remote: {}...)",
-                    onestop_id,
+                    feed_id,
                     &local_sha1[..12.min(local_sha1.len())],
                     &remote_sha1[..12.min(remote_sha1.len())]
                 );
                 return Ok(true);
             }
             Ok(Some(_)) => {
-                eprintln!("Feed '{}': up to date", onestop_id);
+                eprintln!("Feed '{}': up to date", feed_id);
             }
             Ok(None) => {
-                eprintln!("Feed '{}': no remote sha1 available", onestop_id);
+                eprintln!("Feed '{}': no remote sha1 available", feed_id);
             }
             Err(e) => {
-                eprintln!("WARNING: could not check '{}': {}", onestop_id, e);
+                eprintln!("WARNING: could not check '{}': {}", feed_id, e);
             }
         }
     }
@@ -415,8 +444,8 @@ fn cmd_pipeline(
     // ── Stage 1: Extract feeds from city configs ──
     eprintln!("=== Stage 1: Extract feeds from city configs ===");
 
-    let mut cities: Vec<(String, CityConfig, Vec<String>)> = Vec::new(); // (id, config, resolved_urls)
-    let mut feed_to_cities: HashMap<String, Vec<String>> = HashMap::new(); // resolved_url → city_ids
+    let mut cities: Vec<(String, CityConfig)> = Vec::new();
+    let mut feed_to_cities: HashMap<String, Vec<String>> = HashMap::new(); // feed_id → city_ids
 
     let mut entries: Vec<_> = std::fs::read_dir(cities_dir)?
         .filter_map(|e| e.ok())
@@ -436,25 +465,20 @@ fn cmd_pipeline(
         let config: CityConfig = parse_to_serde_value(&city_json, &Default::default())
             .with_context(|| format!("Failed to parse {:?}", path))?;
 
-        let resolved: Vec<String> = config
-            .feed_ids
-            .iter()
-            .map(|fid| resolve_feed_id(fid, api_key.as_deref()))
-            .collect::<Result<Vec<_>>>()?;
-
-        for url in &resolved {
+        for fid in &config.feed_ids {
+            validate_feed_id(fid, api_key.as_deref())?;
             feed_to_cities
-                .entry(url.clone())
+                .entry(fid.clone())
                 .or_default()
                 .push(config.id.clone());
         }
 
-        cities.push((config.id.clone(), config, resolved));
+        cities.push((config.id.clone(), config));
     }
 
     let tl_feeds: Vec<_> = feed_to_cities
         .keys()
-        .filter(|u| parse_transitland_url(u).is_some())
+        .filter(|f| is_transitland_id(f))
         .cloned()
         .collect();
 
@@ -468,40 +492,48 @@ fn cmd_pipeline(
     // ── Stage 2: Check Transitland feed hashes ──
     eprintln!("\n=== Stage 2: Check Transitland feed hashes ===");
 
-    let mut stale_feeds: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut stale_feeds: HashSet<String> = HashSet::new();
 
-    for url in &tl_feeds {
-        let (onestop_id, key) = parse_transitland_url(url).unwrap();
-        let sha1_path = gtfs_sha1_path(url, cache_dir);
-        let local_sha1 = std::fs::read_to_string(&sha1_path).unwrap_or_default();
+    for feed_id in &tl_feeds {
+        let sha1_path = gtfs_sha1_path(feed_id, cache_dir);
 
-        if local_sha1.is_empty() {
-            eprintln!("  {}: no local sha1 → stale", onestop_id);
-            stale_feeds.insert(url.clone());
+        if sha1_recently_checked(&sha1_path) {
+            eprintln!("  {}: fresh (checked recently)", feed_id);
             continue;
         }
 
-        match transitland::latest_feed_sha1(key, onestop_id) {
+        let local_sha1 = std::fs::read_to_string(&sha1_path).unwrap_or_default();
+
+        if local_sha1.is_empty() {
+            eprintln!("  {}: no local sha1 → stale", feed_id);
+            stale_feeds.insert(feed_id.clone());
+            continue;
+        }
+
+        let key = api_key.as_deref().unwrap(); // validated in stage 1
+        match transitland::latest_feed_sha1(key, feed_id) {
             Ok(Some(remote_sha1)) if remote_sha1 != local_sha1 => {
-                eprintln!("  {}: sha1 changed → stale", onestop_id);
-                stale_feeds.insert(url.clone());
+                eprintln!("  {}: sha1 changed → stale", feed_id);
+                stale_feeds.insert(feed_id.clone());
             }
-            Ok(Some(_)) => {
-                eprintln!("  {}: up to date", onestop_id);
+            Ok(Some(remote_sha1)) => {
+                // Touch sha1 file to record successful check
+                let _ = std::fs::write(&sha1_path, &remote_sha1);
+                eprintln!("  {}: up to date", feed_id);
             }
             Ok(None) => {
-                eprintln!("  {}: no remote sha1 available", onestop_id);
+                eprintln!("  {}: no remote sha1 available", feed_id);
             }
             Err(e) => {
-                eprintln!("  WARNING: {}: {}", onestop_id, e);
+                eprintln!("  WARNING: {}: {}", feed_id, e);
             }
         }
     }
 
     // Also check for uncached direct URL feeds
-    for url in feed_to_cities.keys() {
-        if parse_transitland_url(url).is_none() && !gtfs_cache_path(url, cache_dir).exists() {
-            stale_feeds.insert(url.clone());
+    for feed_id in feed_to_cities.keys() {
+        if !is_transitland_id(feed_id) && !gtfs_cache_path(feed_id, cache_dir).exists() {
+            stale_feeds.insert(feed_id.clone());
         }
     }
 
@@ -516,9 +548,9 @@ fn cmd_pipeline(
 
     let mut cities_to_rebuild: Vec<String> = Vec::new();
 
-    for (id, _config, resolved) in &cities {
+    for (id, config) in &cities {
         let bin_path = output_dir.join(format!("{}.bin", id));
-        let has_stale_feed = resolved.iter().any(|u| stale_feeds.contains(u));
+        let has_stale_feed = config.feed_ids.iter().any(|f| stale_feeds.contains(f));
         let bin_missing = !bin_path.exists();
         let code_changed = exe_mtime
             .and_then(|exe_t| {
@@ -566,93 +598,106 @@ fn cmd_pipeline(
     // ── Stage 4: Download stale GTFS feeds + OSM data ──
     eprintln!("\n=== Stage 4: Download data ===");
 
-    // Only download feeds needed by cities we're rebuilding
-    let needed_feeds: std::collections::HashSet<&String> = cities
-        .iter()
-        .filter(|(id, _, _)| cities_to_rebuild.contains(id))
-        .flat_map(|(_, _, resolved)| resolved.iter())
-        .collect();
+    use rayon::prelude::*;
 
-    for url in &needed_feeds {
-        let cache_path = gtfs_cache_path(url, cache_dir);
-        if stale_feeds.contains(*url) || !cache_path.exists() {
-            fetch_gtfs_url(url, cache_dir)?;
-        }
-    }
+    // Only download feeds needed by cities we're rebuilding
+    let feeds_to_download: Vec<&String> = {
+        let needed: HashSet<&String> = cities
+            .iter()
+            .filter(|(id, _)| cities_to_rebuild.contains(id))
+            .flat_map(|(_, config)| config.feed_ids.iter())
+            .collect();
+        needed
+            .into_iter()
+            .filter(|fid| stale_feeds.contains(*fid) || !gtfs_cache_path(fid, cache_dir).exists())
+            .collect()
+    };
+
+    feeds_to_download
+        .par_iter()
+        .try_for_each(|feed_id| -> Result<()> {
+            fetch_gtfs(feed_id, api_key.as_deref(), cache_dir)?;
+            Ok(())
+        })?;
 
     // Download OSM data only if not already cached (OSM data is stable)
-    for (id, config, _) in &cities {
-        if !cities_to_rebuild.contains(id) {
-            continue;
-        }
-        let osm_path = osm::cache_path(cache_dir, id, config.osm_url.as_deref());
-        if !osm_path.exists() {
+    cities
+        .par_iter()
+        .filter(|(id, _)| cities_to_rebuild.contains(id))
+        .try_for_each(|(id, config)| -> Result<()> {
             let bbox = parse_bbox(&config.bbox)?;
-            osm::fetch_osm(
-                bbox,
+            let osm_path = osm::cache_path(
                 cache_dir,
                 id,
+                bbox,
                 config.bbbike_name.as_deref(),
                 config.osm_url.as_deref(),
-            )?;
-        } else {
-            eprintln!("  OSM for {}: cached", id);
-        }
-    }
+            );
+            if !osm_path.exists() {
+                osm::fetch_osm(
+                    bbox,
+                    cache_dir,
+                    id,
+                    config.bbbike_name.as_deref(),
+                    config.osm_url.as_deref(),
+                )?;
+            } else {
+                eprintln!("  OSM for {}: cached", id);
+            }
+            Ok(())
+        })?;
 
     // ── Stage 5: Build city .bin files ──
     eprintln!("\n=== Stage 5: Build city .bin files ===");
 
     std::fs::create_dir_all(output_dir)?;
 
-    for (id, config, resolved) in &cities {
-        if !cities_to_rebuild.contains(id) {
-            continue;
-        }
+    cities
+        .par_iter()
+        .filter(|(id, _)| cities_to_rebuild.contains(id))
+        .try_for_each(|(id, config)| -> Result<()> {
+            let bin_path = output_dir.join(format!("{}.bin", id));
+            let bbox = parse_bbox(&config.bbox)?;
+            let gtfs_paths: Vec<PathBuf> = config
+                .feed_ids
+                .iter()
+                .map(|fid| gtfs_cache_path(fid, cache_dir))
+                .collect();
+            let osm_path = osm::cache_path(
+                cache_dir,
+                id,
+                bbox,
+                config.bbbike_name.as_deref(),
+                config.osm_url.as_deref(),
+            );
 
-        let bin_path = output_dir.join(format!("{}.bin", id));
-        let bbox = parse_bbox(&config.bbox)?;
-
-        eprintln!("\n--- Building {} ---", id);
-        run_prep(
-            id,
-            resolved,
-            config.bbbike_name.as_deref(),
-            config.osm_url.as_deref(),
-            bbox,
-            &bin_path,
-            cache_dir,
-        )?;
-    }
+            eprintln!("\n--- Building {} ---", id);
+            run_prep(id, &gtfs_paths, &osm_path, bbox, &bin_path)?;
+            Ok(())
+        })?;
 
     // ── Stage 6: Clean up orphaned cache files ──
     eprintln!("\n=== Stage 6: Clean up orphaned cache files ===");
 
     // Collect expected cache filenames
-    let mut expected_files: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+    let mut expected_files: HashSet<PathBuf> = HashSet::new();
 
     // GTFS zips and sha1 sidecars for all active feeds
-    for url in feed_to_cities.keys() {
-        expected_files.insert(gtfs_cache_path(url, cache_dir));
-        expected_files.insert(gtfs_sha1_path(url, cache_dir));
+    for feed_id in feed_to_cities.keys() {
+        expected_files.insert(gtfs_cache_path(feed_id, cache_dir));
+        expected_files.insert(gtfs_sha1_path(feed_id, cache_dir));
     }
 
     // OSM files for all active cities
-    for (id, config, _) in &cities {
-        if config
-            .osm_url
-            .as_deref()
-            .map_or(false, |u| u.contains(".pbf"))
-            || config.bbbike_name.is_some()
-        {
-            expected_files.insert(cache_dir.join(format!("{}.osm.pbf", osm::sanitize(id))));
-        }
-        if config
-            .osm_url
-            .as_deref()
-            .map_or(false, |u| !u.contains(".pbf"))
-        {
-            expected_files.insert(cache_dir.join(format!("{}.osm.xml", osm::sanitize(id))));
+    for (id, config) in &cities {
+        if let Ok(bbox) = parse_bbox(&config.bbox) {
+            expected_files.insert(osm::cache_path(
+                cache_dir,
+                id,
+                bbox,
+                config.bbbike_name.as_deref(),
+                config.osm_url.as_deref(),
+            ));
         }
     }
 
@@ -695,8 +740,7 @@ fn cmd_pipeline(
     }
 
     // Scan output dir for orphaned .bin files
-    let active_city_ids: std::collections::HashSet<&str> =
-        cities.iter().map(|(id, _, _)| id.as_str()).collect();
+    let active_city_ids: HashSet<&str> = cities.iter().map(|(id, _)| id.as_str()).collect();
     if let Ok(entries) = std::fs::read_dir(output_dir) {
         for entry in entries.filter_map(|e| e.ok()) {
             let path = entry.path();
@@ -738,27 +782,28 @@ fn cmd_prep(city_file: &Path, output: &Path, cache_dir: &Path) -> Result<()> {
 
     std::fs::create_dir_all(cache_dir.join("sha1"))?;
 
-    // Resolve Transitland IDs to URLs
     let api_key = transitland::get_api_key().ok();
-    let has_transitland_ids = city.feed_ids.iter().any(|f| f.starts_with("f-"));
-    if has_transitland_ids && api_key.is_none() {
-        anyhow::bail!("Config contains Transitland feed IDs but TRANSITLAND_API_KEY is not set");
+    for fid in &city.feed_ids {
+        validate_feed_id(fid, api_key.as_deref())?;
     }
-    let resolved_feeds: Vec<String> = city
+
+    // Download GTFS feeds
+    let gtfs_paths: Vec<PathBuf> = city
         .feed_ids
         .iter()
-        .map(|fid| resolve_feed_id(fid, api_key.as_deref()))
+        .map(|fid| fetch_gtfs(fid, api_key.as_deref(), cache_dir))
         .collect::<Result<Vec<_>>>()?;
 
-    run_prep(
+    // Download OSM data
+    let osm_path = osm::fetch_osm(
+        bbox,
+        cache_dir,
         &city.id,
-        &resolved_feeds,
         city.bbbike_name.as_deref(),
         city.osm_url.as_deref(),
-        bbox,
-        output,
-        cache_dir,
-    )
+    )?;
+
+    run_prep(&city.id, &gtfs_paths, &osm_path, bbox, output)
 }
 
 fn cmd_generate(
@@ -889,31 +934,28 @@ fn cmd_generate(
 
 pub fn run_prep(
     city: &str,
-    feed_ids: &[String],
-    bbbike_name: Option<&str>,
-    osm_url: Option<&str>,
+    gtfs_paths: &[PathBuf],
+    osm_path: &Path,
     bbox: (f64, f64, f64, f64),
     output: &Path,
-    cache_dir: &Path,
 ) -> Result<()> {
     eprintln!("=== Transit Prep for '{}' ===", city);
     eprintln!("Bounding box: {:?}", bbox);
 
-    // Step 1: Download GTFS data
-    eprintln!("\n--- Fetching GTFS data ---");
+    // Step 1: Parse GTFS data
+    eprintln!("\n--- Parsing GTFS data ---");
 
     let mut merged: Option<gtfs::GtfsData> = None;
-    for fid in feed_ids {
-        let path = fetch_gtfs_url(fid, cache_dir)?;
-        eprintln!("GTFS feed {} cached at: {:?}", fid, path);
-        let data = gtfs::parse_gtfs(&path)?;
+    for path in gtfs_paths {
+        let data = gtfs::parse_gtfs(path)?;
         eprintln!(
-            "  {} stops, {} routes, {} trips",
+            "  {:?}: {} stops, {} routes, {} trips",
+            path.file_name().unwrap_or_default(),
             data.stops.len(),
             data.routes.len(),
             data.trips.len()
         );
-        warn_if_expired(fid, &data);
+        warn_if_expired(&path.to_string_lossy(), &data);
         match merged {
             Some(ref mut m) => m.merge(data),
             None => merged = Some(data),
@@ -921,13 +963,7 @@ pub fn run_prep(
     }
     let mut gtfs_data = merged.unwrap();
 
-    // Step 2: Download OSM data
-    eprintln!("\n--- Fetching OSM pedestrian data ---");
-    let osm_path = osm::fetch_osm(bbox, cache_dir, city, bbbike_name, osm_url)?;
-    eprintln!("OSM data cached at: {:?}", osm_path);
-
-    // Step 3: Parse GTFS
-    eprintln!("\n--- Parsing GTFS ---");
+    eprintln!("\n--- GTFS summary ---");
     eprintln!(
         "Parsed {} stops, {} routes, {} trips, {} stop_times, {} services",
         gtfs_data.stops.len(),
@@ -966,21 +1002,21 @@ pub fn run_prep(
         gtfs_data.trips.len()
     );
 
-    // Step 4: Build OSM graph
+    // Step 2: Build OSM graph
     eprintln!("\n--- Building OSM graph ---");
-    let mut osm_graph = graph::build_graph(&osm_path, bbox)?;
+    let mut osm_graph = graph::build_graph(osm_path, bbox)?;
     eprintln!(
         "Graph: {} nodes, {} edges",
         osm_graph.nodes.len(),
         osm_graph.edges.len(),
     );
 
-    // Step 5: Snap stops to OSM edges (inserting virtual nodes)
+    // Step 3: Snap stops to OSM edges (inserting virtual nodes)
     eprintln!("\n--- Snapping stops to OSM edges ---");
     let stop_to_node = graph::snap_stops_to_nodes(&gtfs_data.stops, &mut osm_graph);
     eprintln!("Snapped {} stops", stop_to_node.len());
 
-    // Step 6: Build service patterns and event arrays
+    // Step 4: Build service patterns and event arrays
     eprintln!("\n--- Building service patterns ---");
     let mut patterns = gtfs::build_service_patterns(&gtfs_data);
     eprintln!("Built {} service patterns", patterns.len());
