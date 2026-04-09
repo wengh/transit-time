@@ -171,7 +171,7 @@ impl TransitRouter {
         router::patterns_for_date(&self.data, date).len() as u32
     }
 
-    pub fn snap_to_node(&self, lat: f64, lon: f64) -> u32 {
+    pub fn snap_to_node(&self, lat: f64, lon: f64) -> Option<u32> {
         router::snap_to_node(&self.data, lat, lon)
     }
 

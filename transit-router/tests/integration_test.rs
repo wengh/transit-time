@@ -39,7 +39,7 @@ fn test_load_and_route_chapel_hill() {
 
     // Run TDD from a node near center of Chapel Hill
     // Snap to a node near UNC campus (35.91, -79.05)
-    let source = transit_router::router::snap_to_node(&prepared, 35.91, -79.05);
+    let source = transit_router::router::snap_to_node(&prepared, 35.91, -79.05).unwrap();
     eprintln!(
         "Source node: {} at ({}, {})",
         source, prepared.nodes[source as usize].lat, prepared.nodes[source as usize].lon
@@ -97,7 +97,7 @@ fn test_router_edge_cases() {
     let prepared = transit_router::data::load(&data).unwrap();
 
     // Test with invalid pattern index (should not panic)
-    let source = transit_router::router::snap_to_node(&prepared, 35.91, -79.05);
+    let source = transit_router::router::snap_to_node(&prepared, 35.91, -79.05).unwrap();
     let result = transit_router::router::run_tdd(&prepared, source, 28800, 999, 60);
     // Should still reach walking nodes
     let reachable = result

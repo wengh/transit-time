@@ -59,8 +59,9 @@ fn test_chicago_route() {
     let dest_lat = 41.884409337007234;
     let dest_lon = -87.62865402720838;
 
-    let origin_node = transit_router::router::snap_to_node(&prepared, origin_lat, origin_lon);
-    let dest_node = transit_router::router::snap_to_node(&prepared, dest_lat, dest_lon);
+    let origin_node =
+        transit_router::router::snap_to_node(&prepared, origin_lat, origin_lon).unwrap();
+    let dest_node = transit_router::router::snap_to_node(&prepared, dest_lat, dest_lon).unwrap();
 
     eprintln!(
         "Origin node: {} at ({}, {})",
@@ -250,8 +251,8 @@ fn test_green_line_no_pink_transfer() {
 
     // Source: 41.884400, -87.629347 (downtown, near Dearborn & Madison)
     // Dest:   41.884695, -87.677346 (near Damen & Lake Green Line stop)
-    let source = transit_router::router::snap_to_node(&prepared, 41.884400, -87.629347);
-    let dest = transit_router::router::snap_to_node(&prepared, 41.884695, -87.677346);
+    let source = transit_router::router::snap_to_node(&prepared, 41.884400, -87.629347).unwrap();
+    let dest = transit_router::router::snap_to_node(&prepared, 41.884695, -87.677346).unwrap();
 
     // Saturday
     let sat_patterns = transit_router::router::patterns_for_date(&prepared, 20260404);

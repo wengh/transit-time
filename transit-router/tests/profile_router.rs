@@ -31,7 +31,7 @@ fn profile_hour_window() {
     stats.print();
 
     let snap_start = Instant::now();
-    let source = transit_router::router::snap_to_node(&prepared, 41.884400, -87.629347);
+    let source = transit_router::router::snap_to_node(&prepared, 41.884400, -87.629347).unwrap();
     let snap_ms = snap_start.elapsed().as_micros();
     eprintln!(
         "snap_to_node: {}µs -> node {} ({}, {})",

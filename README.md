@@ -4,6 +4,8 @@ A browser-based tool that shows how far you can travel from any point on a map u
 
 Live demo: https://wengh.github.io/transit-time/
 
+Note: this project is mostly vibe coded.
+
 ## Using the tool
 
 ### Picking a city

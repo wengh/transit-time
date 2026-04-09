@@ -41,8 +41,8 @@ fn route(
     departure_secs: u32,
     transfer_slack: u32,
 ) -> Vec<Segment> {
-    let src_node = router::snap_to_node(data, src.0, src.1);
-    let dst_node = router::snap_to_node(data, dst.0, dst.1);
+    let src_node = router::snap_to_node(data, src.0, src.1).unwrap();
+    let dst_node = router::snap_to_node(data, dst.0, dst.1).unwrap();
     let patterns = router::patterns_for_date(data, date);
     let max_time = 7200;
     let results = router::run_tdd_multi(
@@ -101,7 +101,7 @@ fn montreal_debug_patterns() {
     let patterns = router::patterns_for_date(&data, 20260405);
     eprintln!("Patterns for 20260405 (Sunday): {} active", patterns.len());
 
-    let src_node = router::snap_to_node(&data, 45.500374, -73.568459);
+    let src_node = router::snap_to_node(&data, 45.500374, -73.568459).unwrap();
     let departure = hhmm(11, 0);
     eprintln!(
         "src_node={} at ({}, {})",
@@ -138,7 +138,7 @@ fn montreal_debug_patterns() {
         }
     }
 
-    let dst_node = router::snap_to_node(&data, 45.492700, -73.631000);
+    let dst_node = router::snap_to_node(&data, 45.492700, -73.631000).unwrap();
     eprintln!(
         "dst_node={} at ({}, {})",
         dst_node, data.nodes[dst_node as usize].lat, data.nodes[dst_node as usize].lon

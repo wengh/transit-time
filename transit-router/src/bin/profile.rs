@@ -11,7 +11,7 @@ fn main() {
     });
     let prepared = transit_router::data::load(&data).expect("Failed to load data");
 
-    let source = transit_router::router::snap_to_node(&prepared, 41.884400, -87.629347);
+    let source = transit_router::router::snap_to_node(&prepared, 41.884400, -87.629347).unwrap();
     let mon_patterns = transit_router::router::patterns_for_date(&prepared, 20260406); // Monday
 
     let samples = 10;
