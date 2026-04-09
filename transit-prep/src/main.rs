@@ -620,34 +620,9 @@ fn cmd_pipeline(
             Ok(())
         })?;
 
-    // Download OSM data only if not already cached (OSM data is stable)
-    cities
-        .par_iter()
-        .filter(|(id, _)| cities_to_rebuild.contains(id))
-        .try_for_each(|(id, config)| -> Result<()> {
-            let bbox = parse_bbox(&config.bbox)?;
-            let osm_path = osm::cache_path(
-                cache_dir,
-                id,
-                bbox,
-                config.bbbike_name.as_deref(),
-                config.osm_url.as_deref(),
-            );
-            if !osm_path.exists() {
-                osm::fetch_osm(
-                    bbox,
-                    cache_dir,
-                    id,
-                    config.bbbike_name.as_deref(),
-                    config.osm_url.as_deref(),
-                )?;
-            } else {
-                eprintln!("  OSM for {}: cached", id);
-            }
-            Ok(())
-        })?;
-
-    // ── Stage 5: Build city .bin files ──
+    // Download OSM data only if not already cached (OSM data is stable),
+    // then build city .bin files. Combined into one parallel pass so that
+    // fetch_osm returns the actual cache path (which varies by source).
     eprintln!("\n=== Stage 5: Build city .bin files ===");
 
     std::fs::create_dir_all(output_dir)?;
@@ -656,28 +631,31 @@ fn cmd_pipeline(
         .par_iter()
         .filter(|(id, _)| cities_to_rebuild.contains(id))
         .try_for_each(|(id, config)| -> Result<()> {
-            let bin_path = output_dir.join(format!("{}.bin", id));
             let bbox = parse_bbox(&config.bbox)?;
+
+            // fetch_osm handles caching internally and returns the actual path
+            let osm_path = osm::fetch_osm(
+                bbox,
+                cache_dir,
+                id,
+                config.bbbike_name.as_deref(),
+                config.osm_url.as_deref(),
+            )?;
+
             let gtfs_paths: Vec<PathBuf> = config
                 .feed_ids
                 .iter()
                 .map(|fid| gtfs_cache_path(fid, cache_dir))
                 .collect();
-            let osm_path = osm::cache_path(
-                cache_dir,
-                id,
-                bbox,
-                config.bbbike_name.as_deref(),
-                config.osm_url.as_deref(),
-            );
+            let bin_path = output_dir.join(format!("{}.bin", id));
 
             eprintln!("\n--- Building {} ---", id);
             run_prep(id, &gtfs_paths, &osm_path, bbox, &bin_path)?;
             Ok(())
         })?;
 
-    // ── Stage 6: Clean up orphaned cache files ──
-    eprintln!("\n=== Stage 6: Clean up orphaned cache files ===");
+    // ── Cleanup: Remove orphaned cache files ──
+    eprintln!("\n=== Cleanup: Remove orphaned cache files ===");
 
     // Collect expected cache filenames
     let mut expected_files: HashSet<PathBuf> = HashSet::new();
@@ -688,16 +666,17 @@ fn cmd_pipeline(
         expected_files.insert(gtfs_sha1_path(feed_id, cache_dir));
     }
 
-    // OSM files for all active cities
+    // OSM files for all active cities — include all possible naming patterns
+    // since the actual filename depends on which download path was used
     for (id, config) in &cities {
-        if let Ok(bbox) = parse_bbox(&config.bbox) {
-            expected_files.insert(osm::cache_path(
-                cache_dir,
-                id,
-                bbox,
-                config.bbbike_name.as_deref(),
-                config.osm_url.as_deref(),
-            ));
+        let sanitized = osm::sanitize(id);
+        expected_files.insert(cache_dir.join(format!("{}.osm.pbf", sanitized)));
+        expected_files.insert(cache_dir.join(format!("{}.osm.xml", sanitized)));
+        if let Ok((min_lon, min_lat, max_lon, max_lat)) = parse_bbox(&config.bbox) {
+            expected_files.insert(cache_dir.join(format!(
+                "osm_{:.4}_{:.4}_{:.4}_{:.4}.xml",
+                min_lon, min_lat, max_lon, max_lat
+            )));
         }
     }
 
