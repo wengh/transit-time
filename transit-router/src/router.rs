@@ -107,7 +107,7 @@ pub fn patterns_for_date(data: &PreparedData, date: u32) -> Vec<usize> {
         .iter()
         .enumerate()
         .filter(|(_, p)| {
-            if p.stop_index.events_by_stop.is_empty() {
+            if p.stop_index.events_by_stop.is_empty() && p.frequency_routes.is_empty() {
                 return false;
             }
             // Explicitly removed on this date

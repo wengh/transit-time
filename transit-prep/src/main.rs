@@ -1063,6 +1063,9 @@ pub fn run_prep(
     let stop_to_node = graph::snap_stops_to_nodes(&gtfs_data.stops, &mut osm_graph);
     eprintln!("Snapped {} stops", stop_to_node.len());
 
+    // Step 3b: Prune nodes unreachable from any transit stop
+    let stop_to_node = graph::prune_unreachable_nodes(&mut osm_graph, stop_to_node);
+
     // Step 4: Build service patterns and event arrays
     eprintln!("\n--- Building service patterns ---");
     let mut patterns = gtfs::build_service_patterns(&gtfs_data);

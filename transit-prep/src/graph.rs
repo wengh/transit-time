@@ -728,3 +728,91 @@ pub fn snap_stops_to_nodes(stops: &[Stop], graph: &mut OsmGraph) -> Vec<(u32, u3
 
     mapping
 }
+
+/// Prune all graph nodes unreachable from any transit stop via walking edges.
+/// Remaps node indices in the graph and stop_to_node mapping.
+pub fn prune_unreachable_nodes(
+    graph: &mut OsmGraph,
+    stop_to_node: Vec<(u32, u32)>,
+) -> Vec<(u32, u32)> {
+    let n = graph.nodes.len();
+
+    // Build adjacency list
+    let mut adj: Vec<Vec<u32>> = vec![Vec::new(); n];
+    for edge in &graph.edges {
+        adj[edge.u as usize].push(edge.v);
+        adj[edge.v as usize].push(edge.u);
+    }
+
+    // BFS from all stop nodes
+    let mut reachable = vec![false; n];
+    let mut queue: std::collections::VecDeque<u32> = std::collections::VecDeque::new();
+    for &(_, node) in &stop_to_node {
+        if !reachable[node as usize] {
+            reachable[node as usize] = true;
+            queue.push_back(node);
+        }
+    }
+    while let Some(u) = queue.pop_front() {
+        for &v in &adj[u as usize] {
+            if !reachable[v as usize] {
+                reachable[v as usize] = true;
+                queue.push_back(v);
+            }
+        }
+    }
+
+    // Build remap table
+    let mut remap: Vec<u32> = vec![u32::MAX; n];
+    let mut new_idx = 0u32;
+    for i in 0..n {
+        if reachable[i] {
+            remap[i] = new_idx;
+            new_idx += 1;
+        }
+    }
+    let kept = new_idx as usize;
+    let pruned = n - kept;
+
+    if pruned == 0 {
+        eprintln!("All {} nodes reachable from stops, nothing to prune", n);
+        return stop_to_node;
+    }
+
+    // Filter and remap nodes
+    graph.nodes = graph
+        .nodes
+        .drain(..)
+        .enumerate()
+        .filter(|(i, _)| reachable[*i])
+        .map(|(_, mut node)| {
+            node.index = remap[node.index as usize];
+            node
+        })
+        .collect();
+
+    // Filter and remap edges
+    graph.edges = graph
+        .edges
+        .drain(..)
+        .filter(|e| reachable[e.u as usize] && reachable[e.v as usize])
+        .map(|mut e| {
+            e.u = remap[e.u as usize];
+            e.v = remap[e.v as usize];
+            e
+        })
+        .collect();
+
+    eprintln!(
+        "Pruned {} unreachable nodes ({} kept, {:.1}% reduction)",
+        pruned,
+        kept,
+        pruned as f64 / n as f64 * 100.0
+    );
+
+    // Remap stop_to_node
+    stop_to_node
+        .into_iter()
+        .map(|(stop, node)| (stop, remap[node as usize]))
+        .collect()
+}
