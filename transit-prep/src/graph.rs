@@ -88,7 +88,9 @@ pub fn build_graph(osm_path: &Path, bbox: (f64, f64, f64, f64)) -> Result<OsmGra
         parse_xml(osm_path)?
     };
 
-    build_graph_from_raw(raw)
+    let mut graph = build_graph_from_raw(raw)?;
+    remove_small_components(&mut graph);
+    Ok(graph)
 }
 
 fn parse_xml(osm_path: &Path) -> Result<RawOsmData> {
@@ -648,51 +650,53 @@ pub fn snap_stops_to_nodes(stops: &[Stop], graph: &mut OsmGraph) -> Vec<(u32, u3
                 // Near endpoint v — reuse it, no split needed
                 orig_v
             } else {
-                // Create projection node on the edge and split
-                let proj_index = graph.nodes.len() as u32;
-                graph.nodes.push(OsmNode {
-                    id: 0,
-                    lat: snap.proj_lat,
-                    lon: snap.proj_lon,
-                    index: proj_index,
-                    is_entrance: false,
-                });
-
-                // Edge from previous split point to projection node
+                // Edge from previous split point to projection node.
+                // If seg_dist rounds to 0 (two snaps at nearly the same t),
+                // reuse prev_node rather than creating a dangling projection node.
                 let seg_dist = ((snap.t - prev_t) * orig_dist as f64) as f32;
-                if seg_dist > 0.0 {
+                if seg_dist == 0.0 {
+                    prev_node
+                } else {
+                    let proj_index = graph.nodes.len() as u32;
+                    graph.nodes.push(OsmNode {
+                        id: 0,
+                        lat: snap.proj_lat,
+                        lon: snap.proj_lon,
+                        index: proj_index,
+                        is_entrance: false,
+                    });
                     graph.edges.push(OsmEdge {
                         u: prev_node,
                         v: proj_index,
                         distance_meters: seg_dist,
                     });
+                    prev_node = proj_index;
+                    prev_t = snap.t;
+                    proj_index
                 }
-
-                prev_node = proj_index;
-                prev_t = snap.t;
-                proj_index
             };
 
-            // Create stop node at original stop position
-            let stop_node = graph.nodes.len() as u32;
-            graph.nodes.push(OsmNode {
-                id: 0,
-                lat: stops[snap.stop_index as usize].lat,
-                lon: stops[snap.stop_index as usize].lon,
-                index: stop_node,
-                is_entrance: false,
-            });
-
-            // Connect stop node to the graph
+            // Create stop node at the original stop position and connect it.
+            // If snap.dist is 0 the stop is exactly on the edge; reuse conn_node
+            // directly so we don't create an isolated zero-distance duplicate.
             if snap.dist > 0.0 {
+                let stop_node = graph.nodes.len() as u32;
+                graph.nodes.push(OsmNode {
+                    id: 0,
+                    lat: stops[snap.stop_index as usize].lat,
+                    lon: stops[snap.stop_index as usize].lon,
+                    index: stop_node,
+                    is_entrance: false,
+                });
                 graph.edges.push(OsmEdge {
                     u: stop_node,
                     v: conn_node,
                     distance_meters: snap.dist as f32,
                 });
+                mapping.push((snap.stop_index, stop_node));
+            } else {
+                mapping.push((snap.stop_index, conn_node));
             }
-
-            mapping.push((snap.stop_index, stop_node));
         }
 
         // Final segment from last split point to original endpoint v
@@ -731,77 +735,154 @@ pub fn snap_stops_to_nodes(stops: &[Stop], graph: &mut OsmGraph) -> Vec<(u32, u3
 
 /// Prune all graph nodes unreachable from any transit stop via walking edges.
 /// Remaps node indices in the graph and stop_to_node mapping.
-pub fn prune_unreachable_nodes(
-    graph: &mut OsmGraph,
-    stop_to_node: Vec<(u32, u32)>,
-) -> Vec<(u32, u32)> {
+/// Remove nodes (and their edges) where `keep[i]` is false, remapping indices.
+/// Returns the remap table (old index → new index, u32::MAX if removed).
+fn retain_nodes(graph: &mut OsmGraph, keep: &[bool]) -> Vec<u32> {
     let n = graph.nodes.len();
-
-    // Build adjacency list
-    let mut adj: Vec<Vec<u32>> = vec![Vec::new(); n];
-    for edge in &graph.edges {
-        adj[edge.u as usize].push(edge.v);
-        adj[edge.v as usize].push(edge.u);
-    }
-
-    // BFS from all stop nodes
-    let mut reachable = vec![false; n];
-    let mut queue: std::collections::VecDeque<u32> = std::collections::VecDeque::new();
-    for &(_, node) in &stop_to_node {
-        if !reachable[node as usize] {
-            reachable[node as usize] = true;
-            queue.push_back(node);
-        }
-    }
-    while let Some(u) = queue.pop_front() {
-        for &v in &adj[u as usize] {
-            if !reachable[v as usize] {
-                reachable[v as usize] = true;
-                queue.push_back(v);
-            }
-        }
-    }
-
-    // Build remap table
     let mut remap: Vec<u32> = vec![u32::MAX; n];
     let mut new_idx = 0u32;
     for i in 0..n {
-        if reachable[i] {
+        if keep[i] {
             remap[i] = new_idx;
             new_idx += 1;
         }
     }
-    let kept = new_idx as usize;
-    let pruned = n - kept;
 
-    if pruned == 0 {
-        eprintln!("All {} nodes reachable from stops, nothing to prune", n);
-        return stop_to_node;
-    }
-
-    // Filter and remap nodes
     graph.nodes = graph
         .nodes
         .drain(..)
         .enumerate()
-        .filter(|(i, _)| reachable[*i])
+        .filter(|(i, _)| keep[*i])
         .map(|(_, mut node)| {
             node.index = remap[node.index as usize];
             node
         })
         .collect();
 
-    // Filter and remap edges
     graph.edges = graph
         .edges
         .drain(..)
-        .filter(|e| reachable[e.u as usize] && reachable[e.v as usize])
+        .filter(|e| keep[e.u as usize] && keep[e.v as usize])
         .map(|mut e| {
             e.u = remap[e.u as usize];
             e.v = remap[e.v as usize];
             e
         })
         .collect();
+
+    remap
+}
+
+/// Build an adjacency list for the current graph.
+fn build_adj(graph: &OsmGraph) -> Vec<Vec<u32>> {
+    let n = graph.nodes.len();
+    let mut adj: Vec<Vec<u32>> = vec![Vec::new(); n];
+    for edge in &graph.edges {
+        adj[edge.u as usize].push(edge.v);
+        adj[edge.v as usize].push(edge.u);
+    }
+    adj
+}
+
+/// Remove connected components with fewer than `min_size` nodes.
+/// This prevents transit stops from snapping to tiny disconnected street fragments
+/// (e.g. opposite sides of elevated tracks that aren't connected in OSM data).
+fn remove_small_components(graph: &mut OsmGraph) {
+    const MIN_COMPONENT_SIZE: usize = 50;
+
+    let n = graph.nodes.len();
+    if n == 0 {
+        return;
+    }
+
+    let adj = build_adj(graph);
+
+    // Label each node with its component and track component sizes
+    let mut component: Vec<u32> = vec![u32::MAX; n];
+    let mut component_sizes: Vec<usize> = Vec::new();
+    let mut queue: std::collections::VecDeque<u32> = std::collections::VecDeque::new();
+
+    for start in 0..n {
+        if component[start] != u32::MAX {
+            continue;
+        }
+        let comp_id = component_sizes.len() as u32;
+        let mut size = 0usize;
+        component[start] = comp_id;
+        queue.push_back(start as u32);
+        while let Some(u) = queue.pop_front() {
+            size += 1;
+            for &v in &adj[u as usize] {
+                if component[v as usize] == u32::MAX {
+                    component[v as usize] = comp_id;
+                    queue.push_back(v);
+                }
+            }
+        }
+        component_sizes.push(size);
+    }
+
+    let keep: Vec<bool> = (0..n)
+        .map(|i| component_sizes[component[i] as usize] >= MIN_COMPONENT_SIZE)
+        .collect();
+    let remove_count = keep.iter().filter(|&&k| !k).count();
+    let num_small = component_sizes
+        .iter()
+        .filter(|&&s| s < MIN_COMPONENT_SIZE)
+        .count();
+
+    if remove_count == 0 {
+        eprintln!(
+            "No small components to remove ({} nodes in {} components)",
+            n,
+            component_sizes.len()
+        );
+        return;
+    }
+
+    retain_nodes(graph, &keep);
+    eprintln!(
+        "Removed {} small components ({} nodes), kept {} nodes",
+        num_small,
+        remove_count,
+        n - remove_count
+    );
+}
+
+pub fn prune_unreachable_nodes(
+    graph: &mut OsmGraph,
+    stop_to_node: Vec<(u32, u32)>,
+) -> Vec<(u32, u32)> {
+    let n = graph.nodes.len();
+    let adj = build_adj(graph);
+
+    // BFS from all stop nodes to find everything reachable by walking
+    let mut keep = vec![false; n];
+    let mut queue: std::collections::VecDeque<u32> = std::collections::VecDeque::new();
+    for &(_, node) in &stop_to_node {
+        if !keep[node as usize] {
+            keep[node as usize] = true;
+            queue.push_back(node);
+        }
+    }
+    while let Some(u) = queue.pop_front() {
+        for &v in &adj[u as usize] {
+            if !keep[v as usize] {
+                keep[v as usize] = true;
+                queue.push_back(v);
+            }
+        }
+    }
+
+    let pruned = keep.iter().filter(|&&k| !k).count();
+    let kept = n - pruned;
+
+    if pruned == 0 {
+        eprintln!("All {} nodes reachable from stops, nothing to prune", n);
+        return stop_to_node;
+    }
+
+    let remap = retain_nodes(graph, &keep);
 
     eprintln!(
         "Pruned {} unreachable nodes ({} kept, {:.1}% reduction)",
