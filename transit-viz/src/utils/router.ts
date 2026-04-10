@@ -228,17 +228,23 @@ function parsePathSegments(router: Router, sssp: WasmSsspResult, pathArray: Uint
 
     let finalCoords = coords;
     if (edgeType === 1 && routeIdx < 0xffffffff) {
-      const shapeCoords = router.route_shape_between(routeIdx, boardNode, endNode);
-      if (shapeCoords.length >= 4) {
-        finalCoords = [];
-        for (let k = 0; k < shapeCoords.length; k += 2) {
-          finalCoords.push([shapeCoords[k], shapeCoords[k + 1]]);
+      // Collect all node indices in this transit segment
+      const segNodes: number[] = [];
+      if (boardNode !== pathArray[startIdx]) segNodes.push(boardNode);
+      for (let j = startIdx; j <= endIdx; j += 3) segNodes.push(pathArray[j]);
+
+      // Chain per-leg shapes for each consecutive stop pair
+      const chainedCoords: Array<[number, number]> = [];
+      for (let j = 0; j < segNodes.length - 1; j++) {
+        const legShape = router.route_shape_between(routeIdx, segNodes[j], segNodes[j + 1]);
+        const skip = (j > 0 && legShape.length >= 2) ? 2 : 0;
+        for (let k = skip; k < legShape.length; k += 2) {
+          chainedCoords.push([legShape[k], legShape[k + 1]]);
         }
-      } else if (segments.length > 0) {
-        const prev = segments[segments.length - 1];
-        if (prev.coords.length > 0) {
-          coords.unshift(prev.coords[prev.coords.length - 1]);
-        }
+      }
+
+      if (chainedCoords.length >= 2) {
+        finalCoords = chainedCoords;
       }
     }
 

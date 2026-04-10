@@ -1,6 +1,13 @@
 use crate::data::{PatternData, PreparedData};
 use std::cmp::Reverse;
-use std::collections::BinaryHeap;
+use std::collections::{BinaryHeap, HashMap};
+
+/// Info about which event chain a transit node was reached from.
+#[derive(Clone, Copy)]
+pub struct BoardingEvent {
+    pub pattern_index: usize,
+    pub event_index: u32,
+}
 
 /// Sentinel: node was reached by walking from source (no transit yet).
 /// Boarding any route from this state requires no transfer slack.
@@ -128,30 +135,6 @@ pub fn patterns_for_date(data: &PreparedData, date: u32) -> Vec<usize> {
         .collect()
 }
 
-/// Run time-dependent Dijkstra from source_node at departure_time.
-/// Uses a single pattern.
-pub fn run_tdd(
-    data: &PreparedData,
-    source_node: u32,
-    departure_time: u32,
-    pattern_index: usize,
-    transfer_slack: u32,
-) -> Vec<NodeResult> {
-    let patterns: Vec<&PatternData> = if pattern_index < data.patterns.len() {
-        vec![&data.patterns[pattern_index]]
-    } else {
-        vec![]
-    };
-    run_tdd_inner(
-        data,
-        source_node,
-        departure_time,
-        &patterns,
-        transfer_slack,
-        DEFAULT_MAX_TIME,
-    )
-}
-
 /// Run time-dependent Dijkstra scanning events from multiple patterns.
 pub fn run_tdd_multi(
     data: &PreparedData,
@@ -160,10 +143,10 @@ pub fn run_tdd_multi(
     pattern_indices: &[usize],
     transfer_slack: u32,
     max_time: u32,
-) -> Vec<NodeResult> {
-    let patterns: Vec<&PatternData> = pattern_indices
+) -> (Vec<NodeResult>, HashMap<u32, BoardingEvent>) {
+    let patterns: Vec<(usize, &PatternData)> = pattern_indices
         .iter()
-        .filter_map(|&i| data.patterns.get(i))
+        .filter_map(|&i| data.patterns.get(i).map(|p| (i, p)))
         .collect();
     run_tdd_inner(
         data,
@@ -179,10 +162,10 @@ fn run_tdd_inner(
     data: &PreparedData,
     source_node: u32,
     departure_time: u32,
-    patterns: &[&PatternData],
+    patterns: &[(usize, &PatternData)],
     transfer_slack: u32,
     max_time: u32,
-) -> Vec<NodeResult> {
+) -> (Vec<NodeResult>, HashMap<u32, BoardingEvent>) {
     let n = data.num_nodes;
     let mut result = vec![NodeResult::UNREACHED; n];
     result[source_node as usize] = NodeResult {
@@ -201,6 +184,8 @@ fn run_tdd_inner(
     // leave_home: latest departure time from origin that still makes the connection.
     // Kept as a transient parallel array — not stored in NodeResult to save memory.
     let mut leave_home = vec![0u32; n];
+
+    let mut boarding_events: HashMap<u32, BoardingEvent> = HashMap::new();
 
     let mut pq: BinaryHeap<Reverse<(u32, u32)>> = BinaryHeap::new();
     pq.push(Reverse((departure_time, source_node)));
@@ -244,10 +229,11 @@ fn run_tdd_inner(
         // Transit edges (only at stop nodes)
         if data.node_is_stop[node as usize] {
             for &stop_idx in data.node_stop_indices.get(node) {
-                for pat in patterns {
+                for &(pat_idx, pat) in patterns {
                     scan_pattern_at_stop(
                         data,
                         pat,
+                        pat_idx,
                         stop_idx,
                         t_current,
                         current_event,
@@ -258,6 +244,7 @@ fn run_tdd_inner(
                         &mut result,
                         &mut leave_home,
                         &mut arrived_by_event,
+                        &mut boarding_events,
                         &mut pq,
                     );
                 }
@@ -265,13 +252,14 @@ fn run_tdd_inner(
         }
     }
 
-    result
+    (result, boarding_events)
 }
 
 #[inline(never)]
 fn scan_pattern_at_stop(
     data: &PreparedData,
     pat: &PatternData,
+    pat_idx: usize,
     stop_idx: u32,
     t_current: u32,
     current_event: u32,
@@ -282,6 +270,7 @@ fn scan_pattern_at_stop(
     result: &mut Vec<NodeResult>,
     leave_home: &mut Vec<u32>,
     arrived_by_event: &mut Vec<u32>,
+    boarding_events: &mut HashMap<u32, BoardingEvent>,
     pq: &mut BinaryHeap<Reverse<(u32, u32)>>,
 ) {
     // --- Frequency-based routes ---
@@ -396,10 +385,16 @@ fn scan_pattern_at_stop(
             current_leave_home
         };
 
+        let boarding_info = BoardingEvent {
+            pattern_index: pat_idx,
+            event_index: global_idx,
+        };
+
         ride_trip(
             data,
             pat,
             route_index,
+            boarding_info,
             lh,
             node,
             event.next_event_index,
@@ -409,6 +404,7 @@ fn scan_pattern_at_stop(
             result,
             leave_home,
             arrived_by_event,
+            boarding_events,
             pq,
         );
     }
@@ -419,6 +415,7 @@ fn ride_trip(
     data: &PreparedData,
     pat: &PatternData,
     route_index: u32,
+    boarding_info: BoardingEvent,
     trip_leave_home: u32,
     boarding_node: u32,
     mut next_event_idx: u32,
@@ -428,6 +425,7 @@ fn ride_trip(
     result: &mut Vec<NodeResult>,
     leave_home: &mut Vec<u32>,
     arrived_by_event: &mut Vec<u32>,
+    boarding_events: &mut HashMap<u32, BoardingEvent>,
     pq: &mut BinaryHeap<Reverse<(u32, u32)>>,
 ) {
     while next_event_idx != u32::MAX {
@@ -452,6 +450,7 @@ fn ride_trip(
                 result[dest_node as usize] = candidate;
                 leave_home[dest_node as usize] = trip_leave_home;
                 arrived_by_event[dest_node as usize] = next_event_idx;
+                boarding_events.insert(dest_node, boarding_info);
                 pq.push(Reverse((current_arrival, dest_node)));
             }
         }

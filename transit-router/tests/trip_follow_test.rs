@@ -330,11 +330,11 @@ fn build_test_data(add_extra_green: bool) -> PreparedData {
         adj,
         node_is_stop,
         node_stop_indices,
-        shapes: transit_router::data::JaggedArray {
+        leg_shapes: transit_router::data::JaggedArray {
             data: Vec::new(),
             offsets: vec![0],
         },
-        route_shapes: vec![Vec::new(); 2],
+        leg_shape_keys: Vec::new(),
         node_grid,
     }
 }
@@ -343,7 +343,7 @@ fn build_test_data(add_extra_green: bool) -> PreparedData {
 fn test_trip_following_prefers_direct_green() {
     let data = build_test_data(false);
     let departure_time = 28800u32;
-    let result = run_tdd_multi(&data, 0, departure_time, &[0], 60, 3600);
+    let (result, _) = run_tdd_multi(&data, 0, departure_time, &[0], 60, 3600);
     assert_ne!(result[4].arrival_delta, u16::MAX);
     assert_eq!(result[4].route_index, 1);
 }
@@ -352,7 +352,7 @@ fn test_trip_following_prefers_direct_green() {
 fn test_trip_following_better_leave_home() {
     let data = build_test_data(true);
     let departure_time = 28800u32;
-    let result = run_tdd_multi(&data, 0, departure_time, &[0], 60, 3600);
+    let (result, _) = run_tdd_multi(&data, 0, departure_time, &[0], 60, 3600);
     assert_eq!(result[4].arrival_delta, 540u16); // 29340 - 28800 = 540
 }
 
@@ -360,7 +360,7 @@ fn test_trip_following_better_leave_home() {
 fn test_path_reconstruction_through_blocked_stop() {
     let data = build_test_data(false);
     let departure_time = 28800u32;
-    let result = run_tdd_multi(&data, 0, departure_time, &[0], 60, 3600);
+    let (result, _) = run_tdd_multi(&data, 0, departure_time, &[0], 60, 3600);
 
     let mut path = Vec::new();
     let mut current = 4u32;

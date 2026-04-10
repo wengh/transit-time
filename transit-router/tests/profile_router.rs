@@ -65,7 +65,7 @@ fn profile_hour_window() {
         let m = (departure % 3600) / 60;
 
         let start = Instant::now();
-        let result = transit_router::router::run_tdd_multi(
+        let (result, _) = transit_router::router::run_tdd_multi(
             &prepared,
             source,
             departure,

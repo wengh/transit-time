@@ -45,7 +45,7 @@ fn route(
     let dst_node = router::snap_to_node(data, dst.0, dst.1).unwrap();
     let patterns = router::patterns_for_date(data, date);
     let max_time = 7200;
-    let results = router::run_tdd_multi(
+    let (results, boarding_events) = router::run_tdd_multi(
         data,
         src_node,
         departure_secs,
@@ -55,6 +55,7 @@ fn route(
     );
     let sssp = SsspResult {
         results,
+        boarding_events,
         departure_time: departure_secs,
     };
 
@@ -108,7 +109,7 @@ fn montreal_debug_patterns() {
         src_node, data.nodes[src_node as usize].lat, data.nodes[src_node as usize].lon
     );
 
-    let results = router::run_tdd_multi(&data, src_node, departure, &patterns, 60, 7200);
+    let (results, _) = router::run_tdd_multi(&data, src_node, departure, &patterns, 60, 7200);
 
     let reachable = results
         .iter()

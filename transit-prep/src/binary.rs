@@ -1,7 +1,6 @@
 use crate::graph::{haversine, OsmEdge, OsmNode};
 use crate::gtfs::{Color, ServicePattern, Stop};
 use anyhow::Result;
-use std::collections::HashMap;
 use std::io::Write;
 use std::path::Path;
 
@@ -12,23 +11,23 @@ pub struct PreparedData {
     pub stops: Vec<Stop>,
     pub stop_to_node: Vec<(u32, u32)>, // (stop_index, node_index)
     pub patterns: Vec<ServicePattern>,
-    pub shapes: HashMap<String, Vec<(f64, f64)>>,
     pub route_names: Vec<String>,
     pub route_colors: Vec<Option<Color>>,
-    pub route_shapes: Vec<Vec<String>>, // route_index -> shape_id
+    /// Pre-sliced shape polylines per transit leg: (route, from_stop, to_stop) -> [(lat, lon)]
+    pub leg_shapes: Vec<((u32, u32, u32), Vec<(f64, f64)>)>,
 }
 
-// Binary format v5:
+// Binary format v6:
 // Header:
 //   magic: [u8; 4] = "TRNS"
-//   version: u32 = 5
+//   version: u32 = 6
 //   num_nodes: u32
 //   num_edges: u32
 //   num_stops: u32
 //   num_stop_to_node: u32
 //   num_patterns: u32
 //   num_route_names: u32
-//   num_shapes: u32
+//   num_leg_shapes: u32
 //
 // Nodes section (SFC-sorted by Morton curve, 32-bit fixed-point 0.1 m resolution):
 //   min_lat: f64, min_lon: f64      // bbox origin
@@ -51,7 +50,7 @@ pub struct PreparedData {
 //
 // Route colors: per route: has_color: u8, [r: u8, g: u8, b: u8 if has_color]
 //
-// Patterns section: (unchanged from v3) for each pattern:
+// Patterns section: for each pattern:
 //   pattern_id: u32, day_mask: u8, start_date: u32, end_date: u32
 //   num_date_add: u32, dates_add: [u32; n]
 //   num_date_remove: u32, dates_remove: [u32; n]
@@ -61,12 +60,10 @@ pub struct PreparedData {
 //   [PCO stop_offsets, PCO sentinel_routes]
 //   num_freq: u32, freq_entries: [FreqEntry; num_freq]
 //
-// Shapes section: for each shape:
-//   pco_len: u32, pco_data: [u8; pco_len]  // PCO-compressed f32 coord bits
-//
-// Route-to-shape mapping:
-//   num_routes: u32
-//   for each route: num_shapes: u32, [shape_idx: u32; num_shapes]
+// Leg shapes section (sorted by key for binary search):
+//   for each leg:
+//     route_index: u32, from_stop: u32, to_stop: u32
+//     pco_len: u32, pco_data: [u8; pco_len]  // PCO-compressed f32 coord bits
 
 /// Spread 16-bit integer bits for Morton interleaving.
 fn spread_bits_16(mut x: u32) -> u32 {
@@ -89,10 +86,26 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
 
     // --- SFC reordering of nodes ---
     // Compute bounding box
-    let min_lat = data.nodes.iter().map(|n| n.lat).fold(f64::INFINITY, f64::min);
-    let max_lat = data.nodes.iter().map(|n| n.lat).fold(f64::NEG_INFINITY, f64::max);
-    let min_lon = data.nodes.iter().map(|n| n.lon).fold(f64::INFINITY, f64::min);
-    let max_lon = data.nodes.iter().map(|n| n.lon).fold(f64::NEG_INFINITY, f64::max);
+    let min_lat = data
+        .nodes
+        .iter()
+        .map(|n| n.lat)
+        .fold(f64::INFINITY, f64::min);
+    let max_lat = data
+        .nodes
+        .iter()
+        .map(|n| n.lat)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let min_lon = data
+        .nodes
+        .iter()
+        .map(|n| n.lon)
+        .fold(f64::INFINITY, f64::min);
+    let max_lon = data
+        .nodes
+        .iter()
+        .map(|n| n.lon)
+        .fold(f64::NEG_INFINITY, f64::max);
     let lat_range = (max_lat - min_lat).max(1e-10);
     let lon_range = (max_lon - min_lon).max(1e-10);
 
@@ -124,20 +137,32 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
     // Relabel edges: use new node indices, canonicalize u > v.
     // Third element is distance excess over straight-line (f32 bits stored as u32 for sorting key).
     // Use original f64 node coords for haversine so the delta is as small as possible.
-    let mut canon_edges: Vec<(u32, u32, f32)> = data.edges.iter().map(|e| {
-        let new_u = old_to_new[e.u as usize];
-        let new_v = old_to_new[e.v as usize];
-        let (cu, cv) = if new_u > new_v { (new_u, new_v) } else { (new_v, new_u) };
-        let straight = haversine(
-            data.nodes[e.u as usize].lat, data.nodes[e.u as usize].lon,
-            data.nodes[e.v as usize].lat, data.nodes[e.v as usize].lon,
-        ) as f32;
-        (cu, cu - cv, e.distance_meters - straight)
-    }).collect();
+    let mut canon_edges: Vec<(u32, u32, f32)> = data
+        .edges
+        .iter()
+        .map(|e| {
+            let new_u = old_to_new[e.u as usize];
+            let new_v = old_to_new[e.v as usize];
+            let (cu, cv) = if new_u > new_v {
+                (new_u, new_v)
+            } else {
+                (new_v, new_u)
+            };
+            let straight = haversine(
+                data.nodes[e.u as usize].lat,
+                data.nodes[e.u as usize].lon,
+                data.nodes[e.v as usize].lat,
+                data.nodes[e.v as usize].lon,
+            ) as f32;
+            (cu, cu - cv, e.distance_meters - straight)
+        })
+        .collect();
     canon_edges.sort_unstable_by_key(|&(u, delta, _)| (u, delta));
 
     // Relabel stop_to_node: update node indices
-    let relabeled_stn: Vec<(u32, u32)> = data.stop_to_node.iter()
+    let relabeled_stn: Vec<(u32, u32)> = data
+        .stop_to_node
+        .iter()
         .map(|&(si, ni)| (si, old_to_new[ni as usize]))
         .collect();
 
@@ -145,14 +170,14 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
 
     // Header
     buf.extend_from_slice(b"TRNS");
-    write_u32(&mut buf, 5); // version
+    write_u32(&mut buf, 6); // version
     write_u32(&mut buf, num_nodes as u32);
     write_u32(&mut buf, data.edges.len() as u32);
     write_u32(&mut buf, data.stops.len() as u32);
     write_u32(&mut buf, relabeled_stn.len() as u32);
     write_u32(&mut buf, data.patterns.len() as u32);
     write_u32(&mut buf, data.route_names.len() as u32);
-    write_u32(&mut buf, data.shapes.len() as u32);
+    write_u32(&mut buf, data.leg_shapes.len() as u32);
 
     // Nodes (v5): 32-bit fixed-point, 0.1 m resolution, SFC-sorted
     {
@@ -160,12 +185,14 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
         write_f64(&mut buf, min_lon);
         write_f64(&mut buf, lat_scale);
         write_f64(&mut buf, lon_scale);
-        let lat_u32: Vec<u32> = new_order.iter().map(|&i| {
-            ((data.nodes[i as usize].lat - min_lat) * lat_scale).round() as u32
-        }).collect();
-        let lon_u32: Vec<u32> = new_order.iter().map(|&i| {
-            ((data.nodes[i as usize].lon - min_lon) * lon_scale).round() as u32
-        }).collect();
+        let lat_u32: Vec<u32> = new_order
+            .iter()
+            .map(|&i| ((data.nodes[i as usize].lat - min_lat) * lat_scale).round() as u32)
+            .collect();
+        let lon_u32: Vec<u32> = new_order
+            .iter()
+            .map(|&i| ((data.nodes[i as usize].lon - min_lon) * lon_scale).round() as u32)
+            .collect();
         write_pco_u32(&mut buf, &lat_u32);
         write_pco_u32(&mut buf, &lon_u32);
     }
@@ -395,38 +422,20 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
         }
     }
 
-    // Shapes: build index mapping and compress with PCO per shape
-    // Sort shape IDs for consistent output order
-    let mut sorted_shape_ids: Vec<_> = data.shapes.keys().collect();
-    sorted_shape_ids.sort();
+    // Leg shapes: sorted by (route, from_stop, to_stop), each PCO-compressed
+    // num_leg_shapes already written in header
+    for &((route, from_stop, to_stop), ref points) in &data.leg_shapes {
+        write_u32(&mut buf, route);
+        write_u32(&mut buf, from_stop);
+        write_u32(&mut buf, to_stop);
 
-    // Map shape_id -> shape_index based on sorted order
-    let mut shape_id_to_index: std::collections::HashMap<String, u32> =
-        std::collections::HashMap::new();
-    for (idx, shape_id) in sorted_shape_ids.iter().enumerate() {
-        shape_id_to_index.insert((*shape_id).clone(), idx as u32);
-    }
-
-    // Write shapes: for each shape (in consistent sorted order): compressed PCO data
-    // num_shapes already written in header
-
-    for shape_id_ref in &sorted_shape_ids {
-        let shape_id = *shape_id_ref;
-        let points = &data.shapes[shape_id];
-
-        // Convert to f32 and flatten: [lat0, lon0, lat1, lon1, ...]
         let mut coords: Vec<u32> = Vec::with_capacity(points.len() * 2);
         for &(lat, lon) in points {
-            // Round to f32 and reinterpret as u32 for PCO compression
-            let lat_f32 = lat as f32;
-            let lon_f32 = lon as f32;
-            coords.push(lat_f32.to_bits());
-            coords.push(lon_f32.to_bits());
+            coords.push((lat as f32).to_bits());
+            coords.push((lon as f32).to_bits());
         }
 
-        // Compress coordinates with PCO - even if empty, compress empty vec
         let compressed = if coords.is_empty() {
-            // Empty shapes: write 0 length
             Vec::new()
         } else {
             pco::standalone::simple_compress(&coords, &pco::ChunkConfig::default())
@@ -434,17 +443,6 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
         };
         write_u32(&mut buf, compressed.len() as u32);
         buf.extend_from_slice(&compressed);
-    }
-
-    // Route-to-shape mapping: use shape indices instead of IDs
-    write_u32(&mut buf, data.route_shapes.len() as u32);
-    for shapes_for_route in &data.route_shapes {
-        write_u32(&mut buf, shapes_for_route.len() as u32);
-        for shape_id in shapes_for_route {
-            // Look up the shape index from the sorted mapping
-            let shape_idx = shape_id_to_index.get(shape_id).copied().unwrap_or(u32::MAX);
-            write_u32(&mut buf, shape_idx);
-        }
     }
 
     // Compress with gzip

@@ -324,6 +324,74 @@ fn validate_feed_id(feed_id: &str, api_key: Option<&str>) -> Result<()> {
     )
 }
 
+/// DP subsequence matching: find the minimum-cost monotone assignment of stops to shape points.
+/// Returns the shape point index for each stop, or None if matching is impossible.
+fn match_stops_to_shape(
+    stop_coords: &[(f64, f64)],
+    shape: &[(f64, f64)],
+    cos_lat: f64,
+) -> Option<Vec<usize>> {
+    let n = stop_coords.len();
+    let m = shape.len();
+    if n == 0 || m == 0 || n > m {
+        return None;
+    }
+
+    let dist = |s: (f64, f64), p: (f64, f64)| -> f64 {
+        let dlat = s.0 - p.0;
+        let dlon = (s.1 - p.1) * cos_lat;
+        dlat * dlat + dlon * dlon
+    };
+
+    let mut dp = vec![f64::MAX; m];
+    let mut backtrack = vec![vec![0usize; m]; n];
+
+    // Base case: stop 0
+    for j in 0..m {
+        dp[j] = dist(stop_coords[0], shape[j]);
+    }
+
+    // Fill remaining stops
+    for i in 1..n {
+        let mut new_dp = vec![f64::MAX; m];
+        let mut min_prev = f64::MAX;
+        let mut argmin_prev = 0;
+
+        for j in 0..m {
+            if min_prev < f64::MAX {
+                new_dp[j] = dist(stop_coords[i], shape[j]) + min_prev;
+                backtrack[i][j] = argmin_prev;
+            }
+            if dp[j] < min_prev {
+                min_prev = dp[j];
+                argmin_prev = j;
+            }
+        }
+        dp = new_dp;
+    }
+
+    // Find best final assignment
+    let mut best_j = 0;
+    let mut best_cost = f64::MAX;
+    for (j, &cost) in dp.iter().enumerate() {
+        if cost < best_cost {
+            best_cost = cost;
+            best_j = j;
+        }
+    }
+    if best_cost == f64::MAX {
+        return None;
+    }
+
+    // Backtrack
+    let mut result = vec![0usize; n];
+    result[n - 1] = best_j;
+    for i in (1..n).rev() {
+        result[i - 1] = backtrack[i][result[i]];
+    }
+    Some(result)
+}
+
 fn main() -> Result<()> {
     dotenvy::dotenv().ok();
     let cli = Cli::parse();
@@ -1085,62 +1153,156 @@ pub fn run_prep(
         total_stops
     );
 
-    // Build compacted route arrays and route_shapes in new-index order
+    // Build compacted route arrays
     let mut route_names: Vec<String> = Vec::new();
     let mut route_colors: Vec<Option<gtfs::Color>> = Vec::new();
-    let mut route_shapes: Vec<Vec<String>> = Vec::new();
-    // Build route_id -> shape_ids from trips with ≥2 in-bbox stops only
-    let mut route_id_to_shapes: HashMap<&str, HashSet<&str>> = HashMap::new();
-    for trip in &gtfs_data.trips {
-        if !valid_trip_ids.contains(trip.id.as_str()) {
-            continue;
-        }
-        if let Some(ref shape_id) = trip.shape_id {
-            route_id_to_shapes
-                .entry(&trip.route_id)
-                .or_default()
-                .insert(shape_id.as_str());
-        }
-    }
     for &old_idx in &used_route_indices {
         let route = &gtfs_data.routes[old_idx as usize];
         route_names.push(route.short_name.clone());
         route_colors.push(route.color);
-        let shapes = route_id_to_shapes
-            .get(route.id.as_str())
-            .map(|s| s.iter().map(|&id| id.to_string()).collect())
-            .unwrap_or_default();
-        route_shapes.push(shapes);
     }
 
-    // Prune shapes: keep only those referenced by routes, then trim to bbox
-    let referenced_shape_ids: HashSet<&str> = route_shapes
-        .iter()
-        .flat_map(|shapes| shapes.iter().map(|s| s.as_str()))
-        .collect();
-    let total_shapes = gtfs_data.shapes.len();
-    gtfs_data
-        .shapes
-        .retain(|id, _| referenced_shape_ids.contains(id.as_str()));
-    for points in gtfs_data.shapes.values_mut() {
-        let first_in = points.iter().position(|&(lat, lon)| {
-            lat >= min_lat && lat <= max_lat && lon >= min_lon && lon <= max_lon
-        });
-        let last_in = points.iter().rposition(|&(lat, lon)| {
-            lat >= min_lat && lat <= max_lat && lon >= min_lon && lon <= max_lon
-        });
-        if let (Some(f), Some(l)) = (first_in, last_in) {
-            *points = points[f..=l].to_vec();
-        } else {
-            points.clear();
+    // Step 6b: Build per-leg shape slices using DP subsequence matching
+    eprintln!("\n--- Building leg shapes ---");
+    let leg_shapes = {
+        // Build route_id -> old_route_index mapping
+        let route_id_to_old_idx: HashMap<&str, u32> = gtfs_data
+            .routes
+            .iter()
+            .map(|r| (r.id.as_str(), r.index))
+            .collect();
+
+        // Build stop_id -> new_stop_index mapping
+        let stop_id_to_new_idx: HashMap<&str, u32> = gtfs_data
+            .stops
+            .iter()
+            .map(|s| (s.id.as_str(), s.index))
+            .collect();
+
+        // Build stop_times_by_trip, sorted by stop_sequence, filtered to in-bbox stops
+        let mut stop_times_by_trip: HashMap<&str, Vec<&gtfs::StopTime>> = HashMap::new();
+        for st in &gtfs_data.stop_times {
+            if stop_id_to_new_idx.contains_key(st.stop_id.as_str()) {
+                stop_times_by_trip
+                    .entry(st.trip_id.as_str())
+                    .or_default()
+                    .push(st);
+            }
         }
-    }
-    gtfs_data.shapes.retain(|_, pts| !pts.is_empty());
-    eprintln!(
-        "  {} shapes after pruning and trimming (of {} total)",
-        gtfs_data.shapes.len(),
-        total_shapes
-    );
+        for times in stop_times_by_trip.values_mut() {
+            times.sort_by_key(|st| st.stop_sequence);
+        }
+
+        // Compute cos(lat) for the dataset center
+        let center_lat = (min_lat + max_lat) / 2.0;
+        let cos_lat = center_lat.to_radians().cos();
+
+        // Best leg shape per (route, from_stop, to_stop): (quality, points)
+        let mut best_legs: HashMap<(u32, u32, u32), (f64, Vec<(f64, f64)>)> = HashMap::new();
+
+        let mut trips_with_shape = 0u32;
+        let mut trips_matched = 0u32;
+
+        for trip in &gtfs_data.trips {
+            if !valid_trip_ids.contains(trip.id.as_str()) {
+                continue;
+            }
+            let shape_id = match &trip.shape_id {
+                Some(id) => id.as_str(),
+                None => continue,
+            };
+            let shape = match gtfs_data.shapes.get(shape_id) {
+                Some(pts) if pts.len() >= 2 => pts,
+                _ => continue,
+            };
+            let times = match stop_times_by_trip.get(trip.id.as_str()) {
+                Some(t) if t.len() >= 2 => t,
+                _ => continue,
+            };
+            let old_route_idx = match route_id_to_old_idx.get(trip.route_id.as_str()) {
+                Some(&idx) => idx,
+                None => continue,
+            };
+            let new_route_idx = match route_remap.get(&old_route_idx) {
+                Some(&idx) => idx,
+                None => continue,
+            };
+
+            trips_with_shape += 1;
+
+            // Collect stop coords (in stop_sequence order)
+            let stop_coords: Vec<(f64, f64)> = times
+                .iter()
+                .filter_map(|st| {
+                    let stop = &gtfs_data.stops[stop_id_to_new_idx[st.stop_id.as_str()] as usize];
+                    Some((stop.lat, stop.lon))
+                })
+                .collect();
+
+            // DP subsequence matching
+            let match_result = match_stops_to_shape(&stop_coords, shape, cos_lat);
+            let shape_indices = match match_result {
+                Some(indices) => indices,
+                None => continue,
+            };
+
+            trips_matched += 1;
+
+            // Extract leg slices for each consecutive stop pair
+            for w in 0..times.len() - 1 {
+                let from_stop = stop_id_to_new_idx[times[w].stop_id.as_str()];
+                let to_stop = stop_id_to_new_idx[times[w + 1].stop_id.as_str()];
+                let key = (new_route_idx, from_stop, to_stop);
+
+                let si_from = shape_indices[w];
+                let si_to = shape_indices[w + 1];
+
+                // Quality = max distance of the two matched shape points to their stops
+                let d_from = {
+                    let dlat = stop_coords[w].0 - shape[si_from].0;
+                    let dlon = (stop_coords[w].1 - shape[si_from].1) * cos_lat;
+                    dlat * dlat + dlon * dlon
+                };
+                let d_to = {
+                    let dlat = stop_coords[w + 1].0 - shape[si_to].0;
+                    let dlon = (stop_coords[w + 1].1 - shape[si_to].1) * cos_lat;
+                    dlat * dlat + dlon * dlon
+                };
+                let quality = d_from.max(d_to);
+
+                if let Some((best_q, _)) = best_legs.get(&key) {
+                    if quality >= *best_q {
+                        continue;
+                    }
+                }
+
+                // Build the leg polyline: from_stop coords + shape slice + to_stop coords
+                let mut leg_points = Vec::with_capacity(si_to - si_from + 3);
+                leg_points.push(stop_coords[w]);
+                for i in si_from..=si_to {
+                    leg_points.push(shape[i]);
+                }
+                leg_points.push(stop_coords[w + 1]);
+
+                best_legs.insert(key, (quality, leg_points));
+            }
+        }
+
+        eprintln!(
+            "  {} trips with shapes, {} matched successfully, {} leg shapes",
+            trips_with_shape,
+            trips_matched,
+            best_legs.len()
+        );
+
+        // Sort by key for binary search at query time
+        let mut leg_shapes: Vec<((u32, u32, u32), Vec<(f64, f64)>)> = best_legs
+            .into_iter()
+            .map(|(k, (_, pts))| (k, pts))
+            .collect();
+        leg_shapes.sort_by_key(|&(k, _)| k);
+        leg_shapes
+    };
 
     // Step 7: Serialize to binary
     eprintln!("\n--- Writing binary output ---");
@@ -1150,10 +1312,9 @@ pub fn run_prep(
         stops: gtfs_data.stops,
         stop_to_node,
         patterns,
-        shapes: gtfs_data.shapes,
         route_names,
         route_colors,
-        route_shapes,
+        leg_shapes,
     };
     binary::write_binary(&prepared, output)?;
     let size = std::fs::metadata(output)?.len();

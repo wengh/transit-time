@@ -80,7 +80,7 @@ fn test_chicago_route() {
 
     let transfer_slack = 60; // 1 minute default
     let max_time = 7200; // 2 hours
-    let result = transit_router::router::run_tdd_multi(
+    let (result, boarding_events) = transit_router::router::run_tdd_multi(
         &prepared,
         origin_node,
         departure_time,
@@ -119,6 +119,7 @@ fn test_chicago_route() {
     eprintln!("\n=== PATH RECONSTRUCTION ===");
     let sssp = transit_router::SsspResult {
         results: result,
+        boarding_events,
         departure_time,
     };
     let path_flat = transit_router::reconstruct_path(&prepared, &sssp, dest_node);
@@ -259,7 +260,7 @@ fn test_green_line_no_pink_transfer() {
     eprintln!("Saturday patterns: {:?}", sat_patterns);
 
     let departure_time = 28800u32; // 8:00 AM
-    let result = transit_router::router::run_tdd_multi(
+    let (result, boarding_events) = transit_router::router::run_tdd_multi(
         &prepared,
         source,
         departure_time,
@@ -286,6 +287,7 @@ fn test_green_line_no_pink_transfer() {
     // Reconstruct path
     let sssp = transit_router::SsspResult {
         results: result,
+        boarding_events,
         departure_time,
     };
     let path_flat = transit_router::reconstruct_path(&prepared, &sssp, dest);

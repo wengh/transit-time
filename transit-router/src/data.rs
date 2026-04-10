@@ -185,10 +185,10 @@ pub struct PreparedData {
     pub adj: JaggedArray<(u32, f32)>,
     pub node_is_stop: Vec<bool>,
     pub node_stop_indices: SparseJaggedArray<u32>,
-    /// Compressed shapes: JaggedArray of PCO-compressed data (lat/lon pairs as f32 bits)
-    pub shapes: JaggedArray<u8>,
-    /// route_index -> [shape_indices]
-    pub route_shapes: Vec<Vec<u32>>,
+    /// Pre-sliced leg shapes: PCO-compressed sub-polylines per transit leg
+    pub leg_shapes: JaggedArray<u8>,
+    /// Sorted keys for leg_shapes: (route_index, from_stop, to_stop)
+    pub leg_shape_keys: Vec<(u32, u32, u32)>,
     /// Spatial grid index: (lat_cell, lon_cell) -> [node_indices]
     pub node_grid: std::collections::HashMap<(i32, i32), Vec<u32>>,
 }
@@ -210,7 +210,7 @@ pub fn load_with_stats(buf: &[u8]) -> Result<(PreparedData, LoadStats), String> 
     }
     pos += 4;
     let version = read_u32(&buf, &mut pos);
-    if version != 5 {
+    if version != 6 {
         return Err(format!("Unsupported version {}", version));
     }
     let num_nodes = read_u32(&buf, &mut pos) as usize;
@@ -484,66 +484,41 @@ pub fn load_with_stats(buf: &[u8]) -> Result<(PreparedData, LoadStats), String> 
     binary_sections.push(("patterns", pos - pos_before));
     timings.push(("parse+index patterns", t0_patterns.elapsed()));
 
-    // Shapes: compressed PCO data
+    // Leg shapes: per-leg PCO-compressed sub-polylines with sorted keys
     let t0 = Instant::now();
     let pos_before = pos;
-    let mut shapes_data: Vec<u8> = Vec::new();
-    let mut shapes_offsets: Vec<u32> = vec![0];
-    for shape_idx in 0..num_shapes {
-        if pos + 4 > buf.len() {
-            return Err(format!("Incomplete shape data at index {}", shape_idx));
+    let mut leg_shapes_data: Vec<u8> = Vec::new();
+    let mut leg_shapes_offsets: Vec<u32> = vec![0];
+    let mut leg_shape_keys: Vec<(u32, u32, u32)> = Vec::with_capacity(num_shapes);
+    for leg_idx in 0..num_shapes {
+        if pos + 16 > buf.len() {
+            return Err(format!("Incomplete leg shape key at index {}", leg_idx));
         }
+        let route = read_u32(&buf, &mut pos);
+        let from_stop = read_u32(&buf, &mut pos);
+        let to_stop = read_u32(&buf, &mut pos);
+        leg_shape_keys.push((route, from_stop, to_stop));
+
         let compressed_len = read_u32(&buf, &mut pos) as usize;
         if pos + compressed_len > buf.len() {
             return Err(format!(
-                "Shape {} compressed data out of bounds: need {} bytes at pos {}, buf len {}",
-                shape_idx,
+                "Leg shape {} compressed data out of bounds: need {} bytes at pos {}, buf len {}",
+                leg_idx,
                 compressed_len,
                 pos,
                 buf.len()
             ));
         }
-        shapes_data.extend_from_slice(&buf[pos..pos + compressed_len]);
+        leg_shapes_data.extend_from_slice(&buf[pos..pos + compressed_len]);
         pos += compressed_len;
-        shapes_offsets.push(shapes_data.len() as u32);
+        leg_shapes_offsets.push(leg_shapes_data.len() as u32);
     }
-    let shapes = JaggedArray {
-        data: shapes_data,
-        offsets: shapes_offsets,
+    let leg_shapes = JaggedArray {
+        data: leg_shapes_data,
+        offsets: leg_shapes_offsets,
     };
-    binary_sections.push(("shapes", pos - pos_before));
-    timings.push(("parse shapes", t0.elapsed()));
-
-    // Route-to-shape mapping (indices instead of IDs)
-    let t0 = Instant::now();
-    let pos_before = pos;
-    let mut route_shapes: Vec<Vec<u32>> = vec![Vec::new(); num_route_names];
-    if pos + 4 <= buf.len() {
-        let num_route_shapes = read_u32(&buf, &mut pos) as usize;
-        for i in 0..num_route_shapes.min(num_route_names) {
-            if pos + 4 > buf.len() {
-                return Err(format!("Incomplete route_shapes data at route {}", i));
-            }
-            let num_shapes_for_route = read_u32(&buf, &mut pos) as usize;
-            let mut shapes_for_route = Vec::with_capacity(num_shapes_for_route);
-            for _ in 0..num_shapes_for_route {
-                if pos + 4 > buf.len() {
-                    return Err(format!(
-                        "Incomplete shape index in route_shapes for route {}",
-                        i
-                    ));
-                }
-                let shape_idx = read_u32(&buf, &mut pos);
-                // Only keep valid shape indices (those that actually exist in the shapes array)
-                if shape_idx != u32::MAX && (shape_idx as usize) < shapes.offsets.len() - 1 {
-                    shapes_for_route.push(shape_idx);
-                }
-            }
-            route_shapes[i] = shapes_for_route;
-        }
-    }
-    binary_sections.push(("route_shapes", pos - pos_before));
-    timings.push(("parse route_shapes", t0.elapsed()));
+    binary_sections.push(("leg_shapes", pos - pos_before));
+    timings.push(("parse leg_shapes", t0.elapsed()));
 
     // Build adjacency list as JaggedArray<(u32, f32)>
     let t0 = Instant::now();
@@ -654,13 +629,11 @@ pub fn load_with_stats(buf: &[u8]) -> Result<(PreparedData, LoadStats), String> 
         adj.offsets.capacity() * 4 + adj.data.capacity() * std::mem::size_of::<(u32, f32)>();
     memory_sections.push(("adj list", adj_mem));
 
-    // shapes JaggedArray: compressed PCO data
-    let shapes_mem: usize = shapes.data.capacity() + shapes.offsets.capacity() * 4;
-    memory_sections.push(("shapes", shapes_mem));
-
-    // route_shapes: now Vec<Vec<u32>> (shape indices) - stored compressed in binary anyway
-    // Skip detailed memory calculation as it's in compressed form
-    memory_sections.push(("route_shapes", 0));
+    // leg_shapes JaggedArray: compressed PCO data + keys
+    let leg_shapes_mem: usize = leg_shapes.data.capacity()
+        + leg_shapes.offsets.capacity() * 4
+        + leg_shape_keys.capacity() * std::mem::size_of::<(u32, u32, u32)>();
+    memory_sections.push(("leg_shapes", leg_shapes_mem));
 
     // node_grid HashMap
     let ng_mem: usize = node_grid
@@ -681,7 +654,7 @@ pub fn load_with_stats(buf: &[u8]) -> Result<(PreparedData, LoadStats), String> 
         ("stop_to_node", num_stop_to_node),
         ("patterns", num_patterns),
         ("route_names", num_route_names),
-        ("shapes", num_shapes),
+        ("leg_shapes", num_shapes),
         ("total events (raw)", total_events),
         ("sentinel events", total_sentinels),
         ("total freq entries", total_freq),
@@ -710,8 +683,8 @@ pub fn load_with_stats(buf: &[u8]) -> Result<(PreparedData, LoadStats), String> 
         adj,
         node_is_stop,
         node_stop_indices,
-        shapes,
-        route_shapes,
+        leg_shapes,
+        leg_shape_keys,
         node_grid,
     };
 

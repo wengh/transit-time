@@ -7,8 +7,10 @@ use wasm_bindgen::prelude::*;
 use rayon::prelude::*;
 pub use wasm_bindgen_rayon::init_thread_pool;
 
+use std::collections::HashMap;
+
 use pco;
-use router::NodeResult;
+use router::{BoardingEvent, NodeResult};
 
 /// Whether the rayon thread pool has been initialized (via `initThreadPool` from JS).
 /// When false, we fall back to sequential iteration.
@@ -39,47 +41,65 @@ fn par_map_collect<R: Send>(
 /// SSSP result from a TDD query. Usable from both WASM and native code.
 pub struct SsspResult {
     pub results: Vec<NodeResult>,
+    pub boarding_events: HashMap<u32, BoardingEvent>,
     pub departure_time: u32,
 }
 
 /// Reconstruct path from source to destination.
 /// Returns flat array: [node_index, edge_type, route_index, ...]
-/// Each node is labeled with the *incoming* edge (how we arrived at it).
-/// For transit segments, the boarding stop is the last node of the
-/// preceding walk segment — callers should use that for display.
-pub fn reconstruct_path(_data: &PreparedData, sssp: &SsspResult, destination: u32) -> Vec<u32> {
-    let mut path = Vec::new();
+/// For transit segments, emits all intermediate stops by following the event chain.
+pub fn reconstruct_path(data: &PreparedData, sssp: &SsspResult, destination: u32) -> Vec<u32> {
+    // Follow prev_node chain to get the coarse path (boarding→alighting per transit leg)
+    let mut coarse = Vec::new();
     let mut current = destination;
-
     loop {
         let r = &sssp.results[current as usize];
         if r.arrival_delta == u16::MAX {
             return Vec::new();
         }
-        let edge_type = if r.route_index == u32::MAX {
-            0u32
-        } else {
-            1u32
-        };
-        path.push([current, edge_type, r.route_index]);
-
+        coarse.push(current);
         if r.prev_node == u32::MAX || r.prev_node == current {
             break;
         }
         current = r.prev_node;
     }
+    coarse.reverse();
 
-    path.reverse();
+    let mut result = Vec::new();
+    for (ci, &node) in coarse.iter().enumerate() {
+        let r = &sssp.results[node as usize];
+        let is_transit = r.route_index != u32::MAX;
 
-    // At transit→walk transitions, the alighting node is labeled as transit
-    // (incoming edge type). Re-emit it as a walk node so the walk segment
-    // starts at the alighting stop, not at the next street node.
-    let mut result = Vec::with_capacity(path.len() * 3 + 9);
-    for i in 0..path.len() {
-        let [n, e, r] = path[i];
-        result.extend_from_slice(&[n, e, r]);
-        if e == 1 && i + 1 < path.len() && path[i + 1][1] == 0 {
-            result.extend_from_slice(&[n, 0, u32::MAX]);
+        if is_transit {
+            // Expand intermediate stops from boarding event chain
+            if let Some(be) = sssp.boarding_events.get(&node) {
+                let pat = &data.patterns[be.pattern_index];
+                let boarding_event = &pat.stop_index.events_by_stop.data[be.event_index as usize];
+                let mut idx = boarding_event.next_event_index;
+                while idx != u32::MAX {
+                    let e = &pat.stop_index.events_by_stop.data[idx as usize];
+                    let stop_node = data.stop_node_map[e.stop_index as usize];
+                    if stop_node == node {
+                        break; // reached alighting stop
+                    }
+                    if stop_node != u32::MAX && e.travel_time > 0 {
+                        result.extend_from_slice(&[stop_node, 1, r.route_index]);
+                    }
+                    idx = e.next_event_index;
+                }
+            }
+
+            // Emit the alighting stop
+            result.extend_from_slice(&[node, 1, r.route_index]);
+
+            // At transit→walk transition, re-emit as walk for dotted line
+            let next_is_walk = ci + 1 < coarse.len()
+                && sssp.results[coarse[ci + 1] as usize].route_index == u32::MAX;
+            if next_is_walk {
+                result.extend_from_slice(&[node, 0, u32::MAX]);
+            }
+        } else {
+            result.extend_from_slice(&[node, 0, u32::MAX]);
         }
     }
     result
@@ -187,124 +207,6 @@ impl TransitRouter {
         router::snap_to_node(&self.data, lat, lon)
     }
 
-    /// Run single-departure TDD. Returns travel times (NaN for unreached).
-    pub fn run_tdd(
-        &self,
-        source_node: u32,
-        departure_time: u32,
-        pattern_index: u32,
-        transfer_slack: u32,
-    ) -> Vec<f64> {
-        let result = router::run_tdd(
-            &self.data,
-            source_node,
-            departure_time,
-            pattern_index as usize,
-            transfer_slack,
-        );
-        result
-            .iter()
-            .map(|r| {
-                if r.arrival_delta == u16::MAX {
-                    f64::NAN
-                } else {
-                    r.arrival_delta as f64
-                }
-            })
-            .collect()
-    }
-
-    /// Run TDD for a specific date (YYYYMMDD). Returns travel times (NaN for unreached).
-    pub fn run_tdd_for_date(
-        &self,
-        source_node: u32,
-        departure_time: u32,
-        date: u32,
-        transfer_slack: u32,
-        max_time: u32,
-    ) -> Vec<f64> {
-        let pattern_indices = router::patterns_for_date(&self.data, date);
-        let result = router::run_tdd_multi(
-            &self.data,
-            source_node,
-            departure_time,
-            &pattern_indices,
-            transfer_slack,
-            max_time,
-        );
-        result
-            .iter()
-            .map(|r| {
-                if r.arrival_delta == u16::MAX {
-                    f64::NAN
-                } else {
-                    r.arrival_delta as f64
-                }
-            })
-            .collect()
-    }
-
-    /// Run sampled TDD over a time window. Returns averaged travel times.
-    pub fn run_tdd_sampled_for_date(
-        &self,
-        source_node: u32,
-        window_start: u32,
-        window_end: u32,
-        n_samples: u32,
-        date: u32,
-        transfer_slack: u32,
-        max_time: u32,
-    ) -> Vec<f64> {
-        let pattern_indices = router::patterns_for_date(&self.data, date);
-        let num_nodes = self.data.num_nodes;
-
-        let step = if n_samples > 1 {
-            (window_end - window_start) / (n_samples - 1)
-        } else {
-            0
-        };
-
-        let per_sample = par_map_collect(0..n_samples, |i| {
-            let dep_time = window_start + i * step;
-            let result = router::run_tdd_multi(
-                &self.data,
-                source_node,
-                dep_time,
-                &pattern_indices,
-                transfer_slack,
-                max_time,
-            );
-
-            let mut sum_times = vec![0u32; num_nodes];
-            let mut count = vec![0u32; num_nodes];
-
-            for (j, r) in result.iter().enumerate() {
-                if r.arrival_delta != u16::MAX {
-                    sum_times[j] += r.arrival_delta as u32;
-                    count[j] += 1;
-                }
-            }
-
-            (sum_times, count)
-        });
-
-        // Reduce across samples
-        let mut total_sum = vec![0u32; num_nodes];
-        let mut total_count = vec![0u32; num_nodes];
-        for (sum_times, count) in &per_sample {
-            for j in 0..num_nodes {
-                total_sum[j] += sum_times[j];
-                total_count[j] += count[j];
-            }
-        }
-
-        total_sum
-            .iter()
-            .zip(total_count.iter())
-            .map(|(&s, &c)| if c > 0 { s as f64 / c as f64 } else { f64::NAN })
-            .collect()
-    }
-
     /// Run sampled TDD over a time window. Returns individual full results.
     pub fn run_tdd_sampled_full_for_date(
         &self,
@@ -325,7 +227,7 @@ impl TransitRouter {
 
         par_map_collect(0..n_samples, |i| {
             let dep_time = window_start + i * step;
-            let results = router::run_tdd_multi(
+            let (results, boarding_events) = router::run_tdd_multi(
                 &self.data,
                 source_node,
                 dep_time,
@@ -336,6 +238,7 @@ impl TransitRouter {
             WasmSsspResult {
                 inner: SsspResult {
                     results,
+                    boarding_events,
                     departure_time: dep_time,
                 },
             }
@@ -352,7 +255,7 @@ impl TransitRouter {
         max_time: u32,
     ) -> WasmSsspResult {
         let pat_indices = router::patterns_for_date(&self.data, date);
-        let results = router::run_tdd_multi(
+        let (results, boarding_events) = router::run_tdd_multi(
             &self.data,
             source_node,
             departure_time,
@@ -363,6 +266,7 @@ impl TransitRouter {
         WasmSsspResult {
             inner: SsspResult {
                 results,
+                boarding_events,
                 departure_time,
             },
         }
@@ -398,106 +302,43 @@ impl TransitRouter {
         reconstruct_path(&self.data, &sssp.inner, destination)
     }
 
-    /// Get the shape polyline for a route between two stops (identified by node indices).
-    /// Returns flat array [lat, lon, lat, lon, ...] of the sub-polyline, or empty if no shape.
-    /// Shapes are stored compressed and decompressed on-demand.
+    /// Get the shape polyline for a single leg between two consecutive stops (by node index).
+    /// Returns flat array [lat, lon, lat, lon, ...] of the pre-sliced sub-polyline, or empty.
     pub fn route_shape_between(&self, route_idx: u32, from_node: u32, to_node: u32) -> Vec<f64> {
-        let ri = route_idx as usize;
-        if ri >= self.data.route_shapes.len() {
+        let from_stop = match self.data.node_stop_indices.get(from_node).first() {
+            Some(&s) => s,
+            None => return Vec::new(),
+        };
+        let to_stop = match self.data.node_stop_indices.get(to_node).first() {
+            Some(&s) => s,
+            None => return Vec::new(),
+        };
+
+        let key = (route_idx, from_stop, to_stop);
+        let idx = match self.data.leg_shape_keys.binary_search(&key) {
+            Ok(i) => i,
+            Err(_) => return Vec::new(),
+        };
+
+        let start = self.data.leg_shapes.offsets[idx] as usize;
+        let end = self.data.leg_shapes.offsets[idx + 1] as usize;
+        let compressed = &self.data.leg_shapes.data[start..end];
+        if compressed.is_empty() {
             return Vec::new();
         }
-        let shape_indices = &self.data.route_shapes[ri];
-        if shape_indices.is_empty() {
-            return Vec::new();
-        }
 
-        let from_lat = self.data.nodes[from_node as usize].lat;
-        let from_lon = self.data.nodes[from_node as usize].lon;
-        let to_lat = self.data.nodes[to_node as usize].lat;
-        let to_lon = self.data.nodes[to_node as usize].lon;
+        let coords_u32: Vec<u32> = match pco::standalone::simple_decompress(compressed) {
+            Ok(c) => c,
+            Err(_) => return Vec::new(),
+        };
 
-        // Try all shapes for this route; pick the one where both stops are closest
-        let mut best_result: Vec<f64> = Vec::new();
-        let mut best_worst_d = f64::MAX;
-
-        for shape_idx in shape_indices {
-            // Get compressed data from JaggedArray
-            let shape_idx_usize = *shape_idx as usize;
-            if shape_idx_usize >= self.data.shapes.offsets.len() - 1 {
-                panic!(
-                    "Shape {} referenced by route {} is out of bounds",
-                    shape_idx, route_idx
-                );
-            }
-            let start = self.data.shapes.offsets[shape_idx_usize] as usize;
-            let end = self.data.shapes.offsets[shape_idx_usize + 1] as usize;
-            let compressed = &self.data.shapes.data[start..end];
-
-            // Decompress PCO data
-            let coords_u32: Vec<u32> = match pco::standalone::simple_decompress(compressed) {
-                Ok(c) => c,
-                Err(e) => panic!("Failed to decompress shape {}: {}", shape_idx, e),
-            };
-
-            if coords_u32.len() < 4 {
-                panic!("Shape {} has invalid compressed data: expected at least 4 u32s (2 points), got {}", shape_idx, coords_u32.len());
-            }
-
-            // Convert u32 bits back to f64 (via f32)
-            let mut points: Vec<(f64, f64)> = Vec::with_capacity(coords_u32.len() / 2);
-            for chunk in coords_u32.chunks(2) {
-                if chunk.len() == 2 {
-                    let lat_f32 = f32::from_bits(chunk[0]);
-                    let lon_f32 = f32::from_bits(chunk[1]);
-                    points.push((lat_f32 as f64, lon_f32 as f64));
-                }
-            }
-
-            if points.len() < 2 {
-                panic!(
-                    "Shape {} decompressed to {} points, expected at least 2",
-                    shape_idx,
-                    points.len()
-                );
-            }
-
-            let mut best_from = 0usize;
-            let mut best_from_d = f64::MAX;
-            let mut best_to = 0usize;
-            let mut best_to_d = f64::MAX;
-            for (i, &(lat, lon)) in points.iter().enumerate() {
-                let df = (lat - from_lat).powi(2) + (lon - from_lon).powi(2);
-                let dt = (lat - to_lat).powi(2) + (lon - to_lon).powi(2);
-                if df < best_from_d {
-                    best_from_d = df;
-                    best_from = i;
-                }
-                if dt < best_to_d {
-                    best_to_d = dt;
-                    best_to = i;
-                }
-            }
-
-            // Score: the worse of the two distances (both stops must be well-covered)
-            let worst_d = best_from_d.max(best_to_d);
-            if worst_d < best_worst_d {
-                best_worst_d = worst_d;
-
-                let (start, end) = if best_from <= best_to {
-                    (best_from, best_to)
-                } else {
-                    (best_to, best_from)
-                };
-
-                let mut result = Vec::with_capacity((end - start + 1) * 2);
-                for i in start..=end {
-                    result.push(points[i].0);
-                    result.push(points[i].1);
-                }
-                best_result = result;
+        let mut result = Vec::with_capacity(coords_u32.len());
+        for chunk in coords_u32.chunks(2) {
+            if chunk.len() == 2 {
+                result.push(f32::from_bits(chunk[0]) as f64);
+                result.push(f32::from_bits(chunk[1]) as f64);
             }
         }
-
-        best_result
+        result
     }
 }
