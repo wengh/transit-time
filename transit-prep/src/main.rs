@@ -1,5 +1,4 @@
 mod binary;
-mod download;
 mod graph;
 mod gtfs;
 mod osm;
@@ -235,48 +234,29 @@ fn fetch_gtfs(feed_id: &str, api_key: Option<&str>, cache_dir: &Path) -> Result<
             }
         }
 
-        // Download via Transitland with header auth
-        download::with_download_lock(&cache_path, |path| {
-            if path.exists() {
-                // Check again — parallel process may have just downloaded
-                if sha1_recently_checked(&sha1_path) {
-                    return Ok(path.to_path_buf());
-                }
-            }
-            eprintln!("Downloading GTFS from Transitland: {}", feed_id);
-            let bytes = transitland::download_feed(key, feed_id)?;
-            let tmp = path.with_extension("zip.tmp");
-            std::fs::File::create(&tmp)?.write_all(&bytes)?;
-            std::fs::rename(&tmp, path)?;
+        eprintln!("Downloading GTFS from Transitland: {}", feed_id);
+        let bytes = transitland::download_feed(key, feed_id)?;
+        let tmp = cache_path.with_extension("zip.tmp");
+        std::fs::File::create(&tmp)?.write_all(&bytes)?;
+        std::fs::rename(&tmp, &cache_path)?;
 
-            // Save sha1 for future staleness checks
-            if let Ok(Some(sha1)) = transitland::latest_feed_sha1(key, feed_id) {
-                let _ = std::fs::write(&sha1_path, &sha1);
-            }
+        // Save sha1 for future staleness checks
+        if let Ok(Some(sha1)) = transitland::latest_feed_sha1(key, feed_id) {
+            let _ = std::fs::write(&sha1_path, &sha1);
+        }
 
-            Ok(path.to_path_buf())
-        })
+        Ok(cache_path)
     } else {
-        // Direct URL download
-        download::with_download_lock(&cache_path, |path| {
-            if path.exists() {
-                eprintln!(
-                    "Using cached GTFS (downloaded by parallel process): {:?}",
-                    path
-                );
-                return Ok(path.to_path_buf());
-            }
-            eprintln!("Downloading GTFS from: {}", feed_id);
-            let client = reqwest::blocking::Client::builder()
-                .timeout(std::time::Duration::from_secs(300))
-                .user_agent("Mozilla/5.0 (compatible; transit-prep/1.0)")
-                .build()?;
-            let bytes = client.get(feed_id).send()?.error_for_status()?.bytes()?;
-            let tmp = path.with_extension("zip.tmp");
-            std::fs::File::create(&tmp)?.write_all(&bytes)?;
-            std::fs::rename(&tmp, path)?;
-            Ok(path.to_path_buf())
-        })
+        eprintln!("Downloading GTFS from: {}", feed_id);
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(300))
+            .user_agent("Mozilla/5.0 (compatible; transit-prep/1.0)")
+            .build()?;
+        let bytes = client.get(feed_id).send()?.error_for_status()?.bytes()?;
+        let tmp = cache_path.with_extension("zip.tmp");
+        std::fs::File::create(&tmp)?.write_all(&bytes)?;
+        std::fs::rename(&tmp, &cache_path)?;
+        Ok(cache_path)
     }
 }
 
