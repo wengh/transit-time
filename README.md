@@ -174,7 +174,8 @@ You can also create a `.jsonc` file manually:
   // "osm_url": "https://...",  // direct URL to an OSM PBF file
   "center": [43.65, -79.38],    // map center [lat, lon]
   "zoom": 12,                   // initial zoom level
-  "detail": "Agency A, Agency B" // shown in city list
+  "detail": "Agency A, Agency B", // shown in city list
+  "allow_stale": false           // whether to allow expired services
 }
 ```
 

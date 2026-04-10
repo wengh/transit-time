@@ -472,3 +472,26 @@ fn toronto_union_to_bloor_sunday() {
         "expected Line 1 subway on Sunday, got: {segs:?}"
     );
 }
+
+// ── Mexico City ─────────────────────────────────────────────────────
+
+#[test]
+fn mexico_city_zocalo_to_chapultepec_uses_metro() {
+    let Some(data) = load_city("mexico_city") else {
+        return;
+    };
+    let segs = route(
+        &data,
+        (19.4326, -99.1332), // Zócalo area
+        (19.4217, -99.1815), // Chapultepec area
+        20260410,
+        hhmm(9, 0),
+        60, // Friday 09:00, 60s slack
+    );
+    assert!(!segs.is_empty(), "should find a route");
+    let has_transit = segs.iter().any(|s| s.is_transit);
+    assert!(
+        has_transit,
+        "expected transit segment (metro), got walk-only: {segs:?}"
+    );
+}

@@ -96,6 +96,7 @@ struct CityConfig {
     bbox: String,
     bbbike_name: Option<String>,
     osm_url: Option<String>,
+    allow_stale: Option<bool>,
 }
 
 /// Days since Unix epoch (no external deps).
@@ -698,7 +699,14 @@ fn cmd_pipeline(
             let bin_path = output_dir.join(format!("{}.bin", id));
 
             eprintln!("\n--- Building {} ---", id);
-            run_prep(id, &gtfs_paths, &osm_path, bbox, &bin_path)?;
+            run_prep(
+                id,
+                &gtfs_paths,
+                &osm_path,
+                bbox,
+                &bin_path,
+                config.allow_stale,
+            )?;
             Ok(())
         })?;
 
@@ -830,7 +838,14 @@ fn cmd_prep(city_file: &Path, output: &Path, cache_dir: &Path) -> Result<()> {
         city.osm_url.as_deref(),
     )?;
 
-    run_prep(&city.id, &gtfs_paths, &osm_path, bbox, output)
+    run_prep(
+        &city.id,
+        &gtfs_paths,
+        &osm_path,
+        bbox,
+        output,
+        city.allow_stale,
+    )
 }
 
 fn cmd_generate(
@@ -965,6 +980,7 @@ pub fn run_prep(
     osm_path: &Path,
     bbox: (f64, f64, f64, f64),
     output: &Path,
+    allow_stale: Option<bool>,
 ) -> Result<()> {
     eprintln!("=== Transit Prep for '{}' ===", city);
     eprintln!("Bounding box: {:?}", bbox);
@@ -999,6 +1015,14 @@ pub fn run_prep(
         gtfs_data.stop_times.len(),
         gtfs_data.services.len(),
     );
+
+    if allow_stale.unwrap_or(false) {
+        for s in &mut gtfs_data.services {
+            // Setting to 0 means indefinitely valid
+            s.start_date = 0;
+            s.end_date = 0;
+        }
+    }
 
     // Filter stops to bbox and re-index sequentially so out-of-bbox stops occupy no ids
     let (min_lon, min_lat, max_lon, max_lat) = bbox;

@@ -12,5 +12,6 @@
         -99.121
     ],
     "zoom": 12,
-    "detail": "Metro, Bus, Suburban Rail, ..."
+    "detail": "Metro, Bus, Suburban Rail, ...",
+    "allow_stale": true
 }
