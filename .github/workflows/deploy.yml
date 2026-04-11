@@ -56,7 +56,7 @@ jobs:
         run: make wasm
 
       # ── Data (.bin files) ──────────────────────────────────────────────────
-      # Three-layer cache:
+      # Cache:
       #   1. sha1 sidecars (tiny, always restored — used to check feed freshness)
       #   2. raw GTFS/OSM downloads (large, only restored when a rebuild is needed)
       #   3. compiled .bin files (fast to restore, avoid full rebuild)

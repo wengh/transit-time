@@ -1,4 +1,4 @@
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
 use std::collections::{HashMap, HashSet};
@@ -373,7 +373,7 @@ fn build_graph_from_raw(raw: RawOsmData) -> Result<OsmGraph> {
     // Graph nodes: intersections + endpoints + entrance nodes
     let mut graph_node_ids: HashSet<u64> = node_usage_count
         .iter()
-        .filter(|(_, &count)| count >= 2)
+        .filter(|&(_, &count)| count >= 2)
         .map(|(&id, _)| id)
         .collect();
 

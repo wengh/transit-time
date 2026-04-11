@@ -312,6 +312,32 @@ fn match_stops_to_shape(
     shape: &[(f64, f64)],
     cos_lat: f64,
 ) -> Option<Vec<usize>> {
+    let (cost, assignment) = match_stops_to_shape_impl(stop_coords, shape, cos_lat)?;
+
+    // Try reverse direction if the cost is abnormally high.
+    // This happens in Mexico City metro line 9 for example
+    let avg_cost = cost / stop_coords.len() as f64;
+    const THRESHOLD: f64 = 0.0005; // ~50m
+    if avg_cost > THRESHOLD * THRESHOLD {
+        if let Some((rev_cost, rev_assignment)) = match_stops_to_shape_impl(
+            &stop_coords.iter().rev().cloned().collect::<Vec<_>>(),
+            shape,
+            cos_lat,
+        ) {
+            // Only accept if the reverse is much better
+            if rev_cost * 5.0 < cost {
+                return Some(rev_assignment.into_iter().rev().collect());
+            }
+        }
+    }
+    Some(assignment)
+}
+
+fn match_stops_to_shape_impl(
+    stop_coords: &[(f64, f64)],
+    shape: &[(f64, f64)],
+    cos_lat: f64,
+) -> Option<(f64, Vec<usize>)> {
     let n = stop_coords.len();
     let m = shape.len();
     if n == 0 || m == 0 || n > m {
@@ -370,7 +396,7 @@ fn match_stops_to_shape(
     for i in (1..n).rev() {
         result[i - 1] = backtrack[i][result[i]];
     }
-    Some(result)
+    Some((best_cost, result))
 }
 
 fn main() -> Result<()> {
@@ -1044,7 +1070,7 @@ pub fn run_prep(
     }
     let valid_trip_ids: HashSet<&str> = stops_per_trip
         .iter()
-        .filter(|(_, &count)| count >= 2)
+        .filter(|&(_, &count)| count >= 2)
         .map(|(&id, _)| id)
         .collect();
     eprintln!(
@@ -1284,10 +1310,12 @@ pub fn run_prep(
                 }
 
                 // Build the leg polyline: from_stop coords + shape slice + to_stop coords
-                let mut leg_points = Vec::with_capacity(si_to - si_from + 3);
+                let mut leg_points = Vec::with_capacity(si_to.abs_diff(si_from) + 3);
                 leg_points.push(stop_coords[w]);
-                for i in si_from..=si_to {
-                    leg_points.push(shape[i]);
+                if si_from < si_to {
+                    leg_points.extend_from_slice(&shape[si_from..=si_to]);
+                } else {
+                    leg_points.extend(shape[si_to..=si_from].iter().rev());
                 }
                 leg_points.push(stop_coords[w + 1]);
 
