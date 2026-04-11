@@ -3,6 +3,7 @@ import { useAppState } from '../state/AppContext';
 import { formatTime, formatSlack, dateToYYYYMMDD } from '../utils/format';
 import { freeSsspList } from '../utils/router';
 import { MAP_STYLES } from '../utils/mapStyles';
+import { LegendContent } from './Legend';
 
 interface RangeSliderProps {
   id: string;
@@ -289,6 +290,10 @@ export default function Controls({ onRunQuery, onCopy }: ControlsProps): React.R
             Copy info
           </button>
         )}
+      </div>
+      <div className="sm:hidden mt-3 pt-3 border-t border-zinc-700 dark:border-zinc-700
+        [@media(prefers-color-scheme:light)]:border-zinc-200">
+        <LegendContent maxMin={state.maxTimeMin} />
       </div>
     </div>
   );

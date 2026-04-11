@@ -273,17 +273,19 @@ export default function MapView(): React.ReactNode {
         if (elapsed > 400) return;
       }
 
-      if (s.pinnedNode !== null) {
-        // If we just pinned this destination within 300ms, this click is the second
-        // click of a double-click — swallow it so dblclick can set source cleanly.
-        if (!isTouchDevice && Date.now() - lastPinTime < 300) return;
+      // Desktop: if already pinned, unpin on click (swallow if it's the second
+      // click of a double-click so dblclick can set source cleanly).
+      if (!isTouchDevice && s.pinnedNode !== null) {
+        if (Date.now() - lastPinTime < 300) return;
         dispatch({ type: 'UNPIN_DESTINATION' });
-      } else {
-        const node = snapToNode(e.latlng.lat, e.latlng.lng);
-        if (node !== null) {
-          lastPinTime = Date.now();
-          showDestination(node, true);
-        }
+        return;
+      }
+
+      // Otherwise (or on mobile regardless of pin state): pin the clicked position.
+      const node = snapToNode(e.latlng.lat, e.latlng.lng);
+      if (node !== null) {
+        lastPinTime = Date.now();
+        showDestination(node, true);
       }
     }
 

@@ -346,6 +346,7 @@ export default function HoverInfo(): React.ReactNode {
   const { state, dispatch } = useAppState();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const chartInfoRef = useRef<ChartInfo | null>(null);
+  const [hidden, setHidden] = useState(false);
 
   const { hoverData, maxTimeMin, departureTime, mode, pinnedNode, selectedSampleIdx, lockedSampleIdx } = state;
 
@@ -384,6 +385,27 @@ export default function HoverInfo(): React.ReactNode {
   }, [lockedSampleIdx, pinnedNode, dispatch]);
 
   if (!hoverData) return null;
+
+  if (hidden) {
+    return (
+      <button
+        id="hover-info"
+        onClick={() => setHidden(false)}
+        className="absolute bottom-5 right-2.5 z-[1000]
+          bg-zinc-900 dark:bg-zinc-900
+          [@media(prefers-color-scheme:light)]:bg-white
+          px-3 py-1.5 rounded-lg shadow-[0_2px_12px_rgba(0,0,0,0.5)]
+          text-[12px] text-zinc-400 dark:text-zinc-400
+          [@media(prefers-color-scheme:light)]:text-zinc-500
+          hover:text-zinc-200 dark:hover:text-zinc-200
+          [@media(prefers-color-scheme:light)]:hover:text-zinc-700
+          max-sm:bottom-auto max-sm:top-2.5 max-sm:left-auto max-sm:right-2.5
+          cursor-pointer"
+      >
+        Details ▴
+      </button>
+    );
+  }
   const { allPaths, travelTimes } = hoverData;
 
   // Which path to show details for
@@ -445,9 +467,20 @@ export default function HoverInfo(): React.ReactNode {
         max-sm:max-w-none max-sm:max-h-[calc(100vh-90px)] max-sm:overflow-y-auto"
     >
       <div id="hover-info-details" className="overflow-y-auto max-h-[30vh]">
-        <div className="font-semibold mb-1.5 text-[13px] text-zinc-100 dark:text-zinc-100
-          [@media(prefers-color-scheme:light)]:text-zinc-900">
-          {titleText}
+        <div className="flex items-start justify-between gap-2 mb-1.5">
+          <div className="font-semibold text-[13px] text-zinc-100 dark:text-zinc-100
+            [@media(prefers-color-scheme:light)]:text-zinc-900">
+            {titleText}
+          </div>
+          <button
+            onClick={() => setHidden(true)}
+            className="sm:hidden text-[11px] text-zinc-500 hover:text-zinc-300
+              [@media(prefers-color-scheme:light)]:hover:text-zinc-600
+              cursor-pointer shrink-0 leading-none mt-0.5"
+            title="Hide details"
+          >
+            ▾ hide
+          </button>
         </div>
 
         {displayPath && displayPath.segments.length > 0 && (() => {
