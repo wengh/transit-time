@@ -10,7 +10,7 @@ Note: this project is mostly vibe coded.
 
 ### Picking a city
 
-The landing page lists available cities. Click one to load it. The city's transit and street data (~1–30 MB compressed depending on city size) downloads and loads in the browser; a progress bar shows the download, then a brief indexing phase (~400 ms for a large city like Chicago).
+The landing page lists available cities. Click one to load it. The city's transit and street data (~470 KB–23 MB compressed depending on city size) downloads and loads in the browser; a progress bar shows the download, then a brief indexing phase (~350 ms for a large city like Chicago).
 
 ### Setting an origin
 
@@ -75,15 +75,17 @@ The city config specifies:
 
 The preprocessor downloads and caches both the GTFS feeds and the OSM extract. For Transitland feeds, it tracks the latest feed version SHA1 and only re-downloads when a new version is published. It then performs the following steps:
 
-1. **Parse GTFS** — reads stops, routes, trips, stop times, service calendars, and shapes from the zip archives. Filters stops to the bounding box. Drops trips with fewer than two in-bbox stops and removes their shapes. Trims remaining shapes to the bounding box. Warns if feed data has expired.
+1. **Parse GTFS** — reads stops, routes, trips, stop times, service calendars, and shapes from the zip archives. Filters stops to the bounding box. Drops trips with fewer than two in-bbox stops and removes their shapes. Trims remaining shapes to the bounding box. Warns if feed data has expired. For cities with multiple feeds (e.g. Chicago's CTA/Pace/Metra), feeds are merged in a single pass: each feed's stop, route, trip, and service IDs are prefixed with the current total stop count (e.g. `42:stop_id`) to prevent ID collisions across feeds.
 
-2. **Parse OSM** — extracts the pedestrian-walkable street network (footways, paths, sidewalks, crossings, and regular roads that allow foot traffic) within the bounding box.
+2. **Parse OSM and build street graph** — extracts the pedestrian-walkable street network (footways, paths, sidewalks, crossings, and roads that allow foot traffic) within the bounding box. Subway entrances (`railway=subway_entrance`) are flagged as mandatory graph nodes. The raw node/way data is then reduced to a proper graph: only intersection nodes (used by two or more ways) and entrance nodes become graph vertices; intermediate nodes are discarded and their traversed distance accumulated into edge weights. Entrance nodes not already on a way are linked to the nearest street node within 200 m. Finally, small disconnected components with fewer than 50 nodes are removed — typically isolated fragments on the wrong side of a fence or elevated structure that cannot realistically be reached on foot.
 
 3. **Snap stops to street nodes** — each transit stop is matched to the nearest point on the street network by inserting a virtual node on the nearest edge and connecting it. This lets the router walk from any street point directly to any stop.
 
-4. **Build service patterns** — trips that share the same stop sequence and service calendar are grouped into a pattern. For each pattern, stop times are stored as a sorted array of time offsets per stop, enabling binary-search-based lookup during routing. Frequency-based routes (trips defined by headway rather than fixed times) are stored separately. The resulting structure enables the router to scan only the relevant events at each stop rather than searching all trips.
+4. **Prune unreachable nodes** — a breadth-first search from every snapped stop node identifies all street nodes reachable on foot from transit. Nodes and edges outside that reachable set are removed and all indices remapped. This discards dead-end pedestrian areas disconnected from the transit network, shrinking both the routing graph and the output binary.
 
-5. **Serialize** — all data is written to a custom binary format, with several layers of sorting applied to improve both compression ratios and runtime locality.
+5. **Build service patterns and extract leg shapes** — trips that share the same stop sequence and service calendar are grouped into a pattern. For each pattern, stop times are stored as a sorted array of time offsets per stop, enabling binary-search-based lookup during routing. Frequency-based routes (trips defined by headway rather than fixed times) are stored separately. For trips that include GTFS shape data, per-leg polylines are extracted: for each (route, from-stop, to-stop) pair, a dynamic-programming subsequence match aligns the shape point sequence to the stop pair, handling reversed routes and partial alignments. The best-aligned shape for each leg is kept. After pattern construction, routes and stops not referenced in any event are removed and indices remapped, keeping the binary compact.
+
+6. **Serialize** — all data is written to a custom binary format, with several layers of sorting applied to improve both compression ratios and runtime locality.
 
    *Node ordering:* nodes are reordered along a Morton (Z-order) space-filling curve before writing. Because the SFC maps 2D geographic proximity to 1D index proximity, consecutive nodes in the array tend to be geographic neighbors, and their latitude/longitude values form nearly-monotone sequences. The coordinates are stored as fixed-point 32-bit integers (0.1 m resolution) rather than 64-bit floats, reducing raw size by 4×, and the two columns (latitudes, longitudes) are PCO-compressed separately — the small deltas between neighboring values compress extremely well.
 
@@ -93,17 +95,17 @@ The preprocessor downloads and caches both the GTFS feeds and the OSM extract. F
 
    The assembled binary is then gzip-compressed for transfer; the browser decompresses it on the fly during download.
 
-File sizes for the included cities range from 1.3 MB (Chapel Hill) to 39 MB (NYC and SF Bay), reflecting network and schedule size.
+File sizes for the included cities range from 470 KB (Chapel Hill) to 23 MB (NYC), reflecting network and schedule size.
 
 ### In-browser: routing and rendering
 
 The city `.bin` file is fetched and streamed through the browser's native gzip decompression. The decompressed bytes are handed to a WebAssembly module (~700 KB) compiled from the Rust routing engine.
 
-**Loading and indexing (~330 ms for Chicago):** The WASM module decodes all PCO-compressed sections and builds two additional in-memory structures: a flat (jagged array) adjacency list for the street graph, and a spatial grid index over all nodes for snapping a clicked lat/lon to the nearest node in ~8 µs. Because nodes are stored in SFC order, walking a neighborhood during Dijkstra accesses nodes that are close together in both geography and memory, improving cache locality. The in-memory footprint for Chicago is about 186 MB, dominated by the pattern event index (~103 MB), the adjacency list (~21 MB), and the raw input buffer (~17 MB).
+**Loading and indexing (~344 ms for Chicago):** The WASM module decodes all PCO-compressed sections and builds two additional in-memory structures: a flat (jagged array) adjacency list for the street graph, and a spatial grid index over all nodes for snapping a clicked lat/lon to the nearest node in ~8 µs. Because nodes are stored in SFC order, walking a neighborhood during Dijkstra accesses nodes that are close together in both geography and memory, improving cache locality. The in-memory footprint for Chicago is about 188 MB, dominated by the pattern event index (~105 MB), the adjacency list (~21 MB), and the raw input buffer (~17 MB).
 
 **Routing — time-dependent Dijkstra:** When an origin is set, the router runs a shortest-path search over the combined graph. Walking edges have a fixed cost based on distance at 1.4 m/s (~5 km/h). At each node that is a transit stop, the router scans the event arrays for all active service patterns and boards vehicles. The search is time-dependent: the cost of boarding a transit vehicle is the wait time until its next departure plus the scheduled ride time. A transfer between different vehicles requires at least the configured transfer slack. During the search, the router also tracks the latest possible home-departure time that still makes each connection — this is used to prefer paths that allow leaving later — but it is transient and not retained after the query completes. The result stored per reached node is 12 bytes: two u16 offsets from the query departure time (arrival and boarding times, supporting up to ~18 hours of travel), the incoming route index, and the predecessor node for path reconstruction.
 
-For a city the size of Chicago (817K nodes, 1.2M edges, 200 routes, 6.2M raw trip events), a single query takes about 122 ms and reaches roughly 527K nodes. In hour-window average mode, one result set is kept per sample departure and all are live simultaneously for path reconstruction on hover; at 15 samples (the default) this adds about 150 MB on top of the ~186 MB base footprint.
+For a city the size of Chicago (817K nodes, 1.2M edges, 211 routes, 6.3M raw trip events), a single query takes about 138 ms and reaches roughly 536K nodes. In hour-window average mode, one result set is kept per sample departure and all are live simultaneously for path reconstruction on hover; at 15 samples (the default) this adds about 150 MB on top of the ~188 MB base footprint.
 
 **Hour-window average mode** runs multiple queries in parallel using a Rayon thread pool initialized via WebAssembly threads (SharedArrayBuffer). If the browser does not support shared memory, it falls back to sequential execution.
 
@@ -181,11 +183,22 @@ You can also create a `.jsonc` file manually:
 
 Feed IDs can be Transitland onestop IDs (e.g. `f-dp3-cta`) or direct GTFS zip URLs. Transitland feeds are checked for updates automatically via SHA1 comparison. OSM pedestrian data is fetched from BBBike by name, or from a direct URL if `osm_url` is given. Then run `make data-all` to build the `.bin` file.
 
+### CI/CD pipeline
+
+The GitHub Actions workflow (`.github/workflows/deploy.yml`) runs on every push to `main`, on a weekly Sunday-at-03:00-UTC schedule to pick up fresh GTFS feeds, and can be triggered manually. Only one deployment runs at a time; a new push cancels any in-flight run.
+
+The build job has four phases:
+
+1. **WASM** — builds the routing engine with `make wasm` (nightly Rust + wasm-pack). The output is cached by source hash of `transit-router/` and rebuilt only on changes.
+2. **Data** — runs `transit-prep pipeline --check-only` to query Transitland for updated SHA1 hashes (without downloading anything). If any feed is stale or a `.bin` file is missing, the job restores the raw GTFS/OSM download cache and runs `make data-all` to rebuild affected cities. If everything is current it skips this step entirely.
+3. **Frontend** — installs npm dependencies and runs `vite build` to produce the static site in `transit-viz/dist/`.
+4. **Deploy** — uploads `transit-viz/dist/` to GitHub Pages.
+
 ---
 
 ## Performance
 
-The numbers below are from a release build on a Chicago dataset (16 MB compressed / 186 MB in memory). To reproduce:
+The numbers below are from a release build on a Chicago dataset (14 MB compressed / 188 MB in memory). To reproduce:
 
 ```
 cargo test --release --test profile_router -- --nocapture
@@ -195,97 +208,94 @@ cargo test --release --test profile_router -- --nocapture
 === Binary Section Sizes (decompressed) ===
 Section                          Bytes % of total
 header                            36 B     0.0%
-nodes                          1.80 MB    11.0%
-edges                          1.44 MB     8.8%
-stops                         671.5 KB     4.0%
-stop_to_node                  135.0 KB     0.8%
+nodes                          1.83 MB    11.5%
+edges                          1.44 MB     9.1%
+stops                         671.5 KB     4.1%
+stop_to_node                  134.9 KB     0.8%
 route_names                     1.5 KB     0.0%
 route_colors                     844 B     0.0%
-patterns                       9.91 MB    60.6%
-shapes                         2.40 MB    14.7%
-route_shapes                    8.6 KB     0.1%
-TOTAL decompressed            16.36 MB
+patterns                       9.91 MB    62.4%
+leg_shapes                     1.92 MB    12.1%
+TOTAL decompressed            15.88 MB
 
 === In-Memory Sizes ===
 Structure                        Bytes % of total
-nodes                         12.47 MB     6.6%
-edges                         13.70 MB     7.3%
-stops                        1008.9 KB     0.5%
+nodes                         12.69 MB     6.8%
+edges                         13.87 MB     7.4%
+stops                        1008.8 KB     0.5%
 stop_node_map                  67.5 KB     0.0%
-node_is_stop                  798.3 KB     0.4%
+node_is_stop                  812.1 KB     0.4%
 node_stop_indices             627.5 KB     0.3%
 route_names                     5.6 KB     0.0%
 route_colors                     844 B     0.0%
-patterns/events              104.52 MB    55.5%
+patterns/events              104.52 MB    55.8%
 patterns/freq                  8.90 MB     4.7%
 patterns/other                   468 B     0.0%
-adj list                      21.38 MB    11.4%
-shapes                         3.39 MB     1.8%
-route_shapes                       0 B     0.0%
-node_grid                      5.00 MB     2.7%
-input buf                     16.36 MB     8.7%
-TOTAL in-memory              188.17 MB
+adj list                      21.67 MB    11.6%
+leg_shapes                     2.27 MB     1.2%
+node_grid                      5.07 MB     2.7%
+input buf                     15.88 MB     8.5%
+TOTAL in-memory              187.33 MB
 
 === Load Timings ===
 Phase                           Time % of total
-parse nodes                  11.9 ms     3.5%
-parse edges                  70.2 ms    20.4%
-parse stops                   1.0 ms     0.3%
-parse stop_to_node            1.2 ms     0.4%
+parse nodes                  13.5 ms     4.0%
+parse edges                  73.1 ms    21.6%
+parse stops                   1.1 ms     0.3%
+parse stop_to_node            1.4 ms     0.4%
 parse route_names             0.0 ms     0.0%
 parse route_colors            0.0 ms     0.0%
-parse+index patterns        210.1 ms    61.1%
-parse shapes                  0.2 ms     0.1%
-parse route_shapes            0.0 ms     0.0%
-build adj list               18.2 ms     5.3%
-build node_grid              30.8 ms     9.0%
-TOTAL                       343.7 ms
+parse+index patterns        199.0 ms    58.9%
+parse leg_shapes              0.4 ms     0.1%
+build adj list               16.4 ms     4.8%
+build node_grid              32.9 ms     9.7%
+TOTAL                       337.8 ms
 
 === Counts ===
-nodes                         817507
-edges                        1197032
-stops                          17274
-stop_to_node                   17274
+nodes                         831541
+edges                        1212169
+stops                          17273
+stop_to_node                   17273
 patterns                         135
 route_names                      211
-shapes                          1992
-total events (raw)           6266592
+leg_shapes                     22307
+total events (raw)           6266609
 sentinel events                    0
 total freq entries                 0
-grid cells                      6352
-snap_to_node: 13µs -> node 722404 (41.88439954326267, -87.62934665014365)
+grid cells                      6312
 Monday patterns: 12 total
 
 Depart     Time(ms)    Reached    Transit
 ------------------------------------------
-09:00      128.7ms     541333       3145
-09:06      137.4ms     537402       2994
-09:12      156.7ms     562431       2871
-09:18      149.7ms     568414       3081
-09:24      130.7ms     555310       3053
-09:30      135.8ms     507971       3090
-09:36      139.3ms     521256       3071
-09:42      131.6ms     534851       3072
-09:48      141.4ms     520867       2875
-09:54      132.7ms     510946       3107
+09:00      143.1ms     547520       3096
+09:06      125.5ms     545449       2946
+09:12      129.4ms     562520       2885
+09:18      129.4ms     550761       3064
+09:24      126.9ms     549999       3141
+09:30      118.7ms     515777       3098
+09:36      125.6ms     542200       3049
+09:42      119.4ms     532480       3028
+09:48      121.0ms     526795       2870
+09:54      114.2ms     502977       3215
 
 === Summary (10 runs) ===
-Avg: 138.4ms  Min: 128.7ms  Max: 156.7ms
-Avg reachable nodes: 536078
+Avg: 125.3ms  Min: 114.2ms  Max: 143.1ms
 ```
 
 **Binary sizes** (`ls -lh transit-viz/public/data/`):
 
 | City | Compressed |
 |---|---|
-| Chapel Hill | 452K |
+| Chapel Hill | 470K |
 | Waterloo | 1.8M |
+| Mexico City | 2.0M |
 | Seattle | 7.0M |
-| Toronto | 18M |
-| Chicago | 16M |
+| Vancouver | 10M |
 | SF Bay | 13M |
-| NYC | 23M |
+| Ottawa | 14M |
+| Chicago | 14M |
+| Toronto | 17M |
 | Montreal | 22M |
-| Ottawa | 15M |
+| NYC | 23M |
 
 **WASM module** (`ls -lh transit-viz/pkg/transit_router_bg.wasm`): 691 KB
