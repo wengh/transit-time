@@ -1,0 +1,26 @@
+{
+    "id": "paris",
+    "bbbike_name": "Paris",
+    "feed_ids": [
+        "f-u09-paris~metro~bus~tram", // RATP (Métro, RER A/B, Bus, Tram), Île-de-France Mobilités regional buses
+        "f-u0-sncf~transilien~rer", // SNCF Transilien (RER C/D/E/H/J/K/L/N/P/R/U, TER)
+        "f-zenbus~paris~saclay", // Paris-Saclay
+        "f-gpso~seau~fr" // Grand Paris Seine Ouest
+    ],
+    "name": "Paris, France",
+    "file": "paris.bin",
+    "bbox": "1.9780,48.6730,2.7390,49.0280",
+    "center": [
+        48.851,
+        2.359
+    ],
+    "zoom": 12,
+    "detail": "RATP, Transilien, RER",
+    "tags": [
+        "france",
+        "subway",
+        "rail",
+        "bus",
+        "tram"
+    ]
+}

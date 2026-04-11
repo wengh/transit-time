@@ -1,0 +1,28 @@
+{
+    "id": "madrid",
+    "bbbike_name": "Madrid",
+    "feed_ids": [
+        "f-ezjm-informaciónoficial~consorcioregionaldetransportesdemadrid", // Metro de Madrid
+        "f-ezjm-empresamunicipaldetransportes", // EMT Madrid (city buses)
+        "f-ezj-informaciónoficial~consorcioregionaldetransportesdemadrid", // CRTM regional coordination
+        "f-ezjm-consorcioregionaldetransportesdemadrid", // CRTM
+        "f-cercanías~renfe", // Cercanías Madrid (commuter rail)
+        "f-autobuses~interurbanos~de~la~comunidad~de~madrid", // Interurban buses
+        "f-autobús~urbano~de~madrid" // City buses
+    ],
+    "name": "Madrid, Spain",
+    "file": "madrid.bin",
+    "bbox": "-4.0700,40.1700,-3.2300,40.6500",
+    "center": [
+        40.410,
+        -3.650
+    ],
+    "zoom": 12,
+    "detail": "Metro de Madrid, EMT, Cercanías, CRTM",
+    "tags": [
+        "spain",
+        "subway",
+        "rail",
+        "bus"
+    ]
+}

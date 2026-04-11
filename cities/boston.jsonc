@@ -1,0 +1,26 @@
+{
+    "id": "boston",
+    "osm_url": "https://download.bbbike.org/osm/extract/planet_-71.182,42.273_-70.954,42.44.osm.pbf",
+    "feed_ids": [
+        "f-drt-mbta", // MBTA (Subway, Bus, Commuter Rail, Ferry, Silver Line)
+        "f-drt3-909983", // Logan Express / Massport
+        "f-drm-plymouthbrockton~ma~us", // Plymouth & Brockton
+        "f-drmr-brockton~ma~us" // Brockton Area Transit Authority
+    ],
+    "name": "Boston, MA",
+    "file": "boston.bin",
+    "bbox": "-71.1820,42.2730,-70.9540,42.4400",
+    "center": [
+        42.357,
+        -71.068
+    ],
+    "zoom": 13,
+    "detail": "MBTA",
+    "tags": [
+        "usa",
+        "subway",
+        "rail",
+        "bus",
+        "ferry"
+    ]
+}

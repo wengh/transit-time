@@ -1,0 +1,41 @@
+{
+    "id": "tokyo",
+    "bbbike_name": "Tokyo",
+    "feed_ids": [
+        "f-toei~data~toei~train~gtfs~jp", // Toei (subway, Arakawa tram)
+        "f-tokyometro~data~tokyometro~train~gtfs~jp", // Tokyo Metro (9 subway lines)
+        "f-mir~data~mir~train~gtfs~jp", // Tsukuba Express
+        "f-toeibus~gtfs~jp", // Toei Bus
+        "f-kantobus~alllines~jp", // Kanto Bus (west Tokyo)
+        "f-keiobus~alllines~jp", // Keio Bus
+        "f-tokyubus~tokyubus~community~jp", // Tokyu Bus
+        "f-京成トランジットバス", // Keisei Transit Bus
+        "f-京成トランジットバス~2", // Keisei Transit Bus 2
+        "f-hitachiautomobiletransportation~alllines~jp", // Hitachi Automotive Transportation
+        "f-hitachiautomobiletransportation~chiyoda~alllines~jp",
+        "f-hitachiautomobiletransportation~kitaalllines~jp",
+        "f-kawasakitsurumirinkobus~allrinko~jp", // Kawasaki Tsurumi Rinko Bus
+        "f-transportationbureau~cityofkawasaki~alllines~jp", // Kawasaki City Bus
+        "f-フジエクスプレス港区ちぃばす", // Minato ward Chiibus
+        "f-tokyosuginamicity~greenslowmobility~jp", // Suginami ward
+        "f-tokyotaitocity~megurinccby40~jp", // Taito ward Megurin
+        "f-文京区コミュニティバスbーぐる", // Bunkyo ward community bus
+        "f-文京区コミュニティバスbーぐる~1",
+        "f-f1301702~jp" // Shibuya ward community bus
+    ],
+    "name": "Tokyo, Japan",
+    "file": "tokyo.bin",
+    "bbox": "139.6165,35.5591,139.9478,35.7836",
+    "center": [
+        35.671,
+        139.782
+    ],
+    "zoom": 12,
+    "detail": "Tokyo Metro, Toei, Tsukuba Express, Keio Bus, Tokyu Bus",
+    "tags": [
+        "japan",
+        "subway",
+        "rail",
+        "bus"
+    ]
+}

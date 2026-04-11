@@ -1,0 +1,27 @@
+{
+    "id": "philadelphia",
+    "bbbike_name": "Philadelphia",
+    "feed_ids": [
+        "f-dr4-septa~rail", // SEPTA Regional Rail
+        "f-dr4-septa~bus", // SEPTA Bus, Trolley, Subway-Surface, Market-Frankford Line, Broad Street Line
+        "f-dr4e-patco", // PATCO Speedline
+        "f-dr5-nj~transit~rail", // NJ Transit Rail
+        "f-dr5-nj~transit~bus" // NJ Transit Bus
+    ],
+    "name": "Philadelphia, PA",
+    "file": "philadelphia.bin",
+    "bbox": "-75.3350,39.8300,-74.9370,40.0470",
+    "center": [
+        39.939,
+        -75.136
+    ],
+    "zoom": 12,
+    "detail": "SEPTA, NJ Transit, PATCO",
+    "tags": [
+        "usa",
+        "subway",
+        "rail",
+        "bus",
+        "tram"
+    ]
+}

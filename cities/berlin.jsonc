@@ -1,0 +1,23 @@
+{
+    "id": "berlin",
+    "bbbike_name": "Berlin",
+    "feed_ids": [
+        "f-u3-günterangergüterverkehrsgmbh~coomnibusvermietungkg~fritzbeh" // BVG (U-Bahn, S-Bahn, Tram, Bus), VBB, Regiobus Potsdam, Verkehrsbetrieb Potsdam, ODEG, NEB, S-Bahn Berlin
+    ],
+    "name": "Berlin, Germany",
+    "file": "berlin.bin",
+    "bbox": "12.7600,52.2300,13.9800,52.8200",
+    "center": [
+        52.525,
+        13.370
+    ],
+    "zoom": 12,
+    "detail": "BVG, S-Bahn Berlin, VBB",
+    "tags": [
+        "germany",
+        "subway",
+        "rail",
+        "bus",
+        "tram"
+    ]
+}

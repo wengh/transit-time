@@ -1,0 +1,62 @@
+{
+    "id": "los_angeles",
+    "bbbike_name": "LosAngeles",
+    "feed_ids": [
+        "f-9q5-metro~losangeles", // LA Metro Bus
+        "f-9q5-metro~losangeles~rail", // LA Metro Rail (subway, light rail)
+        "f-9qh-metrolinktrains", // Metrolink commuter rail
+        "f-9q5-ladot", // LADOT
+        "f-9q5b-longbeachtransit", // Long Beach Transit
+        "f-9q5c-bigbluebus", // Big Blue Bus (Santa Monica)
+        "f-9q5c-culvercitybus", // Culver CityBus
+        "f-9mu-orangecountytransportationauthority", // OCTA
+        "f-9q5b-torrancetransit", // Torrance Transit
+        "f-9qh1-foothilltransit", // Foothill Transit
+        "f-9q5f-glendalebeeline", // Glendale Beeline
+        "f-9q5f-pasadenatransit", // Pasadena Transit
+        "f-9q5f7-burbankbus", // Burbank Bus
+        "f-9q5b4-pvpta~ca~us", // Palos Verdes Peninsula Transit
+        "f-9qh1-norwalktransitsystem", // Norwalk Transit
+        "f-9q5-dpwlacounty~ca~us", // LA Go Bus
+        "f-9q5bf-lawndale~ca~us", // Lawndale Beat
+        "f-9q5cx-montereypark~ca~us", // Spirit Bus
+        "f-gtrans~ca~us", // Gardena Transit
+        "f-lynwood~trolley", // Lynwood Breeze Trolley
+        "f-montebello~bus", // Montebello Bus Lines
+        "f-santa~clarita", // Santa Clarita Transit
+        "f-redondo~beach~cities~transit", // Beach Cities Transit
+        "f-west~hollywood", // West Hollywood CityLine
+        "f-city~of~cerritos", // Cerritos On Wheels
+        "f-artesia~ca~us", // Artesia Transit
+        "f-inglewood~ca~us", // I-Line Shuttle
+        "f-bellgardens~ca~us", // Bell Gardens Trolley
+        "f-rosemead~ca~us", // Rosemead Explorer
+        "f-compton~ca~us", // Compton Renaissance Transit
+        "f-alhambra~ca~us", // Alhambra Community Transit
+        "f-bellflower~ca~us", // Bellflower Bus
+        "f-lacampana~ca~us", // La Campana
+        "f-carson~ca~us", // Carson Circuit
+        "f-cudahy~ca~us", // Cudahy Area Rapid Transit
+        "f-huntingtonpark~ca~us", // Huntington Park Express
+        "f-arcadia~ca~us", // Arcadia Transit
+        "f-lax~flyaway", // LAX FlyAway
+        "f-laxflyaway", // LAX FlyAway (alt)
+        "f-ucla~bruinbus", // UCLA BruinBus
+        "f-lasc~ca~us" // LASC Shuttle
+    ],
+    "name": "Los Angeles, CA",
+    "file": "los_angeles.bin",
+    "bbox": "-118.5000,33.7000,-118.0000,34.2000",
+    "center": [
+        33.950,
+        -118.250
+    ],
+    "zoom": 11,
+    "detail": "LA Metro, Metrolink, LADOT, Big Blue Bus, Long Beach Transit, OCTA",
+    "tags": [
+        "usa",
+        "subway",
+        "rail",
+        "bus"
+    ]
+}

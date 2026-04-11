@@ -117,10 +117,17 @@ pub fn download_feed(api_key: &str, onestop_id: &str) -> Result<Vec<u8>> {
     let bytes = client
         .get(&url)
         .header("apikey", api_key)
-        .send()?
+        .send()
+        .with_context(|| format!("Failed to request Transitland feed '{}'", onestop_id))?
         .error_for_status()
         .with_context(|| format!("Failed to download feed '{}'", onestop_id))?
-        .bytes()?;
+        .bytes()
+        .with_context(|| {
+            format!(
+                "Failed to read Transitland response body for feed '{}'",
+                onestop_id
+            )
+        })?;
     Ok(bytes.to_vec())
 }
 

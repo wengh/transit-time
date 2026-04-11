@@ -1,0 +1,21 @@
+{
+    "id": "calgary",
+    "bbbike_name": "Calgary",
+    "feed_ids": [
+        "f-c3nf-calgarytransit" // Calgary Transit (CTrain LRT, bus)
+    ],
+    "name": "Calgary, AB",
+    "file": "calgary.bin",
+    "bbox": "-114.3140,50.8570,-113.7640,51.2170",
+    "center": [
+        51.037,
+        -114.039
+    ],
+    "zoom": 12,
+    "detail": "Calgary Transit",
+    "tags": [
+        "canada",
+        "rail",
+        "bus"
+    ]
+}

@@ -1,0 +1,25 @@
+{
+    "id": "london",
+    "bbbike_name": "London",
+    "feed_ids": [
+        "f-transport~for~london", // TfL (Underground, DLR, Overground, Trams, Elizabeth line, Buses)
+        "f-uk~rail" // National Rail (Southern, Thameslink, Great Northern, c2c, Southeastern, Greater Anglia, South Western, Chiltern, Great Western)
+    ],
+    "name": "London, UK",
+    "file": "london.bin",
+    "bbox": "-0.5970,51.2780,0.4230,51.7030",
+    "center": [
+        51.491,
+        -0.087
+    ],
+    "zoom": 12,
+    "detail": "TfL, National Rail",
+    "tags": [
+        "uk",
+        "subway",
+        "rail",
+        "bus",
+        "tram",
+        "ferry"
+    ]
+}

@@ -158,7 +158,7 @@ cargo run --release -p transit-prep -- generate \
   --id my_city --bbbike-name MyCity --output cities/my_city.jsonc
 ```
 
-This downloads the OSM extract, reads its bounding box, queries Transitland for all transit feeds in that area, and writes a `.jsonc` config with Transitland feed IDs and operator name comments. Edit the generated file to fill in `name`, `detail`, and remove any unwanted feeds.
+This downloads the OSM extract, reads its bounding box, queries Transitland for all transit feeds in that area, and writes a `.jsonc` config with Transitland feed IDs and operator name comments. Edit the generated file to fill in `name`, `detail`, `tags`, and remove any unwanted feeds.
 
 You can also create a `.jsonc` file manually:
 

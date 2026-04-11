@@ -1,0 +1,41 @@
+{
+    "id": "washington_dc",
+    "bbbike_name": "WashingtonDC",
+    "feed_ids": [
+        "f-dqc-wmata~rail", // WMATA Metrorail
+        "f-dqc-wmata~bus", // WMATA Metrobus
+        "f-dqc-virginiarailwayexpress", // Virginia Railway Express
+        "f-dq-mtamaryland~marc", // MARC commuter rail
+        "f-dq-mtamaryland~commuterbus", // MTA Maryland commuter bus
+        "f-dqcj-fairfaxconnector", // Fairfax Connector
+        "f-dqcjj-arlingtontransit", // Arlington Transit
+        "f-dqchv-alexandriatransitcompanydash", // DASH (Alexandria Transit)
+        "f-dqch-prtc", // Potomac and Rappahannock Transportation Commission
+        "f-dqcn-montgomerycountymdrideon", // Montgomery County Ride On
+        "f-dqc-thebusofprincegeorgescounty", // TheBus (Prince George's County)
+        "f-dqcq-regionaltransportationagencyofcentralmaryland", // Regional Transportation Agency
+        "f-loudouncounty~va~us", // Loudoun County Transit
+        "f-shuttleum~md~us", // Shuttle-UM
+        "f-dqc2-georgemasonuniversity", // George Mason University
+        "f-dqcj-howarduniversity", // Howard University
+        "f-dqcj-montgomerycollege", // Montgomery College
+        "f-americanuniversity", // American University
+        "f-georgetownt~lfr", // Georgetown University Shuttle
+        "f-jhm~md~us" // Johns Hopkins University Campus Shuttle
+    ],
+    "name": "Washington, DC",
+    "file": "washington_dc.bin",
+    "bbox": "-77.2300,38.7800,-76.8400,39.0500",
+    "center": [
+        38.915,
+        -77.035
+    ],
+    "zoom": 12,
+    "detail": "WMATA Metro, Metrobus, VRE, MARC, Fairfax Connector, Arlington Transit, Ride On",
+    "tags": [
+        "usa",
+        "subway",
+        "rail",
+        "bus"
+    ]
+}

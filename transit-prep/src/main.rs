@@ -236,7 +236,8 @@ fn fetch_gtfs(feed_id: &str, api_key: Option<&str>, cache_dir: &Path) -> Result<
         }
 
         eprintln!("Downloading GTFS from Transitland: {}", feed_id);
-        let bytes = transitland::download_feed(key, feed_id)?;
+        let bytes = transitland::download_feed(key, feed_id)
+            .with_context(|| format!("Failed to fetch GTFS feed '{}'", feed_id))?;
         let tmp = cache_path.with_extension("zip.tmp");
         std::fs::File::create(&tmp)?.write_all(&bytes)?;
         std::fs::rename(&tmp, &cache_path)?;
@@ -253,7 +254,14 @@ fn fetch_gtfs(feed_id: &str, api_key: Option<&str>, cache_dir: &Path) -> Result<
             .timeout(std::time::Duration::from_secs(300))
             .user_agent("Mozilla/5.0 (compatible; transit-prep/1.0)")
             .build()?;
-        let bytes = client.get(feed_id).send()?.error_for_status()?.bytes()?;
+        let bytes = client
+            .get(feed_id)
+            .send()
+            .with_context(|| format!("Failed to request GTFS URL '{}'", feed_id))?
+            .error_for_status()
+            .with_context(|| format!("GTFS URL returned error status '{}'", feed_id))?
+            .bytes()
+            .with_context(|| format!("Failed to read GTFS response body from '{}'", feed_id))?;
         let tmp = cache_path.with_extension("zip.tmp");
         std::fs::File::create(&tmp)?.write_all(&bytes)?;
         std::fs::rename(&tmp, &cache_path)?;
@@ -934,8 +942,13 @@ fn cmd_generate(
     let feeds = transitland::query_feeds_in_bbox(&api_key, bbox)?;
 
     eprintln!("\n--- Querying Transitland for operators ---");
-    let op_pairs = transitland::query_operators_in_bbox(&api_key, bbox)?;
-    let op_map = transitland::build_feed_operator_map(&op_pairs);
+    let op_map = match transitland::query_operators_in_bbox(&api_key, bbox) {
+        Ok(op_pairs) => transitland::build_feed_operator_map(&op_pairs),
+        Err(e) => {
+            eprintln!("WARNING: operators query failed ({}), continuing without operator names", e);
+            std::collections::HashMap::new()
+        }
+    };
 
     // Filter to feeds with a download URL
     let feeds: Vec<_> = feeds
