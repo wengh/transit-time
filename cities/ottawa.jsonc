@@ -13,5 +13,6 @@
         -75.69213
     ],
     "zoom": 12,
-    "detail": "OC Transpo, STO"
+    "detail": "OC Transpo, STO",
+    "tags": ["canada", "rail", "bus"]
 }

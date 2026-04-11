@@ -8,6 +8,7 @@ export interface City {
   center: [number, number];
   zoom: number;
   detail: string;
+  tags?: string[];
 }
 
 const cityModules = import.meta.glob<string>('../../cities/*.jsonc', {
@@ -23,7 +24,7 @@ export const CITIES: City[] = Object.values(cityModules).map((content) => {
     city.bbox = (city.bbox as string).split(',').map(Number);
   }
   return city as City;
-});
+}).sort((a, b) => a.name.localeCompare(b.name));
 
 export function getCityFromUrl(): City | null {
   const id = new URLSearchParams(window.location.search).get('city');

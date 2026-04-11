@@ -11,5 +11,6 @@
         -79.055
     ],
     "zoom": 14,
-    "detail": "Chapel Hill Transit"
+    "detail": "Chapel Hill Transit",
+    "tags": ["usa", "bus"]
 }

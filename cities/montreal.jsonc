@@ -28,5 +28,6 @@
         -73.677
     ],
     "zoom": 12,
-    "detail": "STM, RTL, STL, REM, Exo"
+    "detail": "STM, RTL, STL, REM, Exo",
+    "tags": ["canada", "subway", "rail", "bus"]
 }

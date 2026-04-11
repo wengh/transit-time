@@ -15,5 +15,6 @@
         -122.175
     ],
     "zoom": 11,
-    "detail": "BART, Muni, Caltrain, SamTrans, VTA, ..."
+    "detail": "BART, Muni, Caltrain, SamTrans, VTA, ...",
+    "tags": ["usa", "subway", "rail", "bus", "ferry"]
 }

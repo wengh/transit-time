@@ -27,5 +27,6 @@
         -74.01
     ],
     "zoom": 12,
-    "detail": "MTA, PATH, NJ Transit"
+    "detail": "MTA, PATH, NJ Transit",
+    "tags": ["usa", "subway", "rail", "bus", "ferry"]
 }

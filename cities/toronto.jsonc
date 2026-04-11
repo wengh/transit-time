@@ -17,5 +17,6 @@
         -79.38
     ],
     "zoom": 12,
-    "detail": "TTC, Go Transit, UP Express, MiWay, YRT, Brampton Transit"
+    "detail": "TTC, Go Transit, UP Express, MiWay, YRT, Brampton Transit",
+    "tags": ["canada", "subway", "rail", "bus"]
 }

@@ -14,5 +14,6 @@
         -80.52
     ],
     "zoom": 13,
-    "detail": "GRT, Guelph Transit, Go Transit"
+    "detail": "GRT, Guelph Transit, Go Transit",
+    "tags": ["canada", "rail", "bus"]
 }

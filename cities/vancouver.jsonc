@@ -13,5 +13,6 @@
         -122.988
     ],
     "zoom": 12,
-    "detail": "TransLink"
+    "detail": "TransLink",
+    "tags": ["canada", "rail", "bus", "ferry"]
 }

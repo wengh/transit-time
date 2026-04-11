@@ -12,5 +12,6 @@
         -122.33
     ],
     "zoom": 12,
-    "detail": "Sound Transit"
+    "detail": "Sound Transit",
+    "tags": ["usa", "rail", "bus"]
 }

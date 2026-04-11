@@ -13,5 +13,6 @@
     ],
     "zoom": 12,
     "detail": "Metro, Bus, Suburban Rail, ...",
-    "allow_stale": true
+    "allow_stale": true,
+    "tags": ["mexico", "subway", "rail", "bus"]
 }
