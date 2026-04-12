@@ -51,8 +51,8 @@ pub struct Trip {
 
 #[derive(Debug, Clone)]
 pub struct StopTime {
-    pub trip_id: String,
-    pub stop_id: String,
+    pub trip_index: u32,     // index into GtfsData.trips
+    pub stop_index: u32,     // index into GtfsData.stops (at parse time; remapped in run_prep)
     pub arrival_time: u32,   // seconds since midnight
     pub departure_time: u32, // seconds since midnight
     pub stop_sequence: u32,
@@ -98,6 +98,7 @@ impl GtfsData {
     pub fn merge(&mut self, other: GtfsData) {
         let stop_offset = self.stops.len() as u32;
         let route_offset = self.routes.len() as u32;
+        let trip_offset = self.trips.len() as u32;
         // Derive a per-feed prefix from the current stop count — guaranteed
         // unique because it grows monotonically with each merge call.
         let p = format!("{}:", stop_offset);
@@ -120,8 +121,8 @@ impl GtfsData {
             self.trips.push(trip);
         }
         for mut st in other.stop_times {
-            st.trip_id = format!("{p}{}", st.trip_id);
-            st.stop_id = format!("{p}{}", st.stop_id);
+            st.trip_index += trip_offset;
+            st.stop_index += stop_offset;
             self.stop_times.push(st);
         }
         for mut svc in other.services {
@@ -312,6 +313,17 @@ fn read_file_from_zip(
     }
 }
 
+/// Find the index of a zip entry by filename, handling subdirectory prefixes
+/// (e.g. "feed/stop_times.txt" matches target "stop_times.txt").
+/// Uses `file_names()` which takes `&self` — no mutable borrow needed.
+fn find_zip_entry_name(archive: &zip::ZipArchive<std::fs::File>, name: &str) -> Option<String> {
+    let target = name.to_lowercase();
+    archive.file_names().find(|n| {
+        let lower = n.to_lowercase();
+        lower == target || lower.ends_with(&format!("/{}", target))
+    }).map(|s| s.to_owned())
+}
+
 pub fn parse_gtfs(path: &Path) -> Result<GtfsData> {
     let file = std::fs::File::open(path).context("Failed to open GTFS zip")?;
     let mut archive = zip::ZipArchive::new(file)?;
@@ -398,27 +410,38 @@ pub fn parse_gtfs(path: &Path) -> Result<GtfsData> {
         }
     }
 
-    // Parse stop_times
-    let stop_times_csv = read_file_from_zip(&mut archive, "stop_times.txt")?
-        .context("stop_times.txt not found in GTFS")?;
+    // Parse stop_times — stream directly from the zip entry to avoid allocating
+    // the full CSV as a String (can be several GB for large feeds like NYC buses).
+    // Convert stop/trip IDs to compact u32 indices on the fly using the maps
+    // built above; skip entries referencing unknown stops or trips.
     let mut stop_times = Vec::new();
     {
+        let entry_name = find_zip_entry_name(&archive, "stop_times.txt")
+            .context("stop_times.txt not found in GTFS")?;
+        let entry = archive
+            .by_name(&entry_name)
+            .context("Failed to open stop_times.txt")?;
         let mut rdr = csv::ReaderBuilder::new()
             .flexible(true)
             .trim(csv::Trim::All)
-            .from_reader(stop_times_csv.as_bytes());
+            .from_reader(entry);
         for result in rdr.deserialize::<StopTimeRecord>() {
             let record = result?;
             let arrival = record.arrival_time.as_deref().and_then(parse_time);
             let departure = record.departure_time.as_deref().and_then(parse_time);
             if let (Some(arr), Some(dep)) = (arrival, departure) {
-                stop_times.push(StopTime {
-                    trip_id: record.trip_id,
-                    stop_id: record.stop_id,
-                    arrival_time: arr,
-                    departure_time: dep,
-                    stop_sequence: record.stop_sequence.parse().unwrap_or(0),
-                });
+                if let (Some(&stop_idx), Some(&trip_idx)) = (
+                    stop_id_to_index.get(&record.stop_id),
+                    trip_id_to_index.get(&record.trip_id),
+                ) {
+                    stop_times.push(StopTime {
+                        trip_index: trip_idx,
+                        stop_index: stop_idx,
+                        arrival_time: arr,
+                        departure_time: dep,
+                        stop_sequence: record.stop_sequence.parse().unwrap_or(0),
+                    });
+                }
             }
         }
     }
@@ -503,13 +526,16 @@ pub fn parse_gtfs(path: &Path) -> Result<GtfsData> {
         }
     }
 
-    // Parse shapes
+    // Parse shapes — stream directly from zip to avoid loading full CSV as String.
     let mut shapes: HashMap<String, Vec<(f64, f64, u32)>> = HashMap::new();
-    if let Some(shapes_csv) = read_file_from_zip(&mut archive, "shapes.txt")? {
+    if let Some(entry_name) = find_zip_entry_name(&archive, "shapes.txt") {
+        let entry = archive
+            .by_name(&entry_name)
+            .context("Failed to open shapes.txt")?;
         let mut rdr = csv::ReaderBuilder::new()
             .flexible(true)
             .trim(csv::Trim::All)
-            .from_reader(shapes_csv.as_bytes());
+            .from_reader(entry);
         for result in rdr.deserialize::<ShapeRecord>() {
             if let Ok(record) = result {
                 if let (Ok(lat), Ok(lon), Ok(seq)) = (
@@ -575,12 +601,6 @@ pub fn build_service_patterns(data: &GtfsData) -> Vec<ServicePattern> {
         trip_id_to_idx.insert(&trip.id, i as u32);
     }
 
-    // data.stops is already filtered to bbox by the caller; build lookup from it
-    let mut stop_id_to_idx: HashMap<&str, u32> = HashMap::new();
-    for stop in &data.stops {
-        stop_id_to_idx.insert(&stop.id, stop.index);
-    }
-
     let mut route_id_to_idx: HashMap<&str, u32> = HashMap::new();
     for route in &data.routes {
         route_id_to_idx.insert(&route.id, route.index);
@@ -636,15 +656,14 @@ pub fn build_service_patterns(data: &GtfsData) -> Vec<ServicePattern> {
         day_mask_groups.entry(key).or_default().push(service);
     }
 
-    // Sort stop_times by trip_id and stop_sequence
-    let mut stop_times_by_trip: HashMap<&str, Vec<&StopTime>> = HashMap::new();
+    // Group stop_times by trip_index and sort by stop_sequence.
+    // stop_times are pre-filtered to in-bbox stops by the caller (run_prep).
+    let mut stop_times_by_trip: HashMap<u32, Vec<&StopTime>> = HashMap::new();
     for st in &data.stop_times {
-        stop_times_by_trip.entry(&st.trip_id).or_default().push(st);
+        stop_times_by_trip.entry(st.trip_index).or_default().push(st);
     }
     for times in stop_times_by_trip.values_mut() {
         times.sort_by_key(|st| st.stop_sequence);
-        // Pre-filter to in-bbox stops once here so the per-pattern loop never needs to.
-        times.retain(|st| stop_id_to_idx.contains_key(st.stop_id.as_str()));
     }
 
     // Group trips by service_id for O(1) per-pattern access instead of scanning all trips.
@@ -719,13 +738,13 @@ pub fn build_service_patterns(data: &GtfsData) -> Vec<ServicePattern> {
                 };
 
                 // stop_times_by_trip is pre-filtered to in-bbox stops; windows(2) directly.
-                if let Some(times) = stop_times_by_trip.get(trip.id.as_str()) {
+                if let Some(times) = stop_times_by_trip.get(&trip_idx) {
                     for window in times.windows(2) {
                         let from = window[0];
                         let to = window[1];
 
-                        let from_idx = stop_id_to_idx[from.stop_id.as_str()];
-                        let to_idx = stop_id_to_idx[to.stop_id.as_str()];
+                        let from_idx = from.stop_index;
+                        let to_idx = to.stop_index;
 
                         let dep_time = from.departure_time;
                         let travel = to.arrival_time.saturating_sub(dep_time);
@@ -779,12 +798,12 @@ pub fn build_service_patterns(data: &GtfsData) -> Vec<ServicePattern> {
                     Some(&idx) => idx,
                     None => continue,
                 };
-                if let Some(times) = stop_times_by_trip.get(trip.id.as_str()) {
+                if let Some(times) = stop_times_by_trip.get(&trip_idx) {
                     for window in times.windows(2) {
                         let from = window[0];
                         let to = window[1];
-                        let from_idx = stop_id_to_idx[from.stop_id.as_str()];
-                        let to_idx = stop_id_to_idx[to.stop_id.as_str()];
+                        let from_idx = from.stop_index;
+                        let to_idx = to.stop_index;
                         freq_entries.push(FrequencyEntry {
                             route_index: route_idx,
                             stop_index: from_idx,

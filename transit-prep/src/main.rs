@@ -527,7 +527,7 @@ fn cmd_pipeline(
     // ── Stage 1: Extract feeds from city configs ──
     eprintln!("=== Stage 1: Extract feeds from city configs ===");
 
-    let mut cities: Vec<(String, CityConfig)> = Vec::new();
+    let mut cities: Vec<(String, CityConfig, PathBuf)> = Vec::new();
     let mut feed_to_cities: HashMap<String, Vec<String>> = HashMap::new(); // feed_id → city_ids
 
     let mut entries: Vec<_> = std::fs::read_dir(cities_dir)?
@@ -556,7 +556,7 @@ fn cmd_pipeline(
                 .push(config.id.clone());
         }
 
-        cities.push((config.id.clone(), config));
+        cities.push((config.id.clone(), config, path));
     }
 
     let tl_feeds: Vec<_> = feed_to_cities
@@ -631,18 +631,20 @@ fn cmd_pipeline(
 
     let mut cities_to_rebuild: Vec<String> = Vec::new();
 
-    for (id, config) in &cities {
+    for (id, config, city_path) in &cities {
         let bin_path = output_dir.join(format!("{}.bin", id));
         let has_stale_feed = config.feed_ids.iter().any(|f| stale_feeds.contains(f));
         let bin_missing = !bin_path.exists();
+        let bin_mtime = std::fs::metadata(&bin_path)
+            .ok()
+            .and_then(|m| m.modified().ok());
         let code_changed = exe_mtime
-            .and_then(|exe_t| {
-                std::fs::metadata(&bin_path)
-                    .ok()?
-                    .modified()
-                    .ok()
-                    .map(|bin_t| exe_t > bin_t)
-            })
+            .and_then(|exe_t| bin_mtime.map(|bin_t| exe_t > bin_t))
+            .unwrap_or(false);
+        let config_changed = std::fs::metadata(city_path)
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|cfg_t| bin_mtime.map(|bin_t| cfg_t > bin_t))
             .unwrap_or(false);
 
         let reason = if bin_missing {
@@ -651,6 +653,8 @@ fn cmd_pipeline(
             Some("stale feed")
         } else if code_changed {
             Some("code changed")
+        } else if config_changed {
+            Some("config changed")
         } else {
             None
         };
@@ -687,8 +691,8 @@ fn cmd_pipeline(
     let feeds_to_download: Vec<&String> = {
         let needed: HashSet<&String> = cities
             .iter()
-            .filter(|(id, _)| cities_to_rebuild.contains(id))
-            .flat_map(|(_, config)| config.feed_ids.iter())
+            .filter(|(id, _, _)| cities_to_rebuild.contains(id))
+            .flat_map(|(_, config, _)| config.feed_ids.iter())
             .collect();
         needed
             .into_iter()
@@ -712,8 +716,8 @@ fn cmd_pipeline(
 
     cities
         .par_iter()
-        .filter(|(id, _)| cities_to_rebuild.contains(id))
-        .try_for_each(|(id, config)| -> Result<()> {
+        .filter(|(id, _, _)| cities_to_rebuild.contains(id))
+        .try_for_each(|(id, config, _)| -> Result<()> {
             let bbox = parse_bbox(&config.bbox)?;
 
             // fetch_osm handles caching internally and returns the actual path
@@ -758,7 +762,7 @@ fn cmd_pipeline(
 
     // OSM files for all active cities — include all possible naming patterns
     // since the actual filename depends on which download path was used
-    for (id, config) in &cities {
+    for (id, config, _) in &cities {
         let sanitized = osm::sanitize(id);
         expected_files.insert(cache_dir.join(format!("{}.osm.pbf", sanitized)));
         expected_files.insert(cache_dir.join(format!("{}.osm.xml", sanitized)));
@@ -809,7 +813,7 @@ fn cmd_pipeline(
     }
 
     // Scan output dir for orphaned .bin files
-    let active_city_ids: HashSet<&str> = cities.iter().map(|(id, _)| id.as_str()).collect();
+    let active_city_ids: HashSet<&str> = cities.iter().map(|(id, _, _)| id.as_str()).collect();
     if let Ok(entries) = std::fs::read_dir(output_dir) {
         for entry in entries.filter_map(|e| e.ok()) {
             let path = entry.path();
@@ -945,7 +949,10 @@ fn cmd_generate(
     let op_map = match transitland::query_operators_in_bbox(&api_key, bbox) {
         Ok(op_pairs) => transitland::build_feed_operator_map(&op_pairs),
         Err(e) => {
-            eprintln!("WARNING: operators query failed ({}), continuing without operator names", e);
+            eprintln!(
+                "WARNING: operators query failed ({}), continuing without operator names",
+                e
+            );
             std::collections::HashMap::new()
         }
     };
@@ -1065,32 +1072,48 @@ pub fn run_prep(
         }
     }
 
-    // Filter stops to bbox and re-index sequentially so out-of-bbox stops occupy no ids
+    // Filter stops to bbox and re-index sequentially so out-of-bbox stops occupy no ids.
+    // Also remap stop_times to the new stop indices (dropping entries for out-of-bbox stops).
     let (min_lon, min_lat, max_lon, max_lat) = bbox;
     gtfs_data
         .stops
         .retain(|s| s.lat >= min_lat && s.lat <= max_lat && s.lon >= min_lon && s.lon <= max_lon);
+    // Build remap from old parse-time index to new compact index before overwriting stop.index.
+    let stop_index_remap: HashMap<u32, u32> = gtfs_data
+        .stops
+        .iter()
+        .enumerate()
+        .map(|(new_idx, stop)| (stop.index, new_idx as u32))
+        .collect();
     for (i, stop) in gtfs_data.stops.iter_mut().enumerate() {
         stop.index = i as u32;
     }
+    // Filter stop_times to only in-bbox stops and update their stop_index to the new compact value.
+    gtfs_data.stop_times.retain_mut(|st| {
+        if let Some(&new_idx) = stop_index_remap.get(&st.stop_index) {
+            st.stop_index = new_idx;
+            true
+        } else {
+            false
+        }
+    });
+    gtfs_data.stop_times.shrink_to_fit();
     eprintln!("  {} stops within bbox", gtfs_data.stops.len());
 
-    // Identify trips with ≥2 in-bbox stops; trips with 0-1 are useless (no edges)
-    let in_bbox_stop_ids: HashSet<&str> = gtfs_data.stops.iter().map(|s| s.id.as_str()).collect();
-    let mut stops_per_trip: HashMap<&str, usize> = HashMap::new();
+    // Identify trips with ≥2 in-bbox stops; trips with 0-1 are useless (no edges).
+    // stop_times are already filtered to in-bbox stops, so no extra check needed.
+    let mut stops_per_trip: HashMap<u32, usize> = HashMap::new();
     for st in &gtfs_data.stop_times {
-        if in_bbox_stop_ids.contains(st.stop_id.as_str()) {
-            *stops_per_trip.entry(st.trip_id.as_str()).or_default() += 1;
-        }
+        *stops_per_trip.entry(st.trip_index).or_default() += 1;
     }
-    let valid_trip_ids: HashSet<&str> = stops_per_trip
-        .iter()
-        .filter(|&(_, &count)| count >= 2)
-        .map(|(&id, _)| id)
+    let valid_trip_indices: HashSet<u32> = stops_per_trip
+        .into_iter()
+        .filter(|(_, count)| *count >= 2)
+        .map(|(idx, _)| idx)
         .collect();
     eprintln!(
         "  {} trips with ≥2 in-bbox stops (of {} total)",
-        valid_trip_ids.len(),
+        valid_trip_indices.len(),
         gtfs_data.trips.len()
     );
 
@@ -1220,22 +1243,14 @@ pub fn run_prep(
             .map(|r| (r.id.as_str(), r.index))
             .collect();
 
-        // Build stop_id -> new_stop_index mapping
-        let stop_id_to_new_idx: HashMap<&str, u32> = gtfs_data
-            .stops
-            .iter()
-            .map(|s| (s.id.as_str(), s.index))
-            .collect();
-
-        // Build stop_times_by_trip, sorted by stop_sequence, filtered to in-bbox stops
-        let mut stop_times_by_trip: HashMap<&str, Vec<&gtfs::StopTime>> = HashMap::new();
+        // Build stop_times_by_trip keyed by trip_index, sorted by stop_sequence.
+        // stop_times are already filtered to in-bbox stops by the earlier remap step.
+        let mut stop_times_by_trip: HashMap<u32, Vec<&gtfs::StopTime>> = HashMap::new();
         for st in &gtfs_data.stop_times {
-            if stop_id_to_new_idx.contains_key(st.stop_id.as_str()) {
-                stop_times_by_trip
-                    .entry(st.trip_id.as_str())
-                    .or_default()
-                    .push(st);
-            }
+            stop_times_by_trip
+                .entry(st.trip_index)
+                .or_default()
+                .push(st);
         }
         for times in stop_times_by_trip.values_mut() {
             times.sort_by_key(|st| st.stop_sequence);
@@ -1251,8 +1266,9 @@ pub fn run_prep(
         let mut trips_with_shape = 0u32;
         let mut trips_matched = 0u32;
 
-        for trip in &gtfs_data.trips {
-            if !valid_trip_ids.contains(trip.id.as_str()) {
+        for (trip_idx, trip) in gtfs_data.trips.iter().enumerate() {
+            let trip_idx = trip_idx as u32;
+            if !valid_trip_indices.contains(&trip_idx) {
                 continue;
             }
             let shape_id = match &trip.shape_id {
@@ -1263,7 +1279,7 @@ pub fn run_prep(
                 Some(pts) if pts.len() >= 2 => pts,
                 _ => continue,
             };
-            let times = match stop_times_by_trip.get(trip.id.as_str()) {
+            let times = match stop_times_by_trip.get(&trip_idx) {
                 Some(t) if t.len() >= 2 => t,
                 _ => continue,
             };
@@ -1278,12 +1294,12 @@ pub fn run_prep(
 
             trips_with_shape += 1;
 
-            // Collect stop coords (in stop_sequence order)
+            // Collect stop coords (in stop_sequence order); stop_index is already the compacted index.
             let stop_coords: Vec<(f64, f64)> = times
                 .iter()
-                .filter_map(|st| {
-                    let stop = &gtfs_data.stops[stop_id_to_new_idx[st.stop_id.as_str()] as usize];
-                    Some((stop.lat, stop.lon))
+                .map(|st| {
+                    let stop = &gtfs_data.stops[st.stop_index as usize];
+                    (stop.lat, stop.lon)
                 })
                 .collect();
 
@@ -1298,8 +1314,8 @@ pub fn run_prep(
 
             // Extract leg slices for each consecutive stop pair
             for w in 0..times.len() - 1 {
-                let from_stop = stop_id_to_new_idx[times[w].stop_id.as_str()];
-                let to_stop = stop_id_to_new_idx[times[w + 1].stop_id.as_str()];
+                let from_stop = times[w].stop_index;
+                let to_stop = times[w + 1].stop_index;
                 let key = (new_route_idx, from_stop, to_stop);
 
                 let si_from = shape_indices[w];
