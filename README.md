@@ -2,7 +2,7 @@
 
 A browser-based tool that shows how far you can travel from any point on a map using public transit and walking, at any time of day. The entire routing computation runs inside your browser — no server required.
 
-Live demo: https://wengh.github.io/transit-time/
+Live demo: https://transit-time.pages.dev/
 
 Note: this project is mostly vibe coded.
 
