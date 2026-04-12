@@ -7,7 +7,7 @@
         "f-drm-plymouthbrockton~ma~us", // Plymouth & Brockton
         "f-drmr-brockton~ma~us" // Brockton Area Transit Authority
     ],
-    "name": "Boston, MA",
+    "name": "Boston, MA, USA",
     "file": "boston.bin",
     "bbox": "-71.1820,42.2730,-70.9540,42.4400",
     "center": [

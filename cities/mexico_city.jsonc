@@ -4,7 +4,7 @@
     "feed_ids": [
         "f-9g3-semovi" // Cablebus, Corredores Concesionados, Metrobús, Sistema de Transporte Colectivo Metro, Pumabús, Red de Transporte de Pasajeros, Ferrocarriles Suburbanos, Servicio de Tren Ligero, Trolebús, Tren El Insurgente
     ],
-    "name": "Mexico City",
+    "name": "Mexico City, Mexico",
     "file": "mexico_city.bin",
     "bbox": "-99.2708,19.3095,-98.9714,19.5329",
     "center": [
@@ -14,5 +14,10 @@
     "zoom": 12,
     "detail": "Metro, Bus, Suburban Rail, ...",
     "allow_stale": true,
-    "tags": ["mexico", "subway", "rail", "bus"]
+    "tags": [
+        "mexico",
+        "subway",
+        "rail",
+        "bus"
+    ]
 }

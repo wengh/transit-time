@@ -5,7 +5,7 @@
         "f-f24-octranspo",
         "f-f244-sto"
     ],
-    "name": "Ottawa, ON",
+    "name": "Ottawa, ON, Canada",
     "file": "ottawa.bin",
     "bbox": "-75.95,45.21,-75.4,45.532",
     "center": [
@@ -14,5 +14,9 @@
     ],
     "zoom": 12,
     "detail": "OC Transpo, STO",
-    "tags": ["canada", "rail", "bus"]
+    "tags": [
+        "canada",
+        "rail",
+        "bus"
+    ]
 }

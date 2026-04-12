@@ -7,7 +7,7 @@
         "f-sf~bay~area~rg", // ACE Altamont Corridor Express, Dumbarton Express, San Francisco Bay Ferry, Golden Gate Ferry, Union City Transit, Napa Valley Transportation Authority (NVTA), Tri Delta Transit, San Francisco International Airport, Alameda-Contra Costa Transit District, Bay Area Rapid Transit, Caltrain, Capitol Corridor Joint Powers Authority, County Connection, Solano County Transit, Golden Gate Bridge, Highway and Transportation District, Livermore Amador Valley Transit Authority (LAVTA), Marin County Transit District, San Mateo County Transit District, San Francisco Municipal Transportation Agency, Commute.org Shuttles, Sonoma Marin Area Rail Transit, Mountain View Transportation Management Association, Western Contra Costa Area Transit, Emery Go-Round, Santa Clara Valley Transportation Authority, City of South San Francisco, Mission Bay TMA, Mountain View Community Shuttle, Presidio Go, Emery Express, San Francisco Recreation and Parks
         "f-alco~ca~us" // Alameda County Shuttle
     ],
-    "name": "San Francisco Bay Area",
+    "name": "San Francisco Bay Area, CA, USA",
     "file": "sf_bay.bin",
     "bbox": "-122.6000,37.2000,-121.7500,38.0700",
     "center": [
@@ -16,5 +16,11 @@
     ],
     "zoom": 11,
     "detail": "BART, Muni, Caltrain, SamTrans, VTA, ...",
-    "tags": ["usa", "subway", "rail", "bus", "ferry"]
+    "tags": [
+        "usa",
+        "subway",
+        "rail",
+        "bus",
+        "ferry"
+    ]
 }

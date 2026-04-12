@@ -15,5 +15,10 @@
     ],
     "zoom": 12,
     "detail": "CTA, Pace, Metra",
-    "tags": ["usa", "subway", "rail", "bus"]
+    "tags": [
+        "usa",
+        "subway",
+        "rail",
+        "bus"
+    ]
 }

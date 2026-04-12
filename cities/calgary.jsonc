@@ -4,7 +4,7 @@
     "feed_ids": [
         "f-c3nf-calgarytransit" // Calgary Transit (CTrain LRT, bus)
     ],
-    "name": "Calgary, AB",
+    "name": "Calgary, AB, Canada",
     "file": "calgary.bin",
     "bbox": "-114.3140,50.8570,-113.7640,51.2170",
     "center": [

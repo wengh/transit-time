@@ -19,7 +19,7 @@
         "f-dr5r-nycferry",
         "f-dr7-nywaterway"
     ],
-    "name": "New York City, NY",
+    "name": "New York City, NY, USA",
     "file": "nyc.bin",
     "bbox": "-74.25,40.50,-73.70,40.92",
     "center": [
@@ -28,5 +28,11 @@
     ],
     "zoom": 12,
     "detail": "MTA, PATH, NJ Transit",
-    "tags": ["usa", "subway", "rail", "bus", "ferry"]
+    "tags": [
+        "usa",
+        "subway",
+        "rail",
+        "bus",
+        "ferry"
+    ]
 }

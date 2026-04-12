@@ -23,7 +23,7 @@
         "f-georgetownt~lfr", // Georgetown University Shuttle
         "f-jhm~md~us" // Johns Hopkins University Campus Shuttle
     ],
-    "name": "Washington, DC",
+    "name": "Washington, DC, USA",
     "file": "washington_dc.bin",
     "bbox": "-77.2300,38.7800,-76.8400,39.0500",
     "center": [

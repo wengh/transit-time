@@ -8,7 +8,7 @@
         "f-dr5-nj~transit~rail", // NJ Transit Rail
         "f-dr5-nj~transit~bus" // NJ Transit Bus
     ],
-    "name": "Philadelphia, PA",
+    "name": "Philadelphia, PA, USA",
     "file": "philadelphia.bin",
     "bbox": "-75.3350,39.8300,-74.9370,40.0470",
     "center": [

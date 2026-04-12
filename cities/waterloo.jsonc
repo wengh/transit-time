@@ -6,7 +6,7 @@
         "f-dpwz-guelphtransit",
         "f-dpz-gotransit"
     ],
-    "name": "Waterloo, ON",
+    "name": "Waterloo, ON, Canada",
     "file": "waterloo.bin",
     "bbox": "-80.60,43.30,-80.20,43.60",
     "center": [
@@ -15,5 +15,9 @@
     ],
     "zoom": 13,
     "detail": "GRT, Guelph Transit, Go Transit",
-    "tags": ["canada", "rail", "bus"]
+    "tags": [
+        "canada",
+        "rail",
+        "bus"
+    ]
 }

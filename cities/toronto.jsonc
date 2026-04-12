@@ -9,7 +9,7 @@
         "f-dpz-yorkregiontransit",
         "f-dpz2-bramptontransit"
     ],
-    "name": "Toronto, ON",
+    "name": "Toronto, ON, Canada",
     "file": "toronto.bin",
     "bbox": "-79.79,43.48,-79,43.92",
     "center": [
@@ -18,5 +18,10 @@
     ],
     "zoom": 12,
     "detail": "TTC, Go Transit, UP Express, MiWay, YRT, Brampton Transit",
-    "tags": ["canada", "subway", "rail", "bus"]
+    "tags": [
+        "canada",
+        "subway",
+        "rail",
+        "bus"
+    ]
 }

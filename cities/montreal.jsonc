@@ -20,7 +20,7 @@
         "f-reseau~express~metropolitain", // Réseau express métropolitain
         "f-societe~de~transport~de~salaberry~de~valleyfield" // Société de Transport de Salaberry-de-Valleyfield
     ],
-    "name": "Montreal, QC",
+    "name": "Montreal, QC, Canada",
     "file": "montreal.bin",
     "bbox": "-74.0860,45.3010,-73.2680,45.7500",
     "center": [
@@ -29,5 +29,10 @@
     ],
     "zoom": 12,
     "detail": "STM, RTL, STL, REM, Exo",
-    "tags": ["canada", "subway", "rail", "bus"]
+    "tags": [
+        "canada",
+        "subway",
+        "rail",
+        "bus"
+    ]
 }

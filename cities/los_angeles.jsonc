@@ -44,7 +44,7 @@
         "f-ucla~bruinbus", // UCLA BruinBus
         "f-lasc~ca~us" // LASC Shuttle
     ],
-    "name": "Los Angeles, CA",
+    "name": "Los Angeles, CA, USA",
     "file": "los_angeles.bin",
     "bbox": "-118.5000,33.7000,-118.0000,34.2000",
     "center": [

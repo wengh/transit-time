@@ -4,7 +4,7 @@
     "feed_ids": [
         "https://gtfs.sound.obaweb.org/prod/gtfs_puget_sound_consolidated.zip"
     ],
-    "name": "Seattle, WA",
+    "name": "Seattle, WA, USA",
     "file": "seattle.bin",
     "bbox": "-122.46,47.40,-122.01,47.82",
     "center": [
@@ -13,5 +13,9 @@
     ],
     "zoom": 12,
     "detail": "Sound Transit",
-    "tags": ["usa", "rail", "bus"]
+    "tags": [
+        "usa",
+        "rail",
+        "bus"
+    ]
 }
