@@ -1,0 +1,22 @@
+{
+    "id": "moscow",
+    "bbbike_name": "Moscow",
+    "feed_ids": [
+        "https://greens3.transitpdf.com/files/uran/improved-gtfs-moscow-official.zip" // https://busmaps.com/en/russia/open-data-portal-moscow/moscow-official
+    ],
+    "name": "Moscow, Russia",
+    "file": "moscow.bin",
+    "bbox": "37.3220,55.5660,37.8810,55.9160",
+    "center": [
+        55.75,
+        37.61
+    ],
+    "zoom": 12,
+    "detail": "Moscow Metro, Mosgortrans, ...",
+    "tags": [
+        "russia",
+        "subway",
+        "rail",
+        "bus"
+    ]
+}
