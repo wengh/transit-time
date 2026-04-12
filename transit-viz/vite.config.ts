@@ -2,6 +2,11 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 
+const THREADING_HEADERS = {
+  'Cross-Origin-Opener-Policy': 'same-origin',
+  'Cross-Origin-Embedder-Policy': 'require-corp',
+};
+
 export default defineConfig({
   root: '.',
   publicDir: 'public',
@@ -14,10 +19,10 @@ export default defineConfig({
   },
   server: {
     port: 3000,
-    headers: {
-      'Cross-Origin-Opener-Policy': 'same-origin',
-      'Cross-Origin-Embedder-Policy': 'require-corp',
-    },
+    headers: THREADING_HEADERS,
+  },
+  preview: {
+    headers: THREADING_HEADERS,
   },
   // SPA fallback: serve index.html for city routes like /chicago, /chapel_hill
   appType: 'spa',
