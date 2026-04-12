@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use rayon::prelude::*;
 use serde::Deserialize;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Read;
@@ -318,10 +319,13 @@ fn read_file_from_zip(
 /// Uses `file_names()` which takes `&self` — no mutable borrow needed.
 fn find_zip_entry_name(archive: &zip::ZipArchive<std::fs::File>, name: &str) -> Option<String> {
     let target = name.to_lowercase();
-    archive.file_names().find(|n| {
-        let lower = n.to_lowercase();
-        lower == target || lower.ends_with(&format!("/{}", target))
-    }).map(|s| s.to_owned())
+    archive
+        .file_names()
+        .find(|n| {
+            let lower = n.to_lowercase();
+            lower == target || lower.ends_with(&format!("/{}", target))
+        })
+        .map(|s| s.to_owned())
 }
 
 pub fn parse_gtfs(path: &Path) -> Result<GtfsData> {
@@ -660,7 +664,10 @@ pub fn build_service_patterns(data: &GtfsData) -> Vec<ServicePattern> {
     // stop_times are pre-filtered to in-bbox stops by the caller (run_prep).
     let mut stop_times_by_trip: HashMap<u32, Vec<&StopTime>> = HashMap::new();
     for st in &data.stop_times {
-        stop_times_by_trip.entry(st.trip_index).or_default().push(st);
+        stop_times_by_trip
+            .entry(st.trip_index)
+            .or_default()
+            .push(st);
     }
     for times in stop_times_by_trip.values_mut() {
         times.sort_by_key(|st| st.stop_sequence);
@@ -682,155 +689,160 @@ pub fn build_service_patterns(data: &GtfsData) -> Vec<ServicePattern> {
         .map(|f| f.trip_id.as_str())
         .collect();
 
-    let mut patterns = Vec::new();
+    // Convert BTreeMap to Vec to preserve sorted order for enumerate() indices,
+    // then build each pattern independently in parallel — all shared data is read-only.
+    let groups: Vec<(ServiceKey, Vec<&Service>)> = day_mask_groups.into_iter().collect();
+    let patterns: Vec<ServicePattern> = groups
+        .into_par_iter()
+        .enumerate()
+        .map(|(pattern_id, (key, services))| {
+            let mask = key.mask;
+            let service_ids: HashSet<&str> = services.iter().map(|s| s.id.as_str()).collect();
 
-    for (key, services) in &day_mask_groups {
-        let mask = key.mask;
-        let service_ids: HashSet<&str> = services.iter().map(|s| s.id.as_str()).collect();
-
-        // Collect date exceptions and compute validity range
-        let mut adds = Vec::new();
-        let mut removes = Vec::new();
-        let mut start_date = 0u32;
-        let mut end_date = 0u32;
-        for svc in services {
-            adds.extend_from_slice(&svc.added_dates);
-            removes.extend_from_slice(&svc.removed_dates);
-            if svc.start_date != 0 {
-                start_date = if start_date == 0 {
-                    svc.start_date
-                } else {
-                    start_date.min(svc.start_date)
-                };
-            }
-            if svc.end_date != 0 {
-                end_date = if end_date == 0 {
-                    svc.end_date
-                } else {
-                    end_date.max(svc.end_date)
-                };
-            }
-        }
-
-        // Find min/max departure times for trips in this pattern
-        let mut min_time = u32::MAX;
-        let mut max_time = 0u32;
-
-        // Collect all departure events
-        let mut departure_events: Vec<(u32, Event)> = Vec::new(); // (departure_time, event)
-
-        for service_id in &service_ids {
-            let Some(trips) = trips_by_service_id.get(service_id) else {
-                continue;
-            };
-            for trip in trips {
-                if freq_trip_ids.contains(trip.id.as_str()) {
-                    continue; // handled separately
+            // Collect date exceptions and compute validity range
+            let mut adds = Vec::new();
+            let mut removes = Vec::new();
+            let mut start_date = 0u32;
+            let mut end_date = 0u32;
+            for svc in services {
+                adds.extend_from_slice(&svc.added_dates);
+                removes.extend_from_slice(&svc.removed_dates);
+                if svc.start_date != 0 {
+                    start_date = if start_date == 0 {
+                        svc.start_date
+                    } else {
+                        start_date.min(svc.start_date)
+                    };
                 }
-
-                let route_idx = match route_id_to_idx.get(trip.route_id.as_str()) {
-                    Some(&idx) => idx,
-                    None => continue,
-                };
-                let trip_idx = match trip_id_to_idx.get(trip.id.as_str()) {
-                    Some(&idx) => idx,
-                    None => continue,
-                };
-
-                // stop_times_by_trip is pre-filtered to in-bbox stops; windows(2) directly.
-                if let Some(times) = stop_times_by_trip.get(&trip_idx) {
-                    for window in times.windows(2) {
-                        let from = window[0];
-                        let to = window[1];
-
-                        let from_idx = from.stop_index;
-                        let to_idx = to.stop_index;
-
-                        let dep_time = from.departure_time;
-                        let travel = to.arrival_time.saturating_sub(dep_time);
-
-                        min_time = min_time.min(dep_time);
-                        max_time = max_time.max(dep_time);
-
-                        departure_events.push((
-                            dep_time,
-                            Event {
-                                stop_index: from_idx,
-                                route_index: route_idx,
-                                trip_index: trip_idx,
-                                next_stop_index: to_idx,
-                                travel_time: travel,
-                            },
-                        ));
-                    }
+                if svc.end_date != 0 {
+                    end_date = if end_date == 0 {
+                        svc.end_date
+                    } else {
+                        end_date.max(svc.end_date)
+                    };
                 }
             }
-        }
 
-        if min_time > max_time {
-            min_time = 0;
-            max_time = 0;
-        }
+            // Find min/max departure times for trips in this pattern
+            let mut min_time = u32::MAX;
+            let mut max_time = 0u32;
 
-        // Build direct-index event array
-        let duration = if max_time >= min_time {
-            (max_time - min_time + 1) as usize
-        } else {
-            0
-        };
-        let mut events: Vec<Vec<Event>> = vec![Vec::new(); duration];
-        for (dep_time, event) in departure_events {
-            let idx = (dep_time - min_time) as usize;
-            if idx < events.len() {
-                events[idx].push(event);
-            }
-        }
+            // Collect all departure events
+            let mut departure_events: Vec<(u32, Event)> = Vec::new(); // (departure_time, event)
 
-        // Build frequency entries
-        let mut freq_entries = Vec::new();
-        for freq in &data.frequencies {
-            if let Some(&trip_idx) = trip_id_to_idx.get(freq.trip_id.as_str()) {
-                let trip = &data.trips[trip_idx as usize];
-                if !service_ids.contains(trip.service_id.as_str()) {
+            for service_id in &service_ids {
+                let Some(trips) = trips_by_service_id.get(service_id) else {
                     continue;
-                }
-                let route_idx = match route_id_to_idx.get(trip.route_id.as_str()) {
-                    Some(&idx) => idx,
-                    None => continue,
                 };
-                if let Some(times) = stop_times_by_trip.get(&trip_idx) {
-                    for window in times.windows(2) {
-                        let from = window[0];
-                        let to = window[1];
-                        let from_idx = from.stop_index;
-                        let to_idx = to.stop_index;
-                        freq_entries.push(FrequencyEntry {
-                            route_index: route_idx,
-                            stop_index: from_idx,
-                            start_time: freq.start_time,
-                            end_time: freq.end_time,
-                            headway_secs: freq.headway_secs,
-                            next_stop_index: to_idx,
-                            travel_time: to.arrival_time.saturating_sub(from.departure_time),
-                        });
+                for trip in trips {
+                    if freq_trip_ids.contains(trip.id.as_str()) {
+                        continue; // handled separately
+                    }
+
+                    let route_idx = match route_id_to_idx.get(trip.route_id.as_str()) {
+                        Some(&idx) => idx,
+                        None => continue,
+                    };
+                    let trip_idx = match trip_id_to_idx.get(trip.id.as_str()) {
+                        Some(&idx) => idx,
+                        None => continue,
+                    };
+
+                    // stop_times_by_trip is pre-filtered to in-bbox stops; windows(2) directly.
+                    if let Some(times) = stop_times_by_trip.get(&trip_idx) {
+                        for window in times.windows(2) {
+                            let from = window[0];
+                            let to = window[1];
+
+                            let from_idx = from.stop_index;
+                            let to_idx = to.stop_index;
+
+                            let dep_time = from.departure_time;
+                            let travel = to.arrival_time.saturating_sub(dep_time);
+
+                            min_time = min_time.min(dep_time);
+                            max_time = max_time.max(dep_time);
+
+                            departure_events.push((
+                                dep_time,
+                                Event {
+                                    stop_index: from_idx,
+                                    route_index: route_idx,
+                                    trip_index: trip_idx,
+                                    next_stop_index: to_idx,
+                                    travel_time: travel,
+                                },
+                            ));
+                        }
                     }
                 }
             }
-        }
 
-        patterns.push(ServicePattern {
-            pattern_id: patterns.len() as u32,
-            day_mask: mask,
-            start_date,
-            end_date,
-            date_exceptions_add: adds,
-            date_exceptions_remove: removes,
-            events,
-            min_time,
-            max_time,
-            frequency_routes: freq_entries,
-        });
-    }
+            if min_time > max_time {
+                min_time = 0;
+                max_time = 0;
+            }
+
+            // Build direct-index event array
+            let duration = if max_time >= min_time {
+                (max_time - min_time + 1) as usize
+            } else {
+                0
+            };
+            let mut events: Vec<Vec<Event>> = vec![Vec::new(); duration];
+            for (dep_time, event) in departure_events {
+                let idx = (dep_time - min_time) as usize;
+                if idx < events.len() {
+                    events[idx].push(event);
+                }
+            }
+
+            // Build frequency entries
+            let mut freq_entries = Vec::new();
+            for freq in &data.frequencies {
+                if let Some(&trip_idx) = trip_id_to_idx.get(freq.trip_id.as_str()) {
+                    let trip = &data.trips[trip_idx as usize];
+                    if !service_ids.contains(trip.service_id.as_str()) {
+                        continue;
+                    }
+                    let route_idx = match route_id_to_idx.get(trip.route_id.as_str()) {
+                        Some(&idx) => idx,
+                        None => continue,
+                    };
+                    if let Some(times) = stop_times_by_trip.get(&trip_idx) {
+                        for window in times.windows(2) {
+                            let from = window[0];
+                            let to = window[1];
+                            let from_idx = from.stop_index;
+                            let to_idx = to.stop_index;
+                            freq_entries.push(FrequencyEntry {
+                                route_index: route_idx,
+                                stop_index: from_idx,
+                                start_time: freq.start_time,
+                                end_time: freq.end_time,
+                                headway_secs: freq.headway_secs,
+                                next_stop_index: to_idx,
+                                travel_time: to.arrival_time.saturating_sub(from.departure_time),
+                            });
+                        }
+                    }
+                }
+            }
+
+            ServicePattern {
+                pattern_id: pattern_id as u32,
+                day_mask: mask,
+                start_date,
+                end_date,
+                date_exceptions_add: adds,
+                date_exceptions_remove: removes,
+                events,
+                min_time,
+                max_time,
+                frequency_routes: freq_entries,
+            }
+        })
+        .collect();
 
     patterns
 }

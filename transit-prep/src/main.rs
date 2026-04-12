@@ -1031,20 +1031,31 @@ pub fn run_prep(
     eprintln!("=== Transit Prep for '{}' ===", city);
     eprintln!("Bounding box: {:?}", bbox);
 
-    // Step 1: Parse GTFS data
+    // Step 1: Parse GTFS data — parse each feed in parallel, then merge sequentially.
+    // Merge order must match gtfs_paths order (the ID prefix is derived from self.stops.len()
+    // at merge time), and par_iter on a slice collects in input order.
     eprintln!("\n--- Parsing GTFS data ---");
 
+    use rayon::prelude::*;
+
+    let parsed: Vec<gtfs::GtfsData> = gtfs_paths
+        .par_iter()
+        .map(|path| -> Result<gtfs::GtfsData> {
+            let data = gtfs::parse_gtfs(path)?;
+            eprintln!(
+                "  {:?}: {} stops, {} routes, {} trips",
+                path.file_name().unwrap_or_default(),
+                data.stops.len(),
+                data.routes.len(),
+                data.trips.len()
+            );
+            warn_if_expired(&path.to_string_lossy(), &data);
+            Ok(data)
+        })
+        .collect::<Result<Vec<_>>>()?;
+
     let mut merged: Option<gtfs::GtfsData> = None;
-    for path in gtfs_paths {
-        let data = gtfs::parse_gtfs(path)?;
-        eprintln!(
-            "  {:?}: {} stops, {} routes, {} trips",
-            path.file_name().unwrap_or_default(),
-            data.stops.len(),
-            data.routes.len(),
-            data.trips.len()
-        );
-        warn_if_expired(&path.to_string_lossy(), &data);
+    for data in parsed {
         match merged {
             Some(ref mut m) => m.merge(data),
             None => merged = Some(data),
@@ -1218,6 +1229,16 @@ pub fn run_prep(
         })
         .collect();
     gtfs_data.stops = compacted_stops;
+    // Remap stop_times to the new compacted indices so step 6b can index gtfs_data.stops
+    // directly. Drop stop_times for stops not referenced in any pattern event.
+    gtfs_data.stop_times.retain_mut(|st| {
+        if let Some(&new_idx) = stop_remap.get(&st.stop_index) {
+            st.stop_index = new_idx;
+            true
+        } else {
+            false
+        }
+    });
     eprintln!(
         "  {} stops with events (of {} in bbox)",
         used_stop_indices.len(),
@@ -1260,99 +1281,171 @@ pub fn run_prep(
         let center_lat = (min_lat + max_lat) / 2.0;
         let cos_lat = center_lat.to_radians().cos();
 
-        // Best leg shape per (route, from_stop, to_stop): (quality, points)
-        let mut best_legs: HashMap<(u32, u32, u32), (f64, Vec<(f64, f64)>)> = HashMap::new();
+        // Per-trip result: the legs this trip contributes to best_legs.
+        struct TripShapeResult {
+            had_shape: bool,
+            legs: Option<Vec<((u32, u32, u32), (f64, Vec<(f64, f64)>))>>,
+        }
 
-        let mut trips_with_shape = 0u32;
-        let mut trips_matched = 0u32;
+        type LegMap = HashMap<(u32, u32, u32), (f64, Vec<(f64, f64)>)>;
 
-        for (trip_idx, trip) in gtfs_data.trips.iter().enumerate() {
-            let trip_idx = trip_idx as u32;
-            if !valid_trip_indices.contains(&trip_idx) {
-                continue;
-            }
-            let shape_id = match &trip.shape_id {
-                Some(id) => id.as_str(),
-                None => continue,
-            };
-            let shape = match gtfs_data.shapes.get(shape_id) {
-                Some(pts) if pts.len() >= 2 => pts,
-                _ => continue,
-            };
-            let times = match stop_times_by_trip.get(&trip_idx) {
-                Some(t) if t.len() >= 2 => t,
-                _ => continue,
-            };
-            let old_route_idx = match route_id_to_old_idx.get(trip.route_id.as_str()) {
-                Some(&idx) => idx,
-                None => continue,
-            };
-            let new_route_idx = match route_remap.get(&old_route_idx) {
-                Some(&idx) => idx,
-                None => continue,
-            };
-
-            trips_with_shape += 1;
-
-            // Collect stop coords (in stop_sequence order); stop_index is already the compacted index.
-            let stop_coords: Vec<(f64, f64)> = times
-                .iter()
-                .map(|st| {
-                    let stop = &gtfs_data.stops[st.stop_index as usize];
-                    (stop.lat, stop.lon)
-                })
-                .collect();
-
-            // DP subsequence matching
-            let match_result = match_stops_to_shape(&stop_coords, shape, cos_lat);
-            let shape_indices = match match_result {
-                Some(indices) => indices,
-                None => continue,
-            };
-
-            trips_matched += 1;
-
-            // Extract leg slices for each consecutive stop pair
-            for w in 0..times.len() - 1 {
-                let from_stop = times[w].stop_index;
-                let to_stop = times[w + 1].stop_index;
-                let key = (new_route_idx, from_stop, to_stop);
-
-                let si_from = shape_indices[w];
-                let si_to = shape_indices[w + 1];
-
-                // Quality = max distance of the two matched shape points to their stops
-                let d_from = {
-                    let dlat = stop_coords[w].0 - shape[si_from].0;
-                    let dlon = (stop_coords[w].1 - shape[si_from].1) * cos_lat;
-                    dlat * dlat + dlon * dlon
-                };
-                let d_to = {
-                    let dlat = stop_coords[w + 1].0 - shape[si_to].0;
-                    let dlon = (stop_coords[w + 1].1 - shape[si_to].1) * cos_lat;
-                    dlat * dlat + dlon * dlon
-                };
-                let quality = d_from.max(d_to);
-
-                if let Some((best_q, _)) = best_legs.get(&key) {
-                    if quality >= *best_q {
-                        continue;
+        // Merge two LegMaps, keeping the better (lower quality score) entry per key.
+        fn merge_leg_maps(mut a: LegMap, b: LegMap) -> LegMap {
+            for (key, (quality, leg_points)) in b {
+                match a.get(&key) {
+                    Some((best_q, _)) if quality >= *best_q => {}
+                    _ => {
+                        a.insert(key, (quality, leg_points));
                     }
                 }
-
-                // Build the leg polyline: from_stop coords + shape slice + to_stop coords
-                let mut leg_points = Vec::with_capacity(si_to.abs_diff(si_from) + 3);
-                leg_points.push(stop_coords[w]);
-                if si_from < si_to {
-                    leg_points.extend_from_slice(&shape[si_from..=si_to]);
-                } else {
-                    leg_points.extend(shape[si_to..=si_from].iter().rev());
-                }
-                leg_points.push(stop_coords[w + 1]);
-
-                best_legs.insert(key, (quality, leg_points));
             }
+            a
         }
+
+        // Process trips in parallel — match_stops_to_shape is a pure function.
+        // All captured data is immutable (gtfs_data, stop_times_by_trip, etc. are all read-only).
+        let trip_results: Vec<TripShapeResult> = gtfs_data
+            .trips
+            .par_iter()
+            .enumerate()
+            .map(|(trip_idx, trip)| {
+                let trip_idx = trip_idx as u32;
+                if !valid_trip_indices.contains(&trip_idx) {
+                    return TripShapeResult {
+                        had_shape: false,
+                        legs: None,
+                    };
+                }
+                let shape_id = match &trip.shape_id {
+                    Some(id) => id.as_str(),
+                    None => {
+                        return TripShapeResult {
+                            had_shape: false,
+                            legs: None,
+                        }
+                    }
+                };
+                let shape = match gtfs_data.shapes.get(shape_id) {
+                    Some(pts) if pts.len() >= 2 => pts,
+                    _ => {
+                        return TripShapeResult {
+                            had_shape: false,
+                            legs: None,
+                        }
+                    }
+                };
+                let times = match stop_times_by_trip.get(&trip_idx) {
+                    Some(t) if t.len() >= 2 => t,
+                    _ => {
+                        return TripShapeResult {
+                            had_shape: false,
+                            legs: None,
+                        }
+                    }
+                };
+                let old_route_idx = match route_id_to_old_idx.get(trip.route_id.as_str()) {
+                    Some(&idx) => idx,
+                    None => {
+                        return TripShapeResult {
+                            had_shape: false,
+                            legs: None,
+                        }
+                    }
+                };
+                let new_route_idx = match route_remap.get(&old_route_idx) {
+                    Some(&idx) => idx,
+                    None => {
+                        return TripShapeResult {
+                            had_shape: false,
+                            legs: None,
+                        }
+                    }
+                };
+
+                // Collect stop coords; stop_index is already the compacted index.
+                let stop_coords: Vec<(f64, f64)> = times
+                    .iter()
+                    .map(|st| {
+                        let stop = &gtfs_data.stops[st.stop_index as usize];
+                        (stop.lat, stop.lon)
+                    })
+                    .collect();
+
+                // DP subsequence matching
+                let shape_indices = match match_stops_to_shape(&stop_coords, shape, cos_lat) {
+                    Some(indices) => indices,
+                    None => {
+                        return TripShapeResult {
+                            had_shape: true,
+                            legs: None,
+                        }
+                    }
+                };
+
+                // Extract leg slices for each consecutive stop pair
+                let mut legs = Vec::new();
+                for w in 0..times.len() - 1 {
+                    let from_stop = times[w].stop_index;
+                    let to_stop = times[w + 1].stop_index;
+                    let key = (new_route_idx, from_stop, to_stop);
+
+                    let si_from = shape_indices[w];
+                    let si_to = shape_indices[w + 1];
+
+                    // Quality = max distance of the two matched shape points to their stops
+                    let d_from = {
+                        let dlat = stop_coords[w].0 - shape[si_from].0;
+                        let dlon = (stop_coords[w].1 - shape[si_from].1) * cos_lat;
+                        dlat * dlat + dlon * dlon
+                    };
+                    let d_to = {
+                        let dlat = stop_coords[w + 1].0 - shape[si_to].0;
+                        let dlon = (stop_coords[w + 1].1 - shape[si_to].1) * cos_lat;
+                        dlat * dlat + dlon * dlon
+                    };
+                    let quality = d_from.max(d_to);
+
+                    // Build the leg polyline: from_stop coords + shape slice + to_stop coords
+                    let mut leg_points = Vec::with_capacity(si_to.abs_diff(si_from) + 3);
+                    leg_points.push(stop_coords[w]);
+                    if si_from < si_to {
+                        leg_points.extend_from_slice(&shape[si_from..=si_to]);
+                    } else {
+                        leg_points.extend(shape[si_to..=si_from].iter().rev());
+                    }
+                    leg_points.push(stop_coords[w + 1]);
+
+                    legs.push((key, (quality, leg_points)));
+                }
+                TripShapeResult {
+                    had_shape: true,
+                    legs: Some(legs),
+                }
+            })
+            .collect();
+
+        let trips_with_shape = trip_results.iter().filter(|r| r.had_shape).count() as u32;
+        let trips_matched = trip_results.iter().filter(|r| r.legs.is_some()).count() as u32;
+
+        // Merge per-trip leg contributions into best_legs using fold+reduce —
+        // each thread builds its own LegMap then they are merged pairwise.
+        let best_legs: LegMap = trip_results
+            .into_par_iter()
+            .filter_map(|r| r.legs)
+            .fold(LegMap::new, |mut acc, legs| {
+                for (key, entry) in legs {
+                    acc.entry(key)
+                        .and_modify(|(best_q, best_pts)| {
+                            if entry.0 < *best_q {
+                                *best_q = entry.0;
+                                *best_pts = entry.1.clone();
+                            }
+                        })
+                        .or_insert(entry);
+                }
+                acc
+            })
+            .reduce(LegMap::new, merge_leg_maps);
 
         eprintln!(
             "  {} trips with shapes, {} matched successfully, {} leg shapes",

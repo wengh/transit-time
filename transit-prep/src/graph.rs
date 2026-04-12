@@ -1,6 +1,7 @@
-use anyhow::{Result, bail};
+use anyhow::{bail, Result};
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
+use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
@@ -547,74 +548,77 @@ pub fn snap_stops_to_nodes(stops: &[Stop], graph: &mut OsmGraph) -> Vec<(u32, u3
     const CELL_SIZE_LAT: f64 = 0.0045;
     const CELL_SIZE_LON: f64 = 0.006;
 
-    // Build spatial grid index over edges (indexed by all bounding-box cells)
-    let mut edge_grid: HashMap<(i32, i32), Vec<usize>> = HashMap::new();
-    for (i, edge) in graph.edges.iter().enumerate() {
-        let u = &graph.nodes[edge.u as usize];
-        let v = &graph.nodes[edge.v as usize];
-        let min_lat = (u.lat.min(v.lat) / CELL_SIZE_LAT).floor() as i32;
-        let max_lat = (u.lat.max(v.lat) / CELL_SIZE_LAT).floor() as i32;
-        let min_lon = (u.lon.min(v.lon) / CELL_SIZE_LON).floor() as i32;
-        let max_lon = (u.lon.max(v.lon) / CELL_SIZE_LON).floor() as i32;
-        for lat_cell in min_lat..=max_lat {
-            for lon_cell in min_lon..=max_lon {
-                edge_grid.entry((lat_cell, lon_cell)).or_default().push(i);
-            }
-        }
-    }
+    // Pass 1: Compute snap points (read-only on graph) — run in parallel per stop.
+    // Wrapped in a block so the immutable reborrow of `graph` is released before
+    // Pass 2 takes `&mut graph`.
+    let snap_results: Vec<SnapResult> = {
+        let graph_ref: &OsmGraph = &*graph; // immutable reborrow from &mut
 
-    // Pass 1: Compute snap points (read-only)
-    let mut snap_results: Vec<SnapResult> = Vec::new();
-    let mut skipped = 0;
-    let mut seen_edges: HashSet<usize> = HashSet::new();
-
-    for stop in stops {
-        let cell_lat = (stop.lat / CELL_SIZE_LAT).floor() as i32;
-        let cell_lon = (stop.lon / CELL_SIZE_LON).floor() as i32;
-
-        let mut best_dist = f64::MAX;
-        let mut best_snap: Option<SnapResult> = None;
-        seen_edges.clear();
-
-        for dlat in -1..=1 {
-            for dlon in -1..=1 {
-                if let Some(edge_indices) = edge_grid.get(&(cell_lat + dlat, cell_lon + dlon)) {
-                    for &ei in edge_indices {
-                        if !seen_edges.insert(ei) {
-                            continue;
-                        }
-                        let edge = &graph.edges[ei];
-                        let u = &graph.nodes[edge.u as usize];
-                        let v = &graph.nodes[edge.v as usize];
-                        let (t, proj_lat, proj_lon) =
-                            project_onto_segment(stop.lat, stop.lon, u.lat, u.lon, v.lat, v.lon);
-                        let dist = haversine(stop.lat, stop.lon, proj_lat, proj_lon);
-                        if dist < best_dist {
-                            best_dist = dist;
-                            best_snap = Some(SnapResult {
-                                stop_index: stop.index,
-                                edge_index: ei,
-                                t,
-                                proj_lat,
-                                proj_lon,
-                                dist,
-                            });
-                        }
-                    }
+        // Build spatial grid index over edges (indexed by all bounding-box cells)
+        let mut edge_grid: HashMap<(i32, i32), Vec<usize>> = HashMap::new();
+        for (i, edge) in graph_ref.edges.iter().enumerate() {
+            let u = &graph_ref.nodes[edge.u as usize];
+            let v = &graph_ref.nodes[edge.v as usize];
+            let min_lat = (u.lat.min(v.lat) / CELL_SIZE_LAT).floor() as i32;
+            let max_lat = (u.lat.max(v.lat) / CELL_SIZE_LAT).floor() as i32;
+            let min_lon = (u.lon.min(v.lon) / CELL_SIZE_LON).floor() as i32;
+            let max_lon = (u.lon.max(v.lon) / CELL_SIZE_LON).floor() as i32;
+            for lat_cell in min_lat..=max_lat {
+                for lon_cell in min_lon..=max_lon {
+                    edge_grid.entry((lat_cell, lon_cell)).or_default().push(i);
                 }
             }
         }
 
-        if let Some(snap) = best_snap {
-            if snap.dist <= MAX_SNAP_DISTANCE_METERS {
-                snap_results.push(snap);
-            } else {
-                skipped += 1;
-            }
-        } else {
-            skipped += 1;
-        }
-    }
+        stops
+            .par_iter()
+            .filter_map(|stop| {
+                let cell_lat = (stop.lat / CELL_SIZE_LAT).floor() as i32;
+                let cell_lon = (stop.lon / CELL_SIZE_LON).floor() as i32;
+
+                let mut best_dist = f64::MAX;
+                let mut best_snap: Option<SnapResult> = None;
+                let mut seen_edges: HashSet<usize> = HashSet::new(); // local per stop
+
+                for dlat in -1..=1 {
+                    for dlon in -1..=1 {
+                        if let Some(edge_indices) =
+                            edge_grid.get(&(cell_lat + dlat, cell_lon + dlon))
+                        {
+                            for &ei in edge_indices {
+                                if !seen_edges.insert(ei) {
+                                    continue;
+                                }
+                                let edge = &graph_ref.edges[ei];
+                                let u = &graph_ref.nodes[edge.u as usize];
+                                let v = &graph_ref.nodes[edge.v as usize];
+                                let (t, proj_lat, proj_lon) = project_onto_segment(
+                                    stop.lat, stop.lon, u.lat, u.lon, v.lat, v.lon,
+                                );
+                                let dist = haversine(stop.lat, stop.lon, proj_lat, proj_lon);
+                                if dist < best_dist {
+                                    best_dist = dist;
+                                    best_snap = Some(SnapResult {
+                                        stop_index: stop.index,
+                                        edge_index: ei,
+                                        t,
+                                        proj_lat,
+                                        proj_lon,
+                                        dist,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+
+                best_snap.filter(|s| s.dist <= MAX_SNAP_DISTANCE_METERS)
+            })
+            .collect()
+        // graph_ref and edge_grid are dropped here → exclusive borrow of graph restored
+    };
+
+    let skipped = stops.len() - snap_results.len();
 
     // Pass 2: Group snaps by edge, sort by t, mutate graph
     let mut snaps_by_edge: HashMap<usize, Vec<usize>> = HashMap::new();
