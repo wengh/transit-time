@@ -139,7 +139,10 @@ export default function MapView(): React.ReactNode {
                     const minBrightness = 100;
                     const maxBrightness = 220;
 
-                    if (brightness < minBrightness) {
+                    if (brightness <= 0) {
+                      // Pure black route colors produce NaN when scaled; use a visible neutral fallback.
+                      routeColor = 'rgb(100, 100, 100)';
+                    } else if (brightness < minBrightness) {
                       // Too dark, lighten it
                       const scale = minBrightness / brightness;
                       routeColor = `rgb(${Math.min(255, Math.round(rgb[0] * scale))}, ${Math.min(255, Math.round(rgb[1] * scale))}, ${Math.min(255, Math.round(rgb[2] * scale))})`;
