@@ -200,7 +200,7 @@ Cloudflare deployment requires these GitHub repository secrets:
 - `CLOUDFLARE_ACCOUNT_ID`
 - `CLOUDFLARE_PAGES_PROJECT_NAME`
 
-The frontend includes `transit-viz/public/_headers` (COOP/COEP for WASM threads) and `transit-viz/public/_redirects` (SPA routing fallback); both are copied into `dist/` during build and applied by Cloudflare Pages.
+The frontend includes `transit-viz/public/_headers` (COOP/COEP for WASM threads) and `transit-viz/public/_redirects` (SPA routing fallback); both are copied into `dist/` during build and applied by Cloudflare Pages. Note that we don't use GitHub Pages because it doesn't support custom headers, which are required for WebAssembly threads.
 
 ---
 
