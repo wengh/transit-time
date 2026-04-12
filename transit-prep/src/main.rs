@@ -1055,7 +1055,9 @@ pub fn run_prep(
         gtfs_data.services.len(),
     );
 
-    if allow_stale.unwrap_or(false) {
+    // Allow stale by default since this app is meant for
+    // data analysis, not guiding actual transit riders.
+    if allow_stale.unwrap_or(true) {
         for s in &mut gtfs_data.services {
             // Setting to 0 means indefinitely valid
             s.start_date = 0;
