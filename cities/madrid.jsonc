@@ -2,13 +2,10 @@
     "id": "madrid",
     "bbbike_name": "Madrid",
     "feed_ids": [
-        "f-ezjm-informaciónoficial~consorcioregionaldetransportesdemadrid", // Metro de Madrid
-        "f-ezjm-empresamunicipaldetransportes", // EMT Madrid (city buses)
-        "f-ezj-informaciónoficial~consorcioregionaldetransportesdemadrid", // CRTM regional coordination
-        "f-ezjm-consorcioregionaldetransportesdemadrid", // CRTM
-        "f-cercanías~renfe", // Cercanías Madrid (commuter rail)
-        "f-autobuses~interurbanos~de~la~comunidad~de~madrid", // Interurban buses
-        "f-autobús~urbano~de~madrid" // City buses
+        "https://blues3.transitpdf.com/files/uran/improved-gtfs-emt-madrid.zip", // https://busmaps.com/en/spain/Consorcio-de-Transportes-de-Madrid/emt-madrid
+        "https://blues3.transitpdf.com/files/uran/improved-gtfs-empresa-municipal-de-transportes-de-fuenlabrada.zip", // https://busmaps.com/en/spain/Eusko-Jaurlaritzaren/empresa-municipal-de-transportes-de-fuenlabrada
+        "https://blues3.transitpdf.com/files/uran/improved-gtfs-metro-ligero.zip", // https://busmaps.com/en/spain/Consorcio-de-Transportes-de-Madrid/metro-ligero
+        "https://blues3.transitpdf.com/files/uran/improved-gtfs-metro-de-madrid-esp.zip" // https://busmaps.com/en/spain/Nap-Mitma/metro-de-madrid-esp
     ],
     "name": "Madrid, Spain",
     "file": "madrid.bin",
@@ -18,7 +15,7 @@
         -3.650
     ],
     "zoom": 12,
-    "detail": "Metro de Madrid, EMT, Cercanías, CRTM",
+    "detail": "Metro de Madrid, EMT, Metro Ligero",
     "tags": [
         "spain",
         "subway",

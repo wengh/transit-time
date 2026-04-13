@@ -2,7 +2,7 @@
     "id": "hong_kong",
     "osm_url": "https://download.geofabrik.de/asia/china/hong-kong-latest.osm.pbf",
     "feed_ids": [
-        "f-hong~kong~en" // MTR, KMB, Citybus, New Lantao Bus, Peak Tram, HK Tramways, Minibus, Ferry
+        "https://blues3.transitpdf.com/files/uran/improved-gtfs-kong-en.zip" // https://busmaps.com/en/hong-kong/OGCIO/kong-en
     ],
     "name": "Hong Kong, China",
     "file": "hong_kong.bin",
