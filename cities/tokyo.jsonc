@@ -1,6 +1,6 @@
 {
     "id": "tokyo",
-    "bbbike_name": "Tokyo",
+    "osm_url": "https://download.geofabrik.de/asia/japan/kanto-latest.osm.pbf",
     "feed_ids": [
         "f-toei~data~toei~train~gtfs~jp", // Toei (subway, Arakawa tram)
         "f-tokyometro~data~tokyometro~train~gtfs~jp", // Tokyo Metro (9 subway lines)
@@ -25,7 +25,7 @@
     ],
     "name": "Tokyo, Japan",
     "file": "tokyo.bin",
-    "bbox": "139.6165,35.5591,139.9478,35.7836",
+    "bbox": "138.81312243852418,35.05441003330478,140.77343539763933,36.67067819315024",
     "center": [
         35.671,
         139.782
