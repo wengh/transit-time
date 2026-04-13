@@ -334,6 +334,15 @@ fn scan_pattern_at_stop(
                         result[dest_node as usize] = candidate;
                         leave_home[dest_node as usize] = lh;
                         arrived_by_event[dest_node as usize] = ARRIVED_BY_FREQ;
+                        // Record which freq entry was the boarding point so
+                        // reconstruct_path can expand intermediate stops.
+                        boarding_events.insert(
+                            dest_node,
+                            BoardingEvent {
+                                pattern_index: pat_idx,
+                                event_index: fi | crate::FREQ_BOARDING_FLAG,
+                            },
+                        );
                         pq.push(Reverse((arrival, dest_node)));
                     }
                 }

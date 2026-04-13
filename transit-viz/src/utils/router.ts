@@ -245,6 +245,11 @@ function parsePathSegments(router: Router, sssp: WasmSsspResult, pathArray: Uint
 
       if (chainedCoords.length >= 2) {
         finalCoords = chainedCoords;
+      } else {
+        // No GTFS shapes available — fall back to straight lines through segNodes.
+        // segNodes includes the boarding node (unlike coords which starts at pathArray[startIdx]),
+        // so this produces a visible polyline even when the city has no shape data.
+        finalCoords = segNodes.map(n => [router.node_lat(n), router.node_lon(n)] as [number, number]);
       }
     }
 

@@ -16,6 +16,10 @@ use router::{BoardingEvent, NodeResult};
 /// When false, we fall back to sequential iteration.
 static RAYON_INITIALIZED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// High bit of `BoardingEvent::event_index` set for frequency-based boardings.
+/// Lower 31 bits encode the `freq_index` (index into `PatternData::frequency_routes`).
+pub const FREQ_BOARDING_FLAG: u32 = 0x8000_0000;
+
 /// Called from the JS-side `initThreadPool` wrapper to mark rayon as ready.
 #[wasm_bindgen(js_name = "__markRayonReady")]
 pub fn mark_rayon_ready() {
@@ -71,21 +75,45 @@ pub fn reconstruct_path(data: &PreparedData, sssp: &SsspResult, destination: u32
         let is_transit = r.route_index != u32::MAX;
 
         if is_transit {
-            // Expand intermediate stops from boarding event chain
+            // Expand intermediate stops from boarding event chain.
             if let Some(be) = sssp.boarding_events.get(&node) {
                 let pat = &data.patterns[be.pattern_index];
-                let boarding_event = &pat.stop_index.events_by_stop.data[be.event_index as usize];
-                let mut idx = boarding_event.next_event_index;
-                while idx != u32::MAX {
-                    let e = &pat.stop_index.events_by_stop.data[idx as usize];
-                    let stop_node = data.stop_node_map[e.stop_index as usize];
-                    if stop_node == node {
-                        break; // reached alighting stop
+                if be.event_index & FREQ_BOARDING_FLAG != 0 {
+                    // Frequency-based route: follow the FreqData chain from the boarding
+                    // entry until we reach the alighting node, emitting intermediate stops.
+                    let fi = be.event_index & !FREQ_BOARDING_FLAG;
+                    let mut next_fi = fi;
+                    loop {
+                        let leg = &pat.frequency_routes[next_fi as usize];
+                        let stop_node = data.stop_node_map[leg.next_stop_index as usize];
+                        if stop_node == node {
+                            break; // reached alighting stop
+                        }
+                        if stop_node != u32::MAX {
+                            result.extend_from_slice(&[stop_node, 1, r.route_index]);
+                        }
+                        if leg.next_freq_index == u32::MAX {
+                            break;
+                        }
+                        next_fi = leg.next_freq_index;
                     }
-                    if stop_node != u32::MAX && e.travel_time > 0 {
-                        result.extend_from_slice(&[stop_node, 1, r.route_index]);
+                } else {
+                    // Scheduled route: follow the EventData chain from after the boarding
+                    // event until we reach the alighting node.
+                    let boarding_event =
+                        &pat.stop_index.events_by_stop.data[be.event_index as usize];
+                    let mut idx = boarding_event.next_event_index;
+                    while idx != u32::MAX {
+                        let e = &pat.stop_index.events_by_stop.data[idx as usize];
+                        let stop_node = data.stop_node_map[e.stop_index as usize];
+                        if stop_node == node {
+                            break; // reached alighting stop
+                        }
+                        if stop_node != u32::MAX && e.travel_time > 0 {
+                            result.extend_from_slice(&[stop_node, 1, r.route_index]);
+                        }
+                        idx = e.next_event_index;
                     }
-                    idx = e.next_event_index;
                 }
             }
 
