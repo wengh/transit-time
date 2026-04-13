@@ -3,7 +3,7 @@ import { CITIES } from '../cities';
 import { useAppState } from '../state/AppContext';
 import { loadCity } from '../utils/cityLoader';
 
-const TAG_ORDER = ['usa', 'canada', 'mexico', 'subway', 'rail', 'bus', 'ferry'];
+const TAG_ORDER = ['usa', 'canada', 'subway', 'rail', 'bus', 'ferry'];
 
 export default function CitySelect(): React.ReactNode {
   const { state, dispatch } = useAppState();

@@ -2,9 +2,9 @@
     "id": "chicago",
     "bbbike_name": "Chicago",
     "feed_ids": [
-        "f-dp3-cta",
-        "f-dp3-pace",
-        "f-dp3-metra"
+        "https://blues3.transitpdf.com/files/uran/improved-gtfs-cta-chicago.zip", // CTA https://busmaps.com/en/usa/Chicago-Transit-Authority/cta-chicago
+        "https://blues3.transitpdf.com/files/uran/improved-gtfs-rtams.zip", // Pace https://busmaps.com/en/usa/RTA-Metropolitan-Area-Regional-Transportation-Authority/rtams
+        "https://blues3.transitpdf.com/files/uran/improved-gtfs-gtfsapi-metrarail-com.zip" // Metra https://busmaps.com/en/usa/Transport-Usa/gtfsapi-metrarail-com
     ],
     "name": "Chicago, IL",
     "file": "chicago.bin",
