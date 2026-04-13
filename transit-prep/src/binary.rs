@@ -17,10 +17,10 @@ pub struct PreparedData {
     pub leg_shapes: Vec<((u32, u32, u32), Vec<(f64, f64)>)>,
 }
 
-// Binary format v6:
+// Binary format v7:
 // Header:
 //   magic: [u8; 4] = "TRNS"
-//   version: u32 = 6
+//   version: u32 = 7
 //   num_nodes: u32
 //   num_edges: u32
 //   num_stops: u32
@@ -59,6 +59,8 @@ pub struct PreparedData {
 //   [PCO columns: time_offsets, stop_indices, travel_times, next_event_indices]
 //   [PCO stop_offsets, PCO sentinel_routes]
 //   num_freq: u32, freq_entries: [FreqEntry; num_freq]
+//     FreqEntry: route_index, stop_index, start_time, end_time, headway_secs,
+//                next_stop_index, travel_time, next_freq_index (all u32)
 //
 // Leg shapes section (sorted by key for binary search):
 //   for each leg:
@@ -170,7 +172,7 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
 
     // Header
     buf.extend_from_slice(b"TRNS");
-    write_u32(&mut buf, 6); // version
+    write_u32(&mut buf, 7); // version
     write_u32(&mut buf, num_nodes as u32);
     write_u32(&mut buf, data.edges.len() as u32);
     write_u32(&mut buf, data.stops.len() as u32);
@@ -419,6 +421,7 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
             write_u32(&mut buf, freq.headway_secs);
             write_u32(&mut buf, freq.next_stop_index);
             write_u32(&mut buf, freq.travel_time);
+            write_u32(&mut buf, freq.next_freq_index);
         }
     }
 

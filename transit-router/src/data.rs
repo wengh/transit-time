@@ -67,6 +67,8 @@ pub struct FreqData {
     pub headway_secs: u32,
     pub next_stop_index: u32,
     pub travel_time: u32,
+    /// Index of the next FreqData in the same trip, or u32::MAX if last leg.
+    pub next_freq_index: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -210,7 +212,7 @@ pub fn load_with_stats(buf: &[u8]) -> Result<(PreparedData, LoadStats), String> 
     }
     pos += 4;
     let version = read_u32(&buf, &mut pos);
-    if version != 6 {
+    if version != 7 {
         return Err(format!("Unsupported version {}", version));
     }
     let num_nodes = read_u32(&buf, &mut pos) as usize;
@@ -439,6 +441,7 @@ pub fn load_with_stats(buf: &[u8]) -> Result<(PreparedData, LoadStats), String> 
             let headway_secs = read_u32(&buf, &mut pos);
             let next_stop_index = read_u32(&buf, &mut pos);
             let travel_time = read_u32(&buf, &mut pos);
+            let next_freq_index = read_u32(&buf, &mut pos);
             freq_entries.push(FreqData {
                 route_index,
                 stop_index,
@@ -447,6 +450,7 @@ pub fn load_with_stats(buf: &[u8]) -> Result<(PreparedData, LoadStats), String> 
                 headway_secs,
                 next_stop_index,
                 travel_time,
+                next_freq_index,
             });
             freq_indices.push(i as u32);
         }

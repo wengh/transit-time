@@ -176,6 +176,9 @@ pub struct FrequencyEntry {
     pub headway_secs: u32,
     pub next_stop_index: u32,
     pub travel_time: u32,
+    /// Index of the next FrequencyEntry in the same trip (for through-riding without re-boarding).
+    /// u32::MAX if this is the last leg of the trip.
+    pub next_freq_index: u32,
 }
 
 // CSV record types
@@ -429,21 +432,88 @@ pub fn parse_gtfs(path: &Path) -> Result<GtfsData> {
             .flexible(true)
             .trim(csv::Trim::All)
             .from_reader(entry);
+        // Buffer per-trip so we can linearly interpolate missing times between
+        // timepoints. GTFS allows empty arrival/departure at non-timepoint stops;
+        // consumers must interpolate (spec §stop_times.txt). Hong Kong, for
+        // example, only timestamps the first and last stop of each trip.
+        #[derive(Clone)]
+        struct RawStopTime {
+            trip_index: u32,
+            stop_index: u32,
+            arrival: Option<u32>,
+            departure: Option<u32>,
+            stop_sequence: u32,
+        }
+        let mut per_trip: HashMap<u32, Vec<RawStopTime>> = HashMap::new();
         for result in rdr.deserialize::<StopTimeRecord>() {
             let record = result?;
             let arrival = record.arrival_time.as_deref().and_then(parse_time);
             let departure = record.departure_time.as_deref().and_then(parse_time);
-            if let (Some(arr), Some(dep)) = (arrival, departure) {
-                if let (Some(&stop_idx), Some(&trip_idx)) = (
-                    stop_id_to_index.get(&record.stop_id),
-                    trip_id_to_index.get(&record.trip_id),
-                ) {
+            if let (Some(&stop_idx), Some(&trip_idx)) = (
+                stop_id_to_index.get(&record.stop_id),
+                trip_id_to_index.get(&record.trip_id),
+            ) {
+                per_trip.entry(trip_idx).or_default().push(RawStopTime {
+                    trip_index: trip_idx,
+                    stop_index: stop_idx,
+                    arrival,
+                    departure,
+                    stop_sequence: record.stop_sequence.parse().unwrap_or(0),
+                });
+            }
+        }
+        for (_trip_idx, mut rows) in per_trip {
+            rows.sort_by_key(|r| r.stop_sequence);
+            // Linear interpolation by stop_sequence position. Walk through the
+            // list, finding the next timed anchor ahead of each untimed row.
+            let n = rows.len();
+            let mut i = 0;
+            while i < n {
+                // Departure: fall back to arrival if missing.
+                let dep_known = rows[i].departure.or(rows[i].arrival);
+                let arr_known = rows[i].arrival.or(rows[i].departure);
+                if let (Some(dep), Some(arr)) = (dep_known, arr_known) {
+                    rows[i].departure = Some(dep);
+                    rows[i].arrival = Some(arr);
+                    i += 1;
+                } else {
+                    // Find previous anchor (must exist, unless first rows are untimed).
+                    let prev_anchor = (0..i)
+                        .rev()
+                        .find(|&j| rows[j].arrival.is_some() || rows[j].departure.is_some());
+                    let next_anchor = (i..n)
+                        .find(|&j| rows[j].arrival.is_some() || rows[j].departure.is_some());
+                    match (prev_anchor, next_anchor) {
+                        (Some(p), Some(q)) if q > i => {
+                            let t_p = rows[p].departure.or(rows[p].arrival).unwrap();
+                            let t_q = rows[q].arrival.or(rows[q].departure).unwrap();
+                            let span = q - p;
+                            for k in i..q {
+                                if rows[k].arrival.is_some() {
+                                    continue;
+                                }
+                                let frac = (k - p) as u64 * (t_q - t_p) as u64 / span as u64;
+                                let t = t_p + frac as u32;
+                                rows[k].arrival = Some(t);
+                                rows[k].departure = Some(t);
+                            }
+                            i = q;
+                        }
+                        _ => {
+                            // No bracketing anchors — drop this row.
+                            i += 1;
+                        }
+                    }
+                }
+            }
+            for r in rows {
+                if let (Some(arr), Some(dep)) = (r.arrival, r.departure) {
                     stop_times.push(StopTime {
-                        trip_index: trip_idx,
-                        stop_index: stop_idx,
+                        trip_index: r.trip_index,
+                        stop_index: r.stop_index,
                         arrival_time: arr,
                         departure_time: dep,
-                        stop_sequence: record.stop_sequence.parse().unwrap_or(0),
+                        stop_sequence: r.stop_sequence,
                     });
                 }
             }
@@ -810,6 +880,7 @@ pub fn build_service_patterns(data: &GtfsData) -> Vec<ServicePattern> {
                         None => continue,
                     };
                     if let Some(times) = stop_times_by_trip.get(&trip_idx) {
+                        let trip_start = freq_entries.len();
                         for window in times.windows(2) {
                             let from = window[0];
                             let to = window[1];
@@ -823,7 +894,15 @@ pub fn build_service_patterns(data: &GtfsData) -> Vec<ServicePattern> {
                                 headway_secs: freq.headway_secs,
                                 next_stop_index: to_idx,
                                 travel_time: to.arrival_time.saturating_sub(from.departure_time),
+                                next_freq_index: u32::MAX,
                             });
+                        }
+                        // Link consecutive legs of this trip for through-riding.
+                        let trip_end = freq_entries.len();
+                        if trip_end > trip_start + 1 {
+                            for j in trip_start..(trip_end - 1) {
+                                freq_entries[j].next_freq_index = (j + 1) as u32;
+                            }
                         }
                     }
                 }

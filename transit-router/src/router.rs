@@ -274,8 +274,9 @@ fn scan_pattern_at_stop(
     pq: &mut BinaryHeap<Reverse<(u32, u32)>>,
 ) {
     // --- Frequency-based routes ---
-    // Freq routes have no event chain, so they never count as a "continuation".
-    // Only free if we arrived by walking from the source.
+    // Board a freq trip at this stop and ride through all subsequent stops in the
+    // trip's chain (via next_freq_index), so through-passengers don't pay transfer
+    // slack at every intermediate stop.
     let freq_indices = &pat.stop_index.freq_by_stop[stop_idx];
     for &fi in freq_indices {
         let freq = &pat.frequency_routes[fi as usize];
@@ -298,31 +299,48 @@ fn scan_pattern_at_stop(
                 freq.headway_secs - (elapsed % freq.headway_secs)
             };
             let boarding_time = earliest + wait;
-            let arrival = boarding_time + freq.travel_time;
-            let dest_node = data.stop_node_map[freq.next_stop_index as usize];
-            if dest_node != u32::MAX {
-                let lh = if current_leave_home == 0 {
-                    let walk_to_stop = t_current - departure_time;
-                    boarding_time.saturating_sub(walk_to_stop)
-                } else {
-                    current_leave_home
-                };
-                let candidate = NodeResult {
-                    arrival_delta: (arrival - departure_time) as u16,
-                    boarding_delta: (boarding_time - departure_time) as u16,
-                    prev_node: node,
-                    route_index: freq.route_index,
-                };
-                if candidate.is_better_than(
-                    lh,
-                    &result[dest_node as usize],
-                    leave_home[dest_node as usize],
-                ) {
-                    result[dest_node as usize] = candidate;
-                    leave_home[dest_node as usize] = lh;
-                    arrived_by_event[dest_node as usize] = ARRIVED_BY_FREQ;
-                    pq.push(Reverse((arrival, dest_node)));
+
+            let lh = if current_leave_home == 0 {
+                let walk_to_stop = t_current - departure_time;
+                boarding_time.saturating_sub(walk_to_stop)
+            } else {
+                current_leave_home
+            };
+
+            // Ride through all subsequent stops in this trip's chain.
+            let mut next_fi = fi;
+            let mut cumulative_travel = 0u32;
+            loop {
+                let leg = &pat.frequency_routes[next_fi as usize];
+                cumulative_travel += leg.travel_time;
+                let arrival = boarding_time + cumulative_travel;
+                let arrival_delta = arrival.saturating_sub(departure_time);
+                if arrival_delta > u16::MAX as u32 {
+                    break;
                 }
+                let dest_node = data.stop_node_map[leg.next_stop_index as usize];
+                if dest_node != u32::MAX {
+                    let candidate = NodeResult {
+                        arrival_delta: arrival_delta as u16,
+                        boarding_delta: (boarding_time - departure_time) as u16,
+                        prev_node: node,
+                        route_index: freq.route_index,
+                    };
+                    if candidate.is_better_than(
+                        lh,
+                        &result[dest_node as usize],
+                        leave_home[dest_node as usize],
+                    ) {
+                        result[dest_node as usize] = candidate;
+                        leave_home[dest_node as usize] = lh;
+                        arrived_by_event[dest_node as usize] = ARRIVED_BY_FREQ;
+                        pq.push(Reverse((arrival, dest_node)));
+                    }
+                }
+                if leg.next_freq_index == u32::MAX {
+                    break;
+                }
+                next_fi = leg.next_freq_index;
             }
         }
     }
