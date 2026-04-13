@@ -1041,7 +1041,7 @@ pub fn run_prep(
     let parsed: Vec<gtfs::GtfsData> = gtfs_paths
         .par_iter()
         .map(|path| -> Result<gtfs::GtfsData> {
-            let data = gtfs::parse_gtfs(path)?;
+            let data = gtfs::parse_gtfs(path, bbox)?;
             eprintln!(
                 "  {:?}: {} stops, {} routes, {} trips",
                 path.file_name().unwrap_or_default(),
@@ -1146,6 +1146,11 @@ pub fn run_prep(
     let stop_to_node = graph::prune_unreachable_nodes(&mut osm_graph, stop_to_node);
 
     // Step 4: Build service patterns and event arrays
+    // Sort stop_times by (trip_index, stop_sequence) so build_service_patterns
+    // can use binary-search slices instead of a HashMap, avoiding 2× peak memory.
+    gtfs_data
+        .stop_times
+        .sort_unstable_by_key(|st| (st.trip_index, st.stop_sequence));
     eprintln!("\n--- Building service patterns ---");
     let mut patterns = gtfs::build_service_patterns(&gtfs_data);
     eprintln!("Built {} service patterns", patterns.len());
@@ -1153,10 +1158,8 @@ pub fn run_prep(
     // Compact route ids: collect used route indices, remap to 0..N, drop unused routes
     let mut used_route_indices: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
     for pattern in &patterns {
-        for second_events in &pattern.events {
-            for event in second_events {
-                used_route_indices.insert(event.route_index);
-            }
+        for (_, event) in &pattern.events {
+            used_route_indices.insert(event.route_index);
         }
         for freq in &pattern.frequency_routes {
             used_route_indices.insert(freq.route_index);
@@ -1168,10 +1171,8 @@ pub fn run_prep(
         .map(|(new_idx, &old_idx)| (old_idx, new_idx as u32))
         .collect();
     for pattern in &mut patterns {
-        for second_events in &mut pattern.events {
-            for event in second_events {
-                event.route_index = route_remap[&event.route_index];
-            }
+        for (_, event) in &mut pattern.events {
+            event.route_index = route_remap[&event.route_index];
         }
         for freq in &mut pattern.frequency_routes {
             freq.route_index = route_remap[&freq.route_index];
@@ -1186,11 +1187,9 @@ pub fn run_prep(
     // Compact stop ids: collect used stop indices, remap to 0..N, drop orphaned stops
     let mut used_stop_indices: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
     for pattern in &patterns {
-        for second_events in &pattern.events {
-            for event in second_events {
-                used_stop_indices.insert(event.stop_index);
-                used_stop_indices.insert(event.next_stop_index);
-            }
+        for (_, event) in &pattern.events {
+            used_stop_indices.insert(event.stop_index);
+            used_stop_indices.insert(event.next_stop_index);
         }
         for freq in &pattern.frequency_routes {
             used_stop_indices.insert(freq.stop_index);
@@ -1203,11 +1202,9 @@ pub fn run_prep(
         .map(|(new_idx, &old_idx)| (old_idx, new_idx as u32))
         .collect();
     for pattern in &mut patterns {
-        for second_events in &mut pattern.events {
-            for event in second_events {
-                event.stop_index = stop_remap[&event.stop_index];
-                event.next_stop_index = stop_remap[&event.next_stop_index];
-            }
+        for (_, event) in &mut pattern.events {
+            event.stop_index = stop_remap[&event.stop_index];
+            event.next_stop_index = stop_remap[&event.next_stop_index];
         }
         for freq in &mut pattern.frequency_routes {
             freq.stop_index = stop_remap[&freq.stop_index];

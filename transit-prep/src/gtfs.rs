@@ -152,7 +152,7 @@ pub struct ServicePattern {
     pub end_date: u32,   // YYYYMMDD, 0 = unbounded
     pub date_exceptions_add: Vec<u32>,
     pub date_exceptions_remove: Vec<u32>,
-    pub events: Vec<Vec<Event>>, // indexed by second offset from min_time
+    pub events: Vec<(u32, Event)>, // (departure_time, event), sorted by departure_time
     pub min_time: u32,
     pub max_time: u32,
     pub frequency_routes: Vec<FrequencyEntry>,
@@ -331,7 +331,7 @@ fn find_zip_entry_name(archive: &zip::ZipArchive<std::fs::File>, name: &str) -> 
         .map(|s| s.to_owned())
 }
 
-pub fn parse_gtfs(path: &Path) -> Result<GtfsData> {
+pub fn parse_gtfs(path: &Path, bbox: (f64, f64, f64, f64)) -> Result<GtfsData> {
     let file = std::fs::File::open(path).context("Failed to open GTFS zip")?;
     let mut archive = zip::ZipArchive::new(file)?;
 
@@ -432,11 +432,14 @@ pub fn parse_gtfs(path: &Path) -> Result<GtfsData> {
             .flexible(true)
             .trim(csv::Trim::All)
             .from_reader(entry);
-        // Buffer per-trip so we can linearly interpolate missing times between
+        // Buffer one trip at a time to interpolate missing times between
         // timepoints. GTFS allows empty arrival/departure at non-timepoint stops;
         // consumers must interpolate (spec §stop_times.txt). Hong Kong, for
         // example, only timestamps the first and last stop of each trip.
-        #[derive(Clone)]
+        //
+        // GTFS feeds almost universally emit stop_times sorted by trip_id, so
+        // we flush on trip_id transitions and keep only O(max_stops_per_trip)
+        // rows in memory instead of the entire file.
         struct RawStopTime {
             trip_index: u32,
             stop_index: u32,
@@ -444,80 +447,100 @@ pub fn parse_gtfs(path: &Path) -> Result<GtfsData> {
             departure: Option<u32>,
             stop_sequence: u32,
         }
-        let mut per_trip: HashMap<u32, Vec<RawStopTime>> = HashMap::new();
-        for result in rdr.deserialize::<StopTimeRecord>() {
-            let record = result?;
-            let arrival = record.arrival_time.as_deref().and_then(parse_time);
-            let departure = record.departure_time.as_deref().and_then(parse_time);
-            if let (Some(&stop_idx), Some(&trip_idx)) = (
-                stop_id_to_index.get(&record.stop_id),
-                trip_id_to_index.get(&record.trip_id),
-            ) {
-                per_trip.entry(trip_idx).or_default().push(RawStopTime {
-                    trip_index: trip_idx,
-                    stop_index: stop_idx,
-                    arrival,
-                    departure,
-                    stop_sequence: record.stop_sequence.parse().unwrap_or(0),
-                });
+        let mut trip_buf: Vec<RawStopTime> = Vec::new();
+        let mut buf_trip_idx: Option<u32> = None;
+
+        let (min_lon, min_lat, max_lon, max_lat) = bbox;
+        // Flush + emit the current trip_buf with linear interpolation.
+        // Only emit stops within the bbox so the stop_times Vec stays small
+        // even for large feeds (e.g. UK Rail with 5M null-timed rows worldwide).
+        // Out-of-bbox stops are kept in the buffer as interpolation anchors.
+        let flush_trip = |buf: &mut Vec<RawStopTime>, out: &mut Vec<StopTime>| {
+            if buf.is_empty() {
+                return;
             }
-        }
-        for (_trip_idx, mut rows) in per_trip {
-            rows.sort_by_key(|r| r.stop_sequence);
-            // Linear interpolation by stop_sequence position. Walk through the
-            // list, finding the next timed anchor ahead of each untimed row.
-            let n = rows.len();
+            buf.sort_by_key(|r| r.stop_sequence);
+            let n = buf.len();
             let mut i = 0;
             while i < n {
-                // Departure: fall back to arrival if missing.
-                let dep_known = rows[i].departure.or(rows[i].arrival);
-                let arr_known = rows[i].arrival.or(rows[i].departure);
-                if let (Some(dep), Some(arr)) = (dep_known, arr_known) {
-                    rows[i].departure = Some(dep);
-                    rows[i].arrival = Some(arr);
+                let dep_known = buf[i].departure.or(buf[i].arrival);
+                let arr_known = buf[i].arrival.or(buf[i].departure);
+                if dep_known.is_some() && arr_known.is_some() {
+                    buf[i].departure = dep_known;
+                    buf[i].arrival = arr_known;
                     i += 1;
                 } else {
-                    // Find previous anchor (must exist, unless first rows are untimed).
-                    let prev_anchor = (0..i)
+                    // Find bracketing timepoints.
+                    let prev = (0..i)
                         .rev()
-                        .find(|&j| rows[j].arrival.is_some() || rows[j].departure.is_some());
-                    let next_anchor = (i..n)
-                        .find(|&j| rows[j].arrival.is_some() || rows[j].departure.is_some());
-                    match (prev_anchor, next_anchor) {
+                        .find(|&j| buf[j].arrival.is_some() || buf[j].departure.is_some());
+                    let next =
+                        (i..n).find(|&j| buf[j].arrival.is_some() || buf[j].departure.is_some());
+                    match (prev, next) {
                         (Some(p), Some(q)) if q > i => {
-                            let t_p = rows[p].departure.or(rows[p].arrival).unwrap();
-                            let t_q = rows[q].arrival.or(rows[q].departure).unwrap();
-                            let span = q - p;
+                            let t_p = buf[p].departure.or(buf[p].arrival).unwrap();
+                            let t_q = buf[q].arrival.or(buf[q].departure).unwrap();
+                            let span = (q - p) as u64;
                             for k in i..q {
-                                if rows[k].arrival.is_some() {
+                                if buf[k].arrival.is_some() {
                                     continue;
                                 }
-                                let frac = (k - p) as u64 * (t_q - t_p) as u64 / span as u64;
-                                let t = t_p + frac as u32;
-                                rows[k].arrival = Some(t);
-                                rows[k].departure = Some(t);
+                                let t = t_p + ((k - p) as u64 * (t_q - t_p) as u64 / span) as u32;
+                                buf[k].arrival = Some(t);
+                                buf[k].departure = Some(t);
                             }
                             i = q;
                         }
                         _ => {
-                            // No bracketing anchors — drop this row.
                             i += 1;
                         }
                     }
                 }
             }
-            for r in rows {
+            for r in buf.drain(..) {
                 if let (Some(arr), Some(dep)) = (r.arrival, r.departure) {
-                    stop_times.push(StopTime {
-                        trip_index: r.trip_index,
-                        stop_index: r.stop_index,
-                        arrival_time: arr,
-                        departure_time: dep,
-                        stop_sequence: r.stop_sequence,
-                    });
+                    let s = &stops[r.stop_index as usize];
+                    if s.lat >= min_lat && s.lat <= max_lat && s.lon >= min_lon && s.lon <= max_lon
+                    {
+                        out.push(StopTime {
+                            trip_index: r.trip_index,
+                            stop_index: r.stop_index,
+                            arrival_time: arr,
+                            departure_time: dep,
+                            stop_sequence: r.stop_sequence,
+                        });
+                    }
                 }
             }
+        };
+
+        for result in rdr.deserialize::<StopTimeRecord>() {
+            let record = result?;
+            let trip_idx = match trip_id_to_index.get(&record.trip_id) {
+                Some(&i) => i,
+                None => continue,
+            };
+            let stop_idx = match stop_id_to_index.get(&record.stop_id) {
+                Some(&i) => i,
+                None => continue,
+            };
+            // On trip transition, flush the previous trip's buffer.
+            if buf_trip_idx != Some(trip_idx) {
+                flush_trip(&mut trip_buf, &mut stop_times);
+                buf_trip_idx = Some(trip_idx);
+            }
+            let arrival = record.arrival_time.as_deref().and_then(parse_time);
+            let departure = record.departure_time.as_deref().and_then(parse_time);
+            trip_buf.push(RawStopTime {
+                trip_index: trip_idx,
+                stop_index: stop_idx,
+                arrival,
+                departure,
+                stop_sequence: record.stop_sequence.parse().unwrap_or(0),
+            });
         }
+        // Flush the last trip.
+        flush_trip(&mut trip_buf, &mut stop_times);
     }
 
     // Parse calendar
@@ -730,18 +753,15 @@ pub fn build_service_patterns(data: &GtfsData) -> Vec<ServicePattern> {
         day_mask_groups.entry(key).or_default().push(service);
     }
 
-    // Group stop_times by trip_index and sort by stop_sequence.
-    // stop_times are pre-filtered to in-bbox stops by the caller (run_prep).
-    let mut stop_times_by_trip: HashMap<u32, Vec<&StopTime>> = HashMap::new();
-    for st in &data.stop_times {
-        stop_times_by_trip
-            .entry(st.trip_index)
-            .or_default()
-            .push(st);
-    }
-    for times in stop_times_by_trip.values_mut() {
-        times.sort_by_key(|st| st.stop_sequence);
-    }
+    // stop_times are pre-sorted by (trip_index, stop_sequence) by the caller
+    // and pre-filtered to in-bbox stops. Use binary search to get a slice for
+    // each trip — no HashMap needed, so peak memory is just the Vec itself.
+    let sorted_stop_times: &[StopTime] = &data.stop_times;
+    let trip_stops = |trip_idx: u32| -> &[StopTime] {
+        let start = sorted_stop_times.partition_point(|st| st.trip_index < trip_idx);
+        let end = sorted_stop_times.partition_point(|st| st.trip_index <= trip_idx);
+        &sorted_stop_times[start..end]
+    };
 
     // Group trips by service_id for O(1) per-pattern access instead of scanning all trips.
     let mut trips_by_service_id: HashMap<&str, Vec<&Trip>> = HashMap::new();
@@ -818,11 +838,12 @@ pub fn build_service_patterns(data: &GtfsData) -> Vec<ServicePattern> {
                         None => continue,
                     };
 
-                    // stop_times_by_trip is pre-filtered to in-bbox stops; windows(2) directly.
-                    if let Some(times) = stop_times_by_trip.get(&trip_idx) {
+                    // stop_times are pre-sorted and in-bbox only; binary search gives the slice.
+                    let times = trip_stops(trip_idx);
+                    if times.len() >= 2 {
                         for window in times.windows(2) {
-                            let from = window[0];
-                            let to = window[1];
+                            let from = &window[0];
+                            let to = &window[1];
 
                             let from_idx = from.stop_index;
                             let to_idx = to.stop_index;
@@ -853,19 +874,13 @@ pub fn build_service_patterns(data: &GtfsData) -> Vec<ServicePattern> {
                 max_time = 0;
             }
 
-            // Build direct-index event array
-            let duration = if max_time >= min_time {
-                (max_time - min_time + 1) as usize
-            } else {
-                0
-            };
-            let mut events: Vec<Vec<Event>> = vec![Vec::new(); duration];
-            for (dep_time, event) in departure_events {
-                let idx = (dep_time - min_time) as usize;
-                if idx < events.len() {
-                    events[idx].push(event);
-                }
-            }
+            // Sort departure events by time. Avoids the dense per-second
+            // Vec<Vec<Event>> which allocates O(max_time - min_time) empty
+            // Vec headers — up to 2 MB per pattern for wide time spans (e.g.
+            // UK Rail running 24 h), causing OOM when all pattern results
+            // are collected simultaneously.
+            departure_events.sort_unstable_by_key(|(dep_time, _)| *dep_time);
+            let events = departure_events;
 
             // Build frequency entries
             let mut freq_entries = Vec::new();
@@ -879,11 +894,12 @@ pub fn build_service_patterns(data: &GtfsData) -> Vec<ServicePattern> {
                         Some(&idx) => idx,
                         None => continue,
                     };
-                    if let Some(times) = stop_times_by_trip.get(&trip_idx) {
+                    let times = trip_stops(trip_idx);
+                    if times.len() >= 2 {
                         let trip_start = freq_entries.len();
                         for window in times.windows(2) {
-                            let from = window[0];
-                            let to = window[1];
+                            let from = &window[0];
+                            let to = &window[1];
                             let from_idx = from.stop_index;
                             let to_idx = to.stop_index;
                             freq_entries.push(FrequencyEntry {

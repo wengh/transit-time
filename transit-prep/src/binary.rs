@@ -264,7 +264,7 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
         write_u32(&mut buf, pattern.min_time);
         write_u32(&mut buf, pattern.max_time);
 
-        // Collect flat events from the per-second arrays
+        // Convert (dep_time, Event) pairs into flat events with time_offset.
         struct FlatEvent {
             time_offset: u32,
             stop_index: u32,
@@ -273,18 +273,16 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
             next_stop_index: u32,
             travel_time: u32,
         }
-        let mut flat_events: Vec<FlatEvent> = Vec::new();
-        for (time_offset, second_events) in pattern.events.iter().enumerate() {
-            for event in second_events {
-                flat_events.push(FlatEvent {
-                    time_offset: time_offset as u32,
-                    stop_index: event.stop_index,
-                    route_index: event.route_index,
-                    trip_index: event.trip_index,
-                    next_stop_index: event.next_stop_index,
-                    travel_time: event.travel_time,
-                });
-            }
+        let mut flat_events: Vec<FlatEvent> = Vec::with_capacity(pattern.events.len());
+        for (dep_time, event) in &pattern.events {
+            flat_events.push(FlatEvent {
+                time_offset: dep_time.saturating_sub(pattern.min_time),
+                stop_index: event.stop_index,
+                route_index: event.route_index,
+                trip_index: event.trip_index,
+                next_stop_index: event.next_stop_index,
+                travel_time: event.travel_time,
+            });
         }
 
         // Sort by trip to group trip events together
