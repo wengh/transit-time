@@ -2,7 +2,7 @@
     "id": "hong_kong",
     "osm_url": "https://download.geofabrik.de/asia/china/hong-kong-latest.osm.pbf",
     "feed_ids": [
-        "https://blues3.transitpdf.com/files/uran/improved-gtfs-kong-en.zip" // https://busmaps.com/en/hong-kong/OGCIO/kong-en
+        "https://blues3.transitpdf.com/files/uran/improved-gtfs-hong-kong.zip" // https://busmaps.com/en/hong-kong/justusewheels/hong-kong
     ],
     "name": "Hong Kong, China",
     "file": "hong_kong.bin",
