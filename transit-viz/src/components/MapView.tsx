@@ -98,7 +98,7 @@ export default function MapView(): React.ReactNode {
     function snapToNode(lat: number, lon: number): number | null {
       const router = stateRef.current.router;
       if (!router) return null;
-      return router.snap_to_node(lat, lon);
+      return router.snap_to_node(lat, lon) ?? null;
     }
 
     function getNodeLatLng(node: number): [number, number] | null {
