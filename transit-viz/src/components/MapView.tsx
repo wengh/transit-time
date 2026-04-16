@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef } from 'react';
 import L from 'leaflet';
 import { useAppState } from '../state/AppContext';
 import { initWebGL, renderIsochrone } from '../utils/webgl';
-import { getHoverData, type HoverPath } from '../utils/router';
+import { getAnyHoverData, type HoverPath } from '../utils/router';
 import { ROUTE_COLORS, hexToRgb } from '../utils/colors';
 import { getHashParams, setHashParams } from '../utils/urlHash';
 import { getSortedTravelTimes } from '../utils/hoverInfo';
@@ -195,7 +195,7 @@ export default function MapView(): React.ReactNode {
 
     function showDestination(node: number, pin: boolean) {
       const s = stateRef.current;
-      if (!s.router || !s.travelTimes || !s.ssspList) return;
+      if (!s.router || !s.travelTimes || (!s.ssspList && !s.profile)) return;
       const tt = s.travelTimes[node];
       if (isNaN(tt) || tt < 0) {
         clearRouteOverlay();
@@ -207,7 +207,7 @@ export default function MapView(): React.ReactNode {
         return;
       }
 
-      const allPaths = getHoverData(s.router, s.ssspList, node);
+      const allPaths = getAnyHoverData(s.router, s.ssspList, s.profile, node);
       const travelTimes = getSortedTravelTimes(allPaths);
 
       drawRouteSegments(allPaths.filter((p) => p.segments.length > 0));
@@ -295,7 +295,7 @@ export default function MapView(): React.ReactNode {
     // Hover: show route (desktop, no pinned dest)
     function onMouseMove(e: L.LeafletMouseEvent) {
       const s = stateRef.current;
-      if (!s.router || !s.travelTimes || !s.ssspList || s.pinnedNode !== null) return;
+      if (!s.router || !s.travelTimes || (!s.ssspList && !s.profile) || s.pinnedNode !== null) return;
 
       const node = snapToNode(e.latlng.lat, e.latlng.lng);
       if (node === lastHoveredNodeRef.current || node === null) return;

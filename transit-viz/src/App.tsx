@@ -8,7 +8,7 @@ import Legend from './components/Legend';
 import HoverInfo from './components/HoverInfo';
 import { loadCity } from './utils/cityLoader';
 import { getCityFromUrl } from './cities';
-import { runQuery, getHoverData } from './utils/router';
+import { runQuery, getAnyHoverData } from './utils/router';
 import { getTravelTimeSummary, getMedianPath, formatSegments, getSortedTravelTimes } from './utils/hoverInfo';
 import type { RunQueryParams } from './utils/router';
 import { getHashParams, setHashParams } from './utils/urlHash';
@@ -59,15 +59,15 @@ function AppInner() {
   // Restore pinned destination (and locked trip) after query completes
   useEffect(() => {
     if (state.computeStatus !== 'done' || !pendingDestRef.current) return;
-    const { router, ssspList, nodeCoords } = state;
-    if (!router || !ssspList || !nodeCoords) return;
+    const { router, ssspList, profile, nodeCoords } = state;
+    if (!router || (!ssspList && !profile) || !nodeCoords) return;
     const { latlng, trip } = pendingDestRef.current;
     pendingDestRef.current = null;
     const [lat, lng] = latlng;
     const node = router.snap_to_node(lat, lng);
     if (node === null) return;
     const latLng: [number, number] = [nodeCoords[node * 2], nodeCoords[node * 2 + 1]];
-    const allPaths = getHoverData(router, ssspList, node);
+    const allPaths = getAnyHoverData(router, ssspList, profile, node);
     const travelTimes = getSortedTravelTimes(allPaths);
     dispatch({ type: 'PIN_DESTINATION', node, latLng, hoverData: { allPaths, travelTimes } });
     if (trip !== null && trip < allPaths.length) {
@@ -109,6 +109,7 @@ function AppInner() {
       transferSlack: overrides.transferSlack ?? s.transferSlack,
       maxTime: (overrides.maxTimeMin ?? s.maxTimeMin) * 60,
       prevSsspList: s.ssspList || undefined,
+      prevProfile: s.profile || undefined,
     };
 
     dispatch({ type: 'COMPUTING' });
@@ -120,6 +121,7 @@ function AppInner() {
           type: 'QUERY_DONE',
           travelTimes: result.travelTimes,
           ssspList: result.ssspList,
+          profile: result.profile,
           sampleCounts: result.sampleCounts,
           totalSamples: result.totalSamples,
           timeMs: performance.now() - start,

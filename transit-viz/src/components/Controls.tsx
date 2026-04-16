@@ -1,7 +1,7 @@
 import React, { useState, useRef } from 'react';
 import { useAppState } from '../state/AppContext';
 import { formatTime, formatSlack, dateToYYYYMMDD } from '../utils/format';
-import { freeSsspList } from '../utils/router';
+import { freeSsspList, freeProfile } from '../utils/router';
 import { MAP_STYLES } from '../utils/mapStyles';
 import { LegendContent } from './Legend';
 
@@ -103,6 +103,7 @@ export default function Controls({ onRunQuery, onCopy }: ControlsProps): React.R
 
   function handleChangeCity() {
     freeSsspList(state.ssspList);
+    freeProfile(state.profile);
     dispatch({ type: 'CHANGE_CITY' });
     history.replaceState(null, '', import.meta.env.BASE_URL);
   }
