@@ -2,10 +2,8 @@
     "id": "paris",
     "bbbike_name": "Paris",
     "feed_ids": [
-        "f-u09-paris~metro~bus~tram", // RATP (Métro, RER A/B, Bus, Tram), Île-de-France Mobilités regional buses
-        "f-u0-sncf~transilien~rer", // SNCF Transilien (RER C/D/E/H/J/K/L/N/P/R/U, TER)
-        "f-zenbus~paris~saclay", // Paris-Saclay
-        "f-gpso~seau~fr" // Grand Paris Seine Ouest
+        "https://blues3.transitpdf.com/files/uran/improved-gtfs-horairesau-246c687815b82f.zip", // Consolidated feed https://busmaps.com/en/france/Republique-Francaise/horairesau-246c687815b82f
+        "https://blues3.transitpdf.com/files/uran/improved-gtfs-caee.zip" // Villebon-sur-Yvette https://busmaps.com/en/france/Zen-Bus/caee
     ],
     "name": "Paris, France",
     "file": "paris.bin",

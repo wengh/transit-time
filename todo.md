@@ -38,7 +38,9 @@ make use of the z order sorting of nodes to reduce memory footprint of node snap
 
 -------
 
-compress graph by merging adjacent walking nodes (with absolute + relative distance guarantee)?
+compress graph by contracting clusters of adjacent walking nodes (e.g. intersections), with all distance $(d' - d) < \epsilon d + \delta$ for something like $\epsilon = 0.05, \delta = 10$?
+
+remove 1-degree nodes with short edges and no transit stop (e.g. driveways)?
 
 -------
 
@@ -50,3 +52,48 @@ analytically figure out all optimal (no other trip with earlier arrival and late
 - special case for initial walking. first run a full walking pass to find all reachable nodes by walk. for every walk reachable stop, scan through all departures from that stop with walk departure time within the set window, sort them by departure time (using transit event time - initial walk time as departure time)
 - in reverse departure time order, run normal dijkstra search on existing dijkstra state, but re-propagate when anything is relaxed (relaxed by adding an earlier arrival time to the front. note that departure time is always decreasing due to the order of scanning walk reachable stops)
 - rinse and repeat
+
+
+can you explain why this is needed and what's wrong with our departure & arrival time tracking at each node? also make sure to formalize this into a routing test and assert that it has shape and initial time
+
+
+could we store edge_dep_delta (which is vehicle_dep_delta if edge is transit, or arrival_delta - edge_weight if walk, or sentinel if is initial walk) instead of home_dep_delta? then for backtracking we can just binary search edge_dep_delta against arrival_delta of prev node's profile entry array (which works since it's sorted by descending arrival_delta), or the first value if is initial walk. i think that should let us get rid of tracking boarding time separately, and we can still recover the full path (thus getting departure from home time) so we don't lose any information. ultrathink about the tradeoffs (if any)
+
+
+for your "what it costs":
+1. that's just a binary search. almost trivial to get right.
+2. the invariant is that we don't store any dominated entries so later arrival => later departure and FIFO property isn't a concern. that's the core invariant, not a subtle invariant
+3. that's fine because we need to reconstruct the path to show the plot and the shapes anyway
+4. same as 2, pareto optimal is the core invariant
+5. addressing technical debt now is better than later. i can help revert your changes that add vehicle_dep, etc if you want.
+what do you think?
+
+
+also, for backtracking, we need to distinguish between switching to initial walk and backtracking to more transit. i think this can be resolved by keeping track (while backtracking only) of the best departure time in any visited node that have an initial walk entry (i.e. next_edge_dep_delta - initial_walk.arrival_delta) and the departure time's corresponding switch node (where we change from transit to initial walk). then after we exhaust backtracking (arriving at source or a node with only initial walk entry), just undo the backtracking to the node with best recorded initial walk departure time, and switch to backtrack the initial walk path from there. what do you think about this approach? is this a real problem that we need to solve? if so, did you already realize this problem? is there a simpler correct solution?
+alternative: change the route id field to u16 and add a new bool flag for each transit entry to indicate whether its prev edge is initial walk or not.
+ultrathink
+
+change route_index to u16 and use a bool for the flag. this way we free up space for adding more bool flags later as well. when we start an initial transit leg (from initial walk), set the bool flag for this entry only if it's not there already (i.e. if a later departure reached here then the initial walk is non-optimal so shouldnt set the flag). is this correct? ultrathink
+
+update the readme
+
+
+Source: 41.883251, -87.627007
+Destination: 41.815212, -87.689415
+
+Mode: sampled
+Date: 2026-04-16
+Departure: 11:00
+Samples: 15
+Max time: 45 min
+Transfer slack: 60s
+
+Travel time: 30–33–44 min (9/9 samples)
+Route:
+  Walk 1 min
+  Green Line · Washington/Wabash → Adams/Wabash 0 min
+  Orange Line · Adams/Wabash → Western-Orange -3 min
+  Walk 1 min
+  49 · Western Orange Line Station → Western & 43rd Street 3 min
+    Wait: 2.0 min
+  Walk 5 min

@@ -2,6 +2,7 @@
     "id": "tokyo",
     "osm_url": "https://download.geofabrik.de/asia/japan/kanto-latest.osm.pbf",
     "feed_ids": [
+        "https://blues3.transitpdf.com/files/uran/improved-gtfs-tokyo-railways.zip", // Consolidated feed for Tokyo railways https://busmaps.com/en/japan/MKuran/tokyo-railways
         "f-toei~data~toei~train~gtfs~jp", // Toei (subway, Arakawa tram)
         "f-tokyometro~data~tokyometro~train~gtfs~jp", // Tokyo Metro (9 subway lines)
         "f-mir~data~mir~train~gtfs~jp", // Tsukuba Express
