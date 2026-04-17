@@ -16,11 +16,11 @@
 //! rewritten freely.
 
 use crate::data::{PatternData, PreparedData};
-use std::ops::Index;
 use crate::router::patterns_for_date;
+use serde::Serialize;
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
-use serde::Serialize;
+use std::ops::Index;
 
 // ============================================================================
 // Public interface: input query, isochrone, paths
@@ -159,11 +159,7 @@ impl ProfileRouting {
 ///   dropping the duplicate endpoint between legs.
 ///
 /// Returns flat `[lat0, lon0, lat1, lon1, …]`.
-pub fn segment_shape(
-    data: &PreparedData,
-    route_index: Option<u16>,
-    nodes: &[u32],
-) -> Vec<f32> {
+pub fn segment_shape(data: &PreparedData, route_index: Option<u16>, nodes: &[u32]) -> Vec<f32> {
     if nodes.len() < 2 {
         return Vec::new();
     }
@@ -208,7 +204,12 @@ pub fn segment_shape(
 ///
 /// Shares decoding with [`crate::TransitRouter::route_shape_between`] so the
 /// WASM-exposed version and this pure-Rust helper never drift.
-fn leg_shape_between(data: &PreparedData, route_idx: u32, from_node: u32, to_node: u32) -> Vec<f32> {
+fn leg_shape_between(
+    data: &PreparedData,
+    route_idx: u32,
+    from_node: u32,
+    to_node: u32,
+) -> Vec<f32> {
     let from_stop = match data.node_stop_indices.get(from_node).first() {
         Some(&s) => s,
         None => return Vec::new(),
@@ -317,7 +318,11 @@ fn interval_union_fraction(
             if arr < max_time + hd {
                 let lo = arr.saturating_sub(max_time).min(window_len);
                 let hi = hd.min(window_len);
-                if hi > lo { Some((lo, hi)) } else { None }
+                if hi > lo {
+                    Some((lo, hi))
+                } else {
+                    None
+                }
             } else {
                 None
             }
@@ -359,7 +364,10 @@ fn trace_path_forward(
     let mut steps = 0usize;
 
     loop {
-        rev.push(ForwardStep { node: cur_node, entry });
+        rev.push(ForwardStep {
+            node: cur_node,
+            entry,
+        });
         if entry.prev_node == u32::MAX || steps >= 1_000_000 {
             break;
         }
@@ -408,11 +416,7 @@ fn stop_name_for_node(data: &PreparedData, node: u32) -> String {
 }
 
 /// Build `Vec<Path>` for every Pareto-optimal entry at `destination`.
-fn build_optimal_paths(
-    data: &PreparedData,
-    inner: &ProfileResult,
-    destination: u32,
-) -> Vec<Path> {
+fn build_optimal_paths(data: &PreparedData, inner: &ProfileResult, destination: u32) -> Vec<Path> {
     let f_dest = match inner.frontier.get(destination as usize) {
         Some(f) => f,
         None => return Vec::new(),
@@ -674,7 +678,14 @@ pub fn run_profile(
     let mut home_dep_deltas: Vec<Vec<u16>> = vec![Vec::new(); n];
 
     // Phase 1: initial walk-only Dijkstra. Produces F[v][0] for walk-reachable v.
-    walk_only_pass(data, source_node, max_time, window_len, &mut frontier, &mut home_dep_deltas);
+    walk_only_pass(
+        data,
+        source_node,
+        max_time,
+        window_len,
+        &mut frontier,
+        &mut home_dep_deltas,
+    );
 
     // Phase 2: source event stream (sorted DESCENDING by T(s)).
     let source_events = build_source_events(data, &patterns, window_start, window_end, &frontier);
@@ -806,7 +817,11 @@ pub fn run_profile(
                     continue;
                 }
             }
-            let start_transit = if f.first().map(|e| e.is_walk_only()).unwrap_or(false) { 1 } else { 0 };
+            let start_transit = if f.first().map(|e| e.is_walk_only()).unwrap_or(false) {
+                1
+            } else {
+                0
+            };
             if f.len() > start_transit {
                 let tail = &f[f.len() - 1];
                 if tail.arrival_delta <= arr_delta {
@@ -1121,7 +1136,9 @@ fn seed_source_event(
         } => {
             let ev = &pat.stop_index.events_by_stop.data[global_event_idx as usize];
             let route_index = sentinel_route_for(pat, ev.next_event_index);
-            let edge_dep_delta = vehicle_dep.saturating_sub(window_start).min(u16::MAX as u32) as u16;
+            let edge_dep_delta = vehicle_dep
+                .saturating_sub(window_start)
+                .min(u16::MAX as u32) as u16;
             ride_trip_profile(
                 data,
                 pat,
@@ -1335,7 +1352,9 @@ fn ride_trip_profile(
             }
             prev_on_trip = dest_node;
             // Edge dep for next hop = arrival at this stop (vehicle departed here).
-            hop_edge_dep = current_arrival.saturating_sub(window_start).min(u16::MAX as u32) as u16;
+            hop_edge_dep = current_arrival
+                .saturating_sub(window_start)
+                .min(u16::MAX as u32) as u16;
             hop_flag = false;
         }
         if event.travel_time > 0 {
@@ -1371,7 +1390,9 @@ fn ride_freq_profile(
     let mut cumulative = 0u32;
     let route_index_u32 = pat.frequency_routes[fi as usize].route_index;
     let route_index = route_index_u32.min(u16::MAX as u32 - 1) as u16;
-    let mut hop_edge_dep = vehicle_dep.saturating_sub(window_start).min(u16::MAX as u32) as u16;
+    let mut hop_edge_dep = vehicle_dep
+        .saturating_sub(window_start)
+        .min(u16::MAX as u32) as u16;
     let mut hop_flag = flag_prev_origin_walk;
     let mut prev_on_trip = boarding_node;
     loop {
@@ -1451,7 +1472,11 @@ pub fn reconstruct_profile_path(
         }
 
         let edge_type: u32 = if entry.is_walk_edge() { 0 } else { 1 };
-        let route_u32: u32 = if entry.is_walk_edge() { u32::MAX } else { entry.route_index as u32 };
+        let route_u32: u32 = if entry.is_walk_edge() {
+            u32::MAX
+        } else {
+            entry.route_index as u32
+        };
         rev.push((cur_node, edge_type, route_u32));
         let prev = entry.prev_node;
         entry = match find_predecessor_entry(result, prev, &entry) {
@@ -1512,7 +1537,11 @@ fn find_predecessor_entry(
                 return Some(*first);
             }
         }
-        let start = if f.first().map(|e| e.is_walk_only()).unwrap_or(false) { 1 } else { 0 };
+        let start = if f.first().map(|e| e.is_walk_only()).unwrap_or(false) {
+            1
+        } else {
+            0
+        };
         let slice = &f[start..];
         // Transit entries sorted DESCENDING by arrival_delta. binary_search_by with
         // reverse-order comparator.
@@ -1532,7 +1561,11 @@ fn find_predecessor_entry(
                 return Some(*first);
             }
         }
-        let start = if f.first().map(|e| e.is_walk_only()).unwrap_or(false) { 1 } else { 0 };
+        let start = if f.first().map(|e| e.is_walk_only()).unwrap_or(false) {
+            1
+        } else {
+            0
+        };
         let slice = &f[start..];
         if let Ok(i) = slice.binary_search_by(|e| target.cmp(&e.arrival_delta)) {
             return Some(slice[i]);
@@ -1551,7 +1584,11 @@ fn find_predecessor_entry(
     // Branch 4: transit, flag=false → largest transit arr ≤ edge_dep - slack.
     let slack = result.transfer_slack as u32;
     let budget = (current.edge_dep_delta as u32).saturating_sub(slack);
-    let start = if f.first().map(|e| e.is_walk_only()).unwrap_or(false) { 1 } else { 0 };
+    let start = if f.first().map(|e| e.is_walk_only()).unwrap_or(false) {
+        1
+    } else {
+        0
+    };
     let slice = &f[start..];
     let idx = slice.partition_point(|e| (e.arrival_delta as u32) > budget);
     if idx < slice.len() {
@@ -1602,7 +1639,11 @@ mod tests {
         }
     }
 
-    fn result_with(frontier: Vec<Vec<ProfileEntry>>, hd: Vec<Vec<u16>>, slack: u32) -> ProfileResult {
+    fn result_with(
+        frontier: Vec<Vec<ProfileEntry>>,
+        hd: Vec<Vec<u16>>,
+        slack: u32,
+    ) -> ProfileResult {
         ProfileResult {
             frontier,
             home_dep_deltas: hd,
@@ -1681,7 +1722,7 @@ mod tests {
         // F[stop_1] has transit entry with arr=80. Exact match finds it.
         let f_prev = vec![
             walk_only(20),
-            e(80, 60, 99, 1, true),  // transit entry from earlier hop
+            e(80, 60, 99, 1, true), // transit entry from earlier hop
         ];
         let res = result_with(vec![f_prev], vec![vec![WALK_ONLY, 50]], 30);
         let current = e(100, 80, 0, 1, false); // transit, edge_dep=80 = arr(prev)
@@ -1697,8 +1738,8 @@ mod tests {
         let f_prev = vec![walk_only(55), e(45, 20, 99, 1, false)];
         let res = result_with(vec![f_prev], vec![vec![WALK_ONLY, 30]], 10);
         let current = e(160, 60, 0, 7, false); // transit, edge_dep=60
-        // Walk-only arr=55 > budget=50, so it wouldn't qualify anyway.
-        // Transit arr=45 ≤ 50 ✓. Expect arr=45.
+                                               // Walk-only arr=55 > budget=50, so it wouldn't qualify anyway.
+                                               // Transit arr=45 ≤ 50 ✓. Expect arr=45.
         let pred = find_predecessor_entry(&res, 0, &current).unwrap();
         assert!(!pred.is_walk_only());
         assert_eq!(pred.arrival_delta, 45);
