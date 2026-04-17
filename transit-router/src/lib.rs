@@ -1,4 +1,5 @@
 pub mod data;
+pub mod path_display;
 pub mod profile;
 pub mod router;
 
@@ -173,8 +174,12 @@ impl WasmProfileRouting {
     /// All Pareto-optimal paths to `destination`, JSON-serialized. The TS side
     /// calls `JSON.parse` once per hover. Requires a `TransitRouter` for access
     /// to the underlying `PreparedData` (names, colours).
+    ///
+    /// The routing core produces colour-less `Path`s. `path_display` attaches
+    /// the dominant route colour here, at the display-layer boundary.
     pub fn optimal_paths(&self, router: &TransitRouter, destination: u32) -> String {
-        let paths = self.inner.optimal_paths(&router.data, destination);
+        let mut paths = self.inner.optimal_paths(&router.data, destination);
+        path_display::attach_dominant_colors(&router.data, &mut paths);
         serde_json::to_string(&paths).unwrap_or_else(|_| "[]".to_string())
     }
 }
