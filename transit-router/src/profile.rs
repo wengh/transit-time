@@ -407,36 +407,6 @@ fn stop_name_for_node(data: &PreparedData, node: u32) -> String {
     String::new()
 }
 
-fn adjust_color_for_visibility(hex: &str) -> Option<String> {
-    let hex = hex.strip_prefix('#').unwrap_or(hex);
-    if hex.len() != 6 { return None; }
-    let r = u8::from_str_radix(&hex[0..2], 16).ok()? as f32;
-    let g = u8::from_str_radix(&hex[2..4], 16).ok()? as f32;
-    let b = u8::from_str_radix(&hex[4..6], 16).ok()? as f32;
-    let lum = (r * 299.0 + g * 587.0 + b * 114.0) / 1000.0;
-    let (r, g, b) = if lum > 0.0 && lum < 100.0 {
-        let s = 100.0 / lum;
-        ((r * s).min(255.0), (g * s).min(255.0), (b * s).min(255.0))
-    } else if lum > 220.0 {
-        let s = 220.0 / lum;
-        (r * s, g * s, b * s)
-    } else {
-        (r, g, b)
-    };
-    Some(format!("#{:02x}{:02x}{:02x}", r.round() as u8, g.round() as u8, b.round() as u8))
-}
-
-fn dominant_route_color(data: &PreparedData, segments: &[PathSegment]) -> Option<String> {
-    let transit: Vec<&PathSegment> = segments.iter().filter(|s| s.kind == SegmentKind::Transit).collect();
-    if transit.is_empty() {
-        return None;
-    }
-    let dominant = transit.iter().max_by_key(|s| s.end_time.saturating_sub(s.start_time))?;
-    let route_idx = dominant.route_index? as usize;
-    let color = data.route_colors.get(route_idx)?.as_ref()?;
-    adjust_color_for_visibility(&color.to_hex())
-}
-
 /// Build `Vec<Path>` for every Pareto-optimal entry at `destination`.
 fn build_optimal_paths(
     data: &PreparedData,
@@ -581,14 +551,14 @@ fn build_single_path(
         group_start_idx = end_idx + 1;
     }
 
-    let dominant_color = dominant_route_color(data, &segments);
-
     Some(Path {
         home_departure: home_dep_abs,
         arrival_time,
         total_time,
         segments,
-        dominant_route_color_hex: dominant_color,
+        // Colour is a display concern — left None here and attached by
+        // `path_display::attach_dominant_colors` in the WASM adapter.
+        dominant_route_color_hex: None,
     })
 }
 
