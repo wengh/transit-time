@@ -97,3 +97,12 @@ Route:
   49 · Western Orange Line Station → Western & 43rd Street 3 min
     Wait: 2.0 min
   Walk 5 min
+
+ok this is still not working and getting unwieldy. can you make sure the profile routing is a well defined interface that has 2 functions:
+1. run routing from source -> returns isochrone
+2. get optimal paths to a specific destination
+and that everything outside this interace work well
+then i'll manually implement profile routing.
+ultrathink
+
+also as much as possible of the logic should live in the rust side to make it easy to test. for example shapes should be returned as rust objects and only converted to json at the wasm boundary
