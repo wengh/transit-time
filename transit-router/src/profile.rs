@@ -1,19 +1,612 @@
 //! Profile routing: Pareto frontier of (arrival, home_departure) per node
 //! over a departure-time window. One pass replaces N-sample Dijkstra.
 //!
-//! Per-entry storage is `edge_dep_delta` (time inbound edge started firing),
-//! NOT `home_dep_delta`. The journey's home_dep is stored out-of-band in
-//! `ProfileResult.home_dep_deltas` (parallel Vec, same shape as frontier) for
-//! fast isochrone/fraction queries and the TS hd-keyed API. Reconstruction
-//! uses `edge_dep_delta` plus the per-entry `flag_prev_origin_walk` bit to
-//! pick predecessors unambiguously — three-branch rule in
-//! `find_predecessor_entry`.
+//! # Public interface
+//!
+//! Two functions cross the boundary with the rest of the codebase:
+//!
+//! 1. [`ProfileRouting::compute`] — run routing from a source, get an opaque
+//!    routing state containing the per-node [`Isochrone`] for map rendering.
+//! 2. [`ProfileRouting::optimal_paths`] — given the state + a destination,
+//!    get a `Vec<Path>` of all Pareto-optimal journeys with fully-resolved
+//!    segment metadata (stop names, route names, times, waits, node
+//!    sequences). No shapes — those come from [`crate::TransitRouter::segment_shape`].
+//!
+//! Everything below those signatures is implementation detail and may be
+//! rewritten freely.
 
 use crate::data::{PatternData, PreparedData};
 use std::ops::Index;
 use crate::router::patterns_for_date;
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
+use serde::Serialize;
+
+// ============================================================================
+// Public interface: input query, isochrone, paths
+// ============================================================================
+
+/// Input to [`ProfileRouting::compute`].
+#[derive(Clone, Copy, Debug)]
+pub struct ProfileQuery {
+    pub source_node: u32,
+    /// Absolute seconds-of-day. Start of the departure-time window.
+    pub window_start: u32,
+    /// Absolute seconds-of-day. End of the departure-time window.
+    pub window_end: u32,
+    /// YYYYMMDD.
+    pub date: u32,
+    /// Seconds of transfer slack between transit legs.
+    pub transfer_slack: u32,
+    /// Isochrone budget in seconds. Nodes unreachable within `max_time` of
+    /// departing home are reported as unreachable.
+    pub max_time: u32,
+}
+
+/// Per-node isochrone summary for the map overlay.
+#[derive(Debug, Clone)]
+pub struct Isochrone {
+    /// Length = `data.num_nodes`. `u32::MAX` = unreachable within `max_time`.
+    /// `min_travel_time[v]` = min over all Pareto entries at `v` of
+    /// `(arrival − home_departure)`. Walk-only entry contributes its walk time.
+    pub min_travel_time: Vec<u32>,
+    /// Length = `data.num_nodes`. In `[0.0, 1.0]`. Fraction of the query window
+    /// during which `v` is reachable within `max_time`, computed as the
+    /// normalised interval union over the per-node Pareto frontier.
+    pub reachable_fraction: Vec<f32>,
+    pub window_start: u32,
+    pub window_end: u32,
+}
+
+/// One Pareto-optimal journey from source to a destination.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Path {
+    /// Absolute seconds-of-day.
+    pub home_departure: u32,
+    /// Absolute seconds-of-day at destination.
+    pub arrival_time: u32,
+    /// `arrival_time − home_departure`.
+    pub total_time: u32,
+    pub segments: Vec<PathSegment>,
+    /// "#rrggbb" for the visually-dominant transit route on this path.
+    /// `None` for walk-only paths.
+    pub dominant_route_color_hex: Option<String>,
+}
+
+/// One edge of a [`Path`].
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PathSegment {
+    pub kind: SegmentKind,
+    /// Absolute seconds-of-day. Transit: vehicle_dep at boarding. Walk: arrival
+    /// at the first node.
+    pub start_time: u32,
+    /// Absolute seconds-of-day. Arrival at the last node.
+    pub end_time: u32,
+    /// Seconds between arriving at the boarding stop and vehicle_dep. `0` for
+    /// walks.
+    pub wait_time: u32,
+    pub start_stop_name: String,
+    pub end_stop_name: String,
+    /// `None` for walks.
+    pub route_index: Option<u16>,
+    /// `None` for walks. Human label (e.g. "Blue Line").
+    pub route_name: Option<String>,
+    /// Node indices. Walk: `[start, end]` (len 2). Transit: `[boarding,
+    /// intermediate…, final_alight]` (len ≥ 2). The first node is always the
+    /// boarding/walk-start; the last the alight/walk-end.
+    pub node_sequence: Vec<u32>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum SegmentKind {
+    Walk,
+    Transit,
+}
+
+/// Opaque routing state. Holds the Pareto frontier plus cached isochrone.
+/// Internal representation is not part of the public interface.
+pub struct ProfileRouting {
+    isochrone: Isochrone,
+    // Internal state the implementer needs for `optimal_paths`. Current backing
+    // is a `ProfileResult`; swap freely.
+    inner: ProfileResult,
+}
+
+impl ProfileRouting {
+    /// Function 1: run profile routing from the query's source over the
+    /// window. Returns the state + per-node isochrone.
+    pub fn compute(data: &PreparedData, query: &ProfileQuery) -> Self {
+        let inner = run_profile(
+            data,
+            query.source_node,
+            query.window_start,
+            query.window_end,
+            query.date,
+            query.transfer_slack,
+            query.max_time,
+        );
+        let isochrone = build_isochrone(&inner, query.max_time);
+        ProfileRouting { isochrone, inner }
+    }
+
+    pub fn isochrone(&self) -> &Isochrone {
+        &self.isochrone
+    }
+
+    /// Function 2: enumerate all Pareto-optimal paths to `destination`, sorted
+    /// ascending by `home_departure` (earliest-home-dep first). Route names,
+    /// stop names, and dominant colors are looked up directly from `data` —
+    /// no WASM router needed.
+    pub fn optimal_paths(&self, data: &PreparedData, destination: u32) -> Vec<Path> {
+        build_optimal_paths(data, &self.inner, destination)
+    }
+}
+
+// ============================================================================
+// Shape helper — pure function, testable without WASM
+// ============================================================================
+
+/// Chain per-leg GTFS shapes or fall back to straight lines from node coordinates.
+///
+/// - Walk segment: `route_index = None`, `nodes = [start, end]` (len 2).
+///   Returns `[lat(start), lon(start), lat(end), lon(end)]`.
+/// - Transit segment: `route_index = Some(r)`, `nodes = [board, stop_1, …, alight]`
+///   (len ≥ 2). For each consecutive pair, looks up the GTFS leg shape; falls
+///   back to a straight line when a per-leg shape is missing. Chains results,
+///   dropping the duplicate endpoint between legs.
+///
+/// Returns flat `[lat0, lon0, lat1, lon1, …]`.
+pub fn segment_shape(
+    data: &PreparedData,
+    route_index: Option<u16>,
+    nodes: &[u32],
+) -> Vec<f32> {
+    if nodes.len() < 2 {
+        return Vec::new();
+    }
+    match route_index {
+        None => {
+            // Walk: straight line from node coordinates.
+            let mut out = Vec::with_capacity(nodes.len() * 2);
+            for &n in nodes {
+                let n = n as usize;
+                out.push(data.nodes[n].lat as f32);
+                out.push(data.nodes[n].lon as f32);
+            }
+            out
+        }
+        Some(route_idx) => {
+            // Transit: chain GTFS leg shapes per consecutive stop pair.
+            let mut out: Vec<f32> = Vec::new();
+            for pair in nodes.windows(2) {
+                let leg = leg_shape_between(data, route_idx as u32, pair[0], pair[1]);
+                let skip = if out.is_empty() { 0 } else { 2 };
+                if leg.len() >= 4 {
+                    let src = &leg[skip..];
+                    out.extend(src.iter().map(|&f| f as f32));
+                } else {
+                    // Fallback: straight line between the two stop nodes.
+                    if out.is_empty() {
+                        out.push(data.nodes[pair[0] as usize].lat as f32);
+                        out.push(data.nodes[pair[0] as usize].lon as f32);
+                    }
+                    out.push(data.nodes[pair[1] as usize].lat as f32);
+                    out.push(data.nodes[pair[1] as usize].lon as f32);
+                }
+            }
+            out
+        }
+    }
+}
+
+/// Look up a per-leg GTFS shape between two consecutive stop nodes on a route.
+/// Returns flat `[lat0, lon0, lat1, lon1, …]` as f32, or empty if no shape is
+/// indexed for this (route, from_node, to_node).
+///
+/// Shares decoding with [`crate::TransitRouter::route_shape_between`] so the
+/// WASM-exposed version and this pure-Rust helper never drift.
+fn leg_shape_between(data: &PreparedData, route_idx: u32, from_node: u32, to_node: u32) -> Vec<f32> {
+    let from_stop = match data.node_stop_indices.get(from_node).first() {
+        Some(&s) => s,
+        None => return Vec::new(),
+    };
+    let to_stop = match data.node_stop_indices.get(to_node).first() {
+        Some(&s) => s,
+        None => return Vec::new(),
+    };
+    let key = (route_idx, from_stop, to_stop);
+    let idx = match data.leg_shape_keys.binary_search(&key) {
+        Ok(i) => i,
+        Err(_) => return Vec::new(),
+    };
+    let start = data.leg_shapes.offsets[idx] as usize;
+    let end = data.leg_shapes.offsets[idx + 1] as usize;
+    let compressed = &data.leg_shapes.data[start..end];
+    if compressed.is_empty() {
+        return Vec::new();
+    }
+    let coords_u32: Vec<u32> = match pco::standalone::simple_decompress(compressed) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    let mut out = Vec::with_capacity(coords_u32.len());
+    for chunk in coords_u32.chunks(2) {
+        if chunk.len() == 2 {
+            out.push(f32::from_bits(chunk[0]));
+            out.push(f32::from_bits(chunk[1]));
+        }
+    }
+    out
+}
+
+// ============================================================================
+// Isochrone + optimal paths (public-interface implementations)
+// ============================================================================
+
+/// Compute per-node [`Isochrone`] from a [`ProfileResult`].
+fn build_isochrone(inner: &ProfileResult, max_time: u32) -> Isochrone {
+    let n = inner.frontier.len();
+    let window_len = inner.window_end.saturating_sub(inner.window_start);
+    let mut min_travel_time = vec![u32::MAX; n];
+    let mut reachable_fraction = vec![0.0f32; n];
+
+    for v in 0..n {
+        let f = &inner.frontier[v];
+        if f.is_empty() {
+            continue;
+        }
+        let hd = match inner.home_dep_deltas.get(v) {
+            Some(h) => h.as_slice(),
+            None => &[],
+        };
+        // Best travel time: min over entries of (arrival - home_dep). Walk-only
+        // entry's travel_time = arrival_delta (journey-independent walk time).
+        let mut best = u32::MAX;
+        for (entry, &h) in f.iter().zip(hd.iter()) {
+            let arr = entry.arrival_delta as u32;
+            let t = if h == WALK_ONLY {
+                arr
+            } else {
+                arr.saturating_sub(h as u32)
+            };
+            if t > max_time {
+                continue;
+            }
+            if t < best {
+                best = t;
+            }
+        }
+        min_travel_time[v] = best;
+
+        // Reachable fraction: union of intervals [arr - max_time, hd] over
+        // transit entries; walk-only alone contributes full window if within budget.
+        reachable_fraction[v] = interval_union_fraction(f, hd, window_len, max_time);
+    }
+
+    Isochrone {
+        min_travel_time,
+        reachable_fraction,
+        window_start: inner.window_start,
+        window_end: inner.window_end,
+    }
+}
+
+fn interval_union_fraction(
+    f: &[ProfileEntry],
+    hd_vec: &[u16],
+    window_len: u32,
+    max_time: u32,
+) -> f32 {
+    if f.is_empty() || window_len == 0 {
+        return 0.0;
+    }
+    let has_walk = f[0].is_walk_only();
+    if has_walk && (f[0].arrival_delta as u32) <= max_time {
+        return 1.0;
+    }
+    let start = if has_walk { 1 } else { 0 };
+    let mut intervals: Vec<(u32, u32)> = f[start..]
+        .iter()
+        .zip(hd_vec[start..].iter())
+        .filter_map(|(e, hd_u16)| {
+            let arr = e.arrival_delta as u32;
+            let hd = *hd_u16 as u32;
+            if arr < max_time + hd {
+                let lo = arr.saturating_sub(max_time).min(window_len);
+                let hi = hd.min(window_len);
+                if hi > lo { Some((lo, hi)) } else { None }
+            } else {
+                None
+            }
+        })
+        .collect();
+    if intervals.is_empty() {
+        return 0.0;
+    }
+    intervals.sort();
+    let mut total = 0u32;
+    let mut cur_end = 0u32;
+    for (lo, hi) in intervals {
+        let lo = lo.max(cur_end);
+        if hi > lo {
+            total += hi - lo;
+            cur_end = hi;
+        }
+    }
+    total as f32 / window_len as f32
+}
+
+/// One node+entry pair collected during backward path reconstruction.
+struct ForwardStep {
+    node: u32,
+    entry: ProfileEntry,
+}
+
+/// Walk backward from `(destination, entry_at_dest)` to the source, collecting
+/// (node, entry) pairs. Handles the walk-only linked list and the three-branch
+/// transit predecessor rule. Returns pairs in source→destination order.
+fn trace_path_forward(
+    inner: &ProfileResult,
+    destination: u32,
+    entry_at_dest: ProfileEntry,
+) -> Vec<ForwardStep> {
+    let mut rev = Vec::<ForwardStep>::new();
+    let mut entry = entry_at_dest;
+    let mut cur_node = destination;
+    let mut steps = 0usize;
+
+    loop {
+        rev.push(ForwardStep { node: cur_node, entry });
+        if entry.prev_node == u32::MAX || steps >= 1_000_000 {
+            break;
+        }
+        if entry.is_walk_only() {
+            let prev = entry.prev_node;
+            let f_prev = inner.frontier.get(prev as usize);
+            let next = match f_prev.and_then(|f| f.first()).filter(|e| e.is_walk_only()) {
+                Some(e) => *e,
+                None => break,
+            };
+            cur_node = prev;
+            entry = next;
+        } else {
+            let prev = entry.prev_node;
+            let next = match find_predecessor_entry(inner, prev, &entry) {
+                Some(e) => e,
+                None => break,
+            };
+            cur_node = prev;
+            entry = next;
+        }
+        steps += 1;
+    }
+    rev.reverse();
+    rev
+}
+
+/// Compute absolute arrival time at a node for the specific journey. Walk-only
+/// nodes are journey-adjusted by `home_dep_abs`; iter entries use the entry's
+/// own arrival_delta.
+fn arrival_abs(inner: &ProfileResult, step: &ForwardStep, home_dep_abs: u32) -> u32 {
+    if step.entry.is_walk_only() {
+        home_dep_abs + step.entry.arrival_delta as u32
+    } else {
+        inner.window_start + step.entry.arrival_delta as u32
+    }
+}
+
+fn stop_name_for_node(data: &PreparedData, node: u32) -> String {
+    if let Some(&stop_idx) = data.node_stop_indices.get(node).first() {
+        if let Some(s) = data.stops.get(stop_idx as usize) {
+            return s.name.clone();
+        }
+    }
+    String::new()
+}
+
+fn adjust_color_for_visibility(hex: &str) -> Option<String> {
+    let hex = hex.strip_prefix('#').unwrap_or(hex);
+    if hex.len() != 6 { return None; }
+    let r = u8::from_str_radix(&hex[0..2], 16).ok()? as f32;
+    let g = u8::from_str_radix(&hex[2..4], 16).ok()? as f32;
+    let b = u8::from_str_radix(&hex[4..6], 16).ok()? as f32;
+    let lum = (r * 299.0 + g * 587.0 + b * 114.0) / 1000.0;
+    let (r, g, b) = if lum > 0.0 && lum < 100.0 {
+        let s = 100.0 / lum;
+        ((r * s).min(255.0), (g * s).min(255.0), (b * s).min(255.0))
+    } else if lum > 220.0 {
+        let s = 220.0 / lum;
+        (r * s, g * s, b * s)
+    } else {
+        (r, g, b)
+    };
+    Some(format!("#{:02x}{:02x}{:02x}", r.round() as u8, g.round() as u8, b.round() as u8))
+}
+
+fn dominant_route_color(data: &PreparedData, segments: &[PathSegment]) -> Option<String> {
+    let transit: Vec<&PathSegment> = segments.iter().filter(|s| s.kind == SegmentKind::Transit).collect();
+    if transit.is_empty() {
+        return None;
+    }
+    let dominant = transit.iter().max_by_key(|s| s.end_time.saturating_sub(s.start_time))?;
+    let route_idx = dominant.route_index? as usize;
+    let color = data.route_colors.get(route_idx)?.as_ref()?;
+    adjust_color_for_visibility(&color.to_hex())
+}
+
+/// Build `Vec<Path>` for every Pareto-optimal entry at `destination`.
+fn build_optimal_paths(
+    data: &PreparedData,
+    inner: &ProfileResult,
+    destination: u32,
+) -> Vec<Path> {
+    let f_dest = match inner.frontier.get(destination as usize) {
+        Some(f) => f,
+        None => return Vec::new(),
+    };
+    let hd_dest = match inner.home_dep_deltas.get(destination as usize) {
+        Some(v) => v,
+        None => return Vec::new(),
+    };
+
+    let mut paths: Vec<Path> = Vec::with_capacity(f_dest.len());
+    for (i, entry) in f_dest.iter().enumerate() {
+        let hd = *hd_dest.get(i).unwrap_or(&WALK_ONLY);
+        if let Some(p) = build_single_path(data, inner, destination, *entry, hd) {
+            paths.push(p);
+        }
+    }
+    paths.sort_by_key(|p| p.home_departure);
+    paths
+}
+
+fn build_single_path(
+    data: &PreparedData,
+    inner: &ProfileResult,
+    destination: u32,
+    entry_at_dest: ProfileEntry,
+    hd_at_dest: u16,
+) -> Option<Path> {
+    let steps = trace_path_forward(inner, destination, entry_at_dest);
+    if steps.is_empty() {
+        return None;
+    }
+
+    // Home departure: walk-only path anchors at window_start; transit at
+    // window_start + hd_at_dest.
+    let home_dep_abs = if entry_at_dest.is_walk_only() {
+        inner.window_start
+    } else {
+        inner.window_start + hd_at_dest as u32
+    };
+    let arrival_time = arrival_abs(inner, steps.last().unwrap(), home_dep_abs);
+    let total_time = arrival_time.saturating_sub(home_dep_abs);
+
+    // Group consecutive steps by (edge_kind, route_index) into segments.
+    let mut segments: Vec<PathSegment> = Vec::new();
+    let mut group_start_idx: usize = 0;
+    let n_steps = steps.len();
+    while group_start_idx < n_steps {
+        let s = &steps[group_start_idx];
+        // The "edge into this node" is described by the entry. Source node (step 0)
+        // has no incoming edge conceptually — represent it as a walk. Every step
+        // has an edge type from its entry.
+        let (kind, route_idx) = edge_kind_of(&s.entry);
+
+        // Extend group while next step matches.
+        let mut end_idx = group_start_idx;
+        while end_idx + 1 < n_steps {
+            let nxt = &steps[end_idx + 1];
+            let (k2, r2) = edge_kind_of(&nxt.entry);
+            if k2 == kind && r2 == route_idx {
+                end_idx += 1;
+            } else {
+                break;
+            }
+        }
+
+        // Build node_sequence for this segment.
+        // For transit: prepend the previous segment's last node (boarding_stop).
+        let mut node_sequence: Vec<u32> = Vec::new();
+        if kind == SegmentKind::Transit {
+            if let Some(prev_seg) = segments.last() {
+                if let Some(&last) = prev_seg.node_sequence.last() {
+                    node_sequence.push(last);
+                }
+            }
+        }
+        for step in &steps[group_start_idx..=end_idx] {
+            node_sequence.push(step.node);
+        }
+
+        // For walks: include the starting node from the PRIOR step when group
+        // doesn't start at step 0, so walk segments span the walked edge.
+        if kind == SegmentKind::Walk && group_start_idx > 0 {
+            // Only if the prior step is not already the start of node_sequence.
+            let prior = steps[group_start_idx - 1].node;
+            if node_sequence.first() != Some(&prior) {
+                node_sequence.insert(0, prior);
+            }
+        }
+
+        // Timing.
+        let last_step = &steps[end_idx];
+        let end_time = arrival_abs(inner, last_step, home_dep_abs);
+        let first_node_in_seg = *node_sequence.first()?;
+        let first_step_in_seg_arr = if kind == SegmentKind::Walk && group_start_idx > 0 {
+            // first_node_in_seg is the PRIOR step's node
+            arrival_abs(inner, &steps[group_start_idx - 1], home_dep_abs)
+        } else if kind == SegmentKind::Transit {
+            // first_node_in_seg is boarding_stop (from prior walk). Use that walk's arrival.
+            if let Some(prev_seg) = segments.last() {
+                prev_seg.end_time
+            } else {
+                inner.window_start + s.entry.edge_dep_delta as u32
+            }
+        } else {
+            arrival_abs(inner, s, home_dep_abs)
+        };
+
+        let (start_time, wait_time) = if kind == SegmentKind::Transit {
+            // vehicle_dep = edge_dep_delta of first entry in the group (window-relative)
+            let vehicle_dep = inner.window_start + s.entry.edge_dep_delta as u32;
+            let wait = vehicle_dep.saturating_sub(first_step_in_seg_arr);
+            (vehicle_dep, wait)
+        } else {
+            (first_step_in_seg_arr, 0)
+        };
+
+        let (start_stop_name, end_stop_name) = (
+            stop_name_for_node(data, first_node_in_seg),
+            stop_name_for_node(data, last_step.node),
+        );
+
+        let route_name = route_idx.and_then(|ri| data.route_names.get(ri as usize).cloned());
+
+        segments.push(PathSegment {
+            kind,
+            start_time,
+            end_time,
+            wait_time,
+            start_stop_name,
+            end_stop_name,
+            route_index: route_idx,
+            route_name,
+            node_sequence,
+        });
+
+        group_start_idx = end_idx + 1;
+    }
+
+    let dominant_color = dominant_route_color(data, &segments);
+
+    Some(Path {
+        home_departure: home_dep_abs,
+        arrival_time,
+        total_time,
+        segments,
+        dominant_route_color_hex: dominant_color,
+    })
+}
+
+fn edge_kind_of(entry: &ProfileEntry) -> (SegmentKind, Option<u16>) {
+    // Source node (prev=MAX) is represented as a walk "edge" (no inbound edge).
+    if entry.prev_node == u32::MAX {
+        return (SegmentKind::Walk, None);
+    }
+    if entry.is_walk_edge() {
+        (SegmentKind::Walk, None)
+    } else {
+        (SegmentKind::Transit, Some(entry.route_index))
+    }
+}
+
+// ============================================================================
+// Internal representation (implementation detail — rewritable)
+// ============================================================================
 
 /// Sentinel for `edge_dep_delta` on the origin-walk entry.
 pub const WALK_ONLY: u16 = u16::MAX;

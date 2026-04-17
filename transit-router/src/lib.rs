@@ -141,175 +141,42 @@ pub struct WasmSsspResult {
     inner: SsspResult,
 }
 
+/// Thin WASM adapter over [`profile::ProfileRouting`]. All logic lives inside
+/// the inner pure-Rust struct; this exists only to serialize outputs for JS.
 #[wasm_bindgen]
-pub struct WasmProfileResult {
-    inner: profile::ProfileResult,
+pub struct WasmProfileRouting {
+    inner: profile::ProfileRouting,
 }
 
 #[wasm_bindgen]
-impl WasmProfileResult {
+impl WasmProfileRouting {
+    /// Per-node minimum travel time (arrival − home_departure). `u32::MAX` for
+    /// nodes unreachable within the query's `max_time`. Length = `num_nodes`.
+    pub fn min_travel_times(&self) -> Vec<u32> {
+        self.inner.isochrone().min_travel_time.clone()
+    }
+
+    /// Per-node fraction of the departure window during which the node is
+    /// reachable within `max_time`. Values in `[0, 1]`. Length = `num_nodes`.
+    pub fn reachable_fractions(&self) -> Vec<f32> {
+        self.inner.isochrone().reachable_fraction.clone()
+    }
+
     pub fn window_start(&self) -> u32 {
-        self.inner.window_start
+        self.inner.isochrone().window_start
     }
+
     pub fn window_end(&self) -> u32 {
-        self.inner.window_end
-    }
-    /// Per-node frontier length (includes walk-only entry at index 0 when present).
-    pub fn frontier_len(&self, node: u32) -> u32 {
-        self.inner
-            .frontier
-            .get(node as usize)
-            .map_or(0, |v| v.len() as u32)
-    }
-    /// Returns the i-th frontier entry as [arr_delta, home_dep_delta, prev_node, route_index].
-    /// home_dep_delta comes from the parallel `home_dep_deltas` array (not the entry struct).
-    /// home_dep_delta == u16::MAX (= WALK_ONLY) signals a walk-only entry.
-    /// route_index: walk edges are returned as u32::MAX for backward compat with TS consumer.
-    pub fn frontier_entry(&self, node: u32, i: u32) -> Vec<u32> {
-        let f = match self.inner.frontier.get(node as usize) {
-            Some(v) => v,
-            None => return Vec::new(),
-        };
-        let e = match f.get(i as usize) {
-            Some(e) => e,
-            None => return Vec::new(),
-        };
-        let hd = self
-            .inner
-            .home_dep_deltas
-            .get(node as usize)
-            .and_then(|v| v.get(i as usize))
-            .copied()
-            .unwrap_or(u16::MAX);
-        let route_u32 = if e.is_walk_edge() { u32::MAX } else { e.route_index as u32 };
-        vec![e.arrival_delta as u32, hd as u32, e.prev_node, route_u32]
-    }
-    /// Smallest arrival_delta across all frontier entries at `node`, or u32::MAX if unreached.
-    /// Use this as the "best reachable time" for isochrone rendering at a single color.
-    pub fn node_best_arrival_delta(&self, node: u32) -> u32 {
-        let f = match self.inner.frontier.get(node as usize) {
-            Some(v) => v,
-            None => return u32::MAX,
-        };
-        f.iter().map(|e| e.arrival_delta as u32).min().unwrap_or(u32::MAX)
-    }
-    /// Fraction of the window [window_start, window_end] during which `node` is
-    /// reachable within `max_time` from the origin. Returns a value in [0, 1].
-    /// Walk-only reachability (walk_time ≤ max_time) gives 1.0 trivially.
-    pub fn node_reachable_fraction(&self, node: u32, max_time: u32) -> f32 {
-        let f = match self.inner.frontier.get(node as usize) {
-            Some(v) => v,
-            None => return 0.0,
-        };
-        let hd = match self.inner.home_dep_deltas.get(node as usize) {
-            Some(v) => v.as_slice(),
-            None => return 0.0,
-        };
-        profile_reachable_fraction(f, hd, self.inner.window_end - self.inner.window_start, max_time)
-    }
-    /// Total frontier entries across all nodes (diagnostic).
-    pub fn total_entries(&self) -> u32 {
-        self.inner
-            .frontier
-            .iter()
-            .map(|f| f.len() as u32)
-            .sum()
+        self.inner.isochrone().window_end
     }
 
-    /// Reconstruct the path for frontier[destination][entry_index], as a flat
-    /// u32 array `[node, edge_type, route_idx]` repeating, in boarding→alighting order.
-    /// edge_type: 0 = walk, 1 = transit.
-    pub fn reconstruct_profile_path(&self, destination: u32, entry_index: u32) -> Vec<u32> {
-        profile::reconstruct_profile_path(&self.inner, destination, entry_index as usize)
+    /// All Pareto-optimal paths to `destination`, JSON-serialized. The TS side
+    /// calls `JSON.parse` once per hover. Requires a `TransitRouter` for access
+    /// to the underlying `PreparedData` (names, colours).
+    pub fn optimal_paths(&self, router: &TransitRouter, destination: u32) -> String {
+        let paths = self.inner.optimal_paths(&router.data, destination);
+        serde_json::to_string(&paths).unwrap_or_else(|_| "[]".to_string())
     }
-
-    /// Absolute arrival time at `node` along the specific journey identified by
-    /// `home_dep_delta`, or u32::MAX if no such entry exists. Looks up hd in the
-    /// parallel `home_dep_deltas` array (not on the entry struct).
-    pub fn node_arrival_for_home_dep(&self, node: u32, home_dep_delta: u32) -> u32 {
-        let f = match self.inner.frontier.get(node as usize) {
-            Some(v) => v,
-            None => return u32::MAX,
-        };
-        let hd_vec = match self.inner.home_dep_deltas.get(node as usize) {
-            Some(v) => v,
-            None => return u32::MAX,
-        };
-        let hd = home_dep_delta as u16;
-        if hd == WALK_ONLY {
-            if let Some(e) = f.first() {
-                if e.is_walk_only() {
-                    return self.inner.window_start + e.arrival_delta as u32;
-                }
-            }
-            return u32::MAX;
-        }
-        // Transit entries sorted DESCENDING by home_dep_delta in hd_vec[walk_offset..].
-        let start = if f.first().map(|e| e.is_walk_only()).unwrap_or(false) { 1 } else { 0 };
-        let slice = &hd_vec[start..];
-        match slice.binary_search_by(|x| hd.cmp(x)) {
-            Ok(i) => self.inner.window_start + f[start + i].arrival_delta as u32,
-            Err(_) => {
-                // Walk-only nodes (source, walk intermediates) have no transit entry
-                // with matching hd. Compute the journey-specific walk arrival:
-                // leave_home + walk_time = (window_start + hd) + walk_only.arrival_delta.
-                if start == 1 {
-                    self.inner.window_start + hd as u32 + f[0].arrival_delta as u32
-                } else {
-                    u32::MAX
-                }
-            }
-        }
-    }
-}
-
-const WALK_ONLY: u16 = u16::MAX;
-
-fn profile_reachable_fraction(
-    f: &[profile::ProfileEntry],
-    hd_vec: &[u16],
-    window_len: u32,
-    max_time: u32,
-) -> f32 {
-    if f.is_empty() || window_len == 0 {
-        return 0.0;
-    }
-    let has_walk = f[0].is_walk_only();
-    if has_walk && (f[0].arrival_delta as u32) <= max_time {
-        return 1.0;
-    }
-    // Transit entries: each defines an interval of T ∈ [arr_i - max_time, hd_i]
-    // where that entry is reachable within budget. Union them.
-    let start = if has_walk { 1 } else { 0 };
-    let mut intervals: Vec<(u32, u32)> = f[start..]
-        .iter()
-        .zip(hd_vec[start..].iter())
-        .filter_map(|(e, hd_u16)| {
-            let arr = e.arrival_delta as u32;
-            let hd = *hd_u16 as u32;
-            if arr < max_time + hd {
-                let lo = arr.saturating_sub(max_time).min(window_len);
-                let hi = hd.min(window_len);
-                if hi > lo { Some((lo, hi)) } else { None }
-            } else {
-                None
-            }
-        })
-        .collect();
-    if intervals.is_empty() {
-        return 0.0;
-    }
-    intervals.sort();
-    let mut total = 0u32;
-    let mut cur_end = 0u32;
-    for (lo, hi) in intervals {
-        let lo = lo.max(cur_end);
-        if hi > lo {
-            total += hi - lo;
-            cur_end = hi;
-        }
-    }
-    total as f32 / window_len as f32
 }
 
 #[wasm_bindgen]
@@ -502,10 +369,10 @@ impl TransitRouter {
         reconstruct_path(&self.data, &sssp.inner, destination)
     }
 
-    /// Run profile routing over [window_start, window_end].
-    /// One Dijkstra-style sweep produces the exact Pareto frontier per node
-    /// of (arrival, home_departure) pairs — no sampling.
-    pub fn run_profile_for_date(
+    /// Run profile routing over `[window_start, window_end]`. Returns an opaque
+    /// handle containing the isochrone (for map rendering) and internal Pareto
+    /// frontier state (for subsequent `optimal_paths` queries).
+    pub fn compute_profile(
         &self,
         source_node: u32,
         window_start: u32,
@@ -513,52 +380,34 @@ impl TransitRouter {
         date: u32,
         transfer_slack: u32,
         max_time: u32,
-    ) -> WasmProfileResult {
-        let inner = profile::run_profile(
-            &self.data,
+    ) -> WasmProfileRouting {
+        let query = profile::ProfileQuery {
             source_node,
             window_start,
             window_end,
             date,
             transfer_slack,
             max_time,
-        );
-        WasmProfileResult { inner }
+        };
+        WasmProfileRouting {
+            inner: profile::ProfileRouting::compute(&self.data, &query),
+        }
     }
 
-    /// Vehicle departure time from the boarding stop for the transit leg that
-    /// alights at `alight_node` along the journey with `home_dep_delta`. Returns 0
-    /// for walk-only/walk-edge entries or if the journey doesn't exist.
+    /// Chain per-leg GTFS shapes for a transit segment, or build a straight-line
+    /// polyline for a walk segment, from a node sequence. Flat `[lat, lon, ...]` f32s.
     ///
-    /// Reads directly from `edge_dep_delta` on the frontier entry — same value for
-    /// scheduled and frequency boardings (no more sidecar lookups or FREQ_FLAG hack).
-    pub fn profile_boarding_time(
-        &self,
-        profile: &WasmProfileResult,
-        alight_node: u32,
-        home_dep_delta: u32,
-    ) -> u32 {
-        let f = match profile.inner.frontier.get(alight_node as usize) {
-            Some(v) => v,
-            None => return 0,
+    /// `route_index`: `None`/`u32::MAX` for walk segments (straight line between
+    /// the two nodes); `Some(r)` for transit (chain per-leg shapes with straight-line
+    /// fallback when shape data is missing).
+    pub fn segment_shape(&self, route_index: Option<u32>, nodes: Vec<u32>) -> Vec<f32> {
+        let ri = match route_index {
+            None => None,
+            Some(r) if r == u32::MAX => None,
+            Some(r) if r <= u16::MAX as u32 - 1 => Some(r as u16),
+            Some(_) => None,
         };
-        let hd_vec = match profile.inner.home_dep_deltas.get(alight_node as usize) {
-            Some(v) => v,
-            None => return 0,
-        };
-        let hd = home_dep_delta as u16;
-        // Skip walk-only entry at index 0; find transit entry whose hd matches.
-        let start = if f.first().map(|e| e.is_walk_only()).unwrap_or(false) { 1 } else { 0 };
-        let slice = &hd_vec[start..];
-        let i = match slice.binary_search_by(|x| hd.cmp(x)) {
-            Ok(i) => start + i,
-            Err(_) => return 0,
-        };
-        let e = &f[i];
-        if e.is_walk_edge() {
-            return 0;
-        }
-        profile.inner.window_start + e.edge_dep_delta as u32
+        profile::segment_shape(&self.data, ri, &nodes)
     }
 
     /// Get the shape polyline for a single leg between two consecutive stops (by node index).
