@@ -69,9 +69,6 @@ pub struct Path {
     /// `arrival_time − home_departure`.
     pub total_time: u32,
     pub segments: Vec<PathSegment>,
-    /// "#rrggbb" for the visually-dominant transit route on this path.
-    /// `None` for walk-only paths.
-    pub dominant_route_color_hex: Option<String>,
 }
 
 /// One edge of a [`Path`].
@@ -560,9 +557,6 @@ fn build_single_path(
         arrival_time,
         total_time,
         segments,
-        // Colour is a display concern — left None here and attached by
-        // `path_display::attach_dominant_colors` in the WASM adapter.
-        dominant_route_color_hex: None,
     })
 }
 

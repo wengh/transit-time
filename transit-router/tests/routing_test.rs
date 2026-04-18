@@ -1,6 +1,7 @@
 use std::io::Read as _;
 use std::path::Path;
-use transit_router::{data, reconstruct_path, router, SsspResult};
+use transit_router::profile::SegmentKind;
+use transit_router::{SsspResult, data, router, sssp_path};
 
 /// Load a city's .bin file, returning None if it doesn't exist (skip test).
 /// Decompresses gzip automatically (files are stored gzip-compressed for the browser).
@@ -59,33 +60,16 @@ fn route(
         departure_time: departure_secs,
     };
 
-    let path = reconstruct_path(data, &sssp, dst_node);
-    if path.is_empty() {
+    let Some(path) = sssp_path::optimal_path(data, &sssp, dst_node) else {
         return vec![];
-    }
-
-    // Group consecutive entries by (edge_type, route_index)
-    let mut segments = Vec::new();
-    let mut i = 0;
-    while i < path.len() {
-        let edge_type = path[i + 1];
-        let route_idx = path[i + 2];
-        // Skip ahead while same group
-        while i + 3 < path.len() && path[i + 4] == edge_type && path[i + 5] == route_idx {
-            i += 3;
-        }
-        let route_name = if edge_type == 1 && (route_idx as usize) < data.route_names.len() {
-            data.route_names[route_idx as usize].clone()
-        } else {
-            String::new()
-        };
-        segments.push(Segment {
-            route_name,
-            is_transit: edge_type == 1,
-        });
-        i += 3;
-    }
-    segments
+    };
+    path.segments
+        .iter()
+        .map(|s| Segment {
+            route_name: s.route_name.clone().unwrap_or_default(),
+            is_transit: s.kind == SegmentKind::Transit,
+        })
+        .collect()
 }
 
 fn hhmm(h: u32, m: u32) -> u32 {

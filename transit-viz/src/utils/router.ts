@@ -1,5 +1,13 @@
 import init, { initThreadPool, TransitRouter, WasmSsspResult, WasmProfileRouting, __markRayonReady } from '../../pkg/transit_router';
 
+// Rust-side display strings for a path (`PathDisplay`). Produced in Rust once
+// per hover and consumed verbatim by HoverInfo — keeps the text the single
+// source of truth so Rust tests can assert on it.
+export interface PathDisplay {
+  segmentLines: string[][];
+  totalTimeLine: string;
+}
+
 let wasmReady = false;
 
 export type Router = TransitRouter;
@@ -137,6 +145,7 @@ export interface HoverPath {
   totalTime: number | null;
   departureTime: number;
   routeColor: string;
+  display: PathDisplay | null;
 }
 
 // ============================================================================
@@ -144,7 +153,8 @@ export interface HoverPath {
 // ============================================================================
 
 // Matches the Rust `Path` / `PathSegment` structs in profile.rs (serde
-// camelCase).
+// camelCase). The wrapping `PathView` flattens `Path` fields at the top level
+// and adds `display` + `dominantRouteColorHex` as pure-function views.
 interface RustPathSegment {
   kind: 'walk' | 'transit';
   startTime: number;
@@ -156,17 +166,18 @@ interface RustPathSegment {
   routeName: string | null;
   nodeSequence: number[];
 }
-interface RustPath {
+interface RustPathView {
   homeDeparture: number;
   arrivalTime: number;
   totalTime: number;
   segments: RustPathSegment[];
+  display: PathDisplay;
   dominantRouteColorHex: string | null;
 }
 
-// Convert the Rust Path JSON into the legacy HoverPath shape used by
+// Convert the Rust PathView JSON into the legacy HoverPath shape used by
 // HoverInfo.tsx + MapView.tsx. Shapes are fetched on demand via segment_shape.
-function rustPathToHoverPath(router: Router, p: RustPath): HoverPath {
+function rustPathToHoverPath(router: Router, p: RustPathView): HoverPath {
   const segments: PathSegment[] = p.segments.map((seg) => {
     const edgeType = seg.kind === 'transit' ? 1 : 0;
     const routeIdx = seg.routeIndex ?? 0xffffffff;
@@ -197,19 +208,45 @@ function rustPathToHoverPath(router: Router, p: RustPath): HoverPath {
     totalTime: p.totalTime,
     departureTime: p.homeDeparture,
     routeColor: p.dominantRouteColorHex ?? '#888888',
+    display: p.display,
   };
 }
 
 export function getProfileHoverData(router: Router, profile: Profile, node: number): HoverPath[] {
   if ((profile as unknown as { __wbg_ptr: number }).__wbg_ptr === 0) return [];
   const json = profile.optimal_paths(router, node);
-  const paths: RustPath[] = JSON.parse(json);
-  return paths.map((p) => rustPathToHoverPath(router, p));
+  const views: RustPathView[] = JSON.parse(json);
+  return views.map((p) => rustPathToHoverPath(router, p));
 }
 
-// ============================================================================
-// Single-departure mode: unchanged stitching (SSSP → path triples → segments).
-// ============================================================================
+// Single-departure mode now goes through the same Rust `PathView` pipeline as
+// profile mode — one call into WASM returns the fully-formatted path.
+export function getSsspHoverData(router: Router, ssspList: SsspList, node: number): HoverPath[] {
+  const out: HoverPath[] = [];
+  for (const sssp of ssspList) {
+    if ((sssp as unknown as { __wbg_ptr: number }).__wbg_ptr === 0) continue;
+    try {
+      const depTime = router.sssp_departure_time(sssp);
+      const json = router.sssp_optimal_path(sssp, node);
+      const view: RustPathView | null = JSON.parse(json);
+      if (!view) {
+        out.push({
+          segments: [],
+          totalTime: null,
+          departureTime: depTime,
+          routeColor: '#888888',
+          display: null,
+        });
+        continue;
+      }
+      out.push(rustPathToHoverPath(router, view));
+    } catch (e) {
+      if (e instanceof Error && e.message && e.message.includes('null pointer')) continue;
+      throw e;
+    }
+  }
+  return out;
+}
 
 export function getAnyHoverData(
   router: Router,
@@ -220,131 +257,5 @@ export function getAnyHoverData(
   if (profile && (profile as unknown as { __wbg_ptr: number }).__wbg_ptr !== 0) {
     return getProfileHoverData(router, profile, node);
   }
-  return ssspList ? getHoverData(router, ssspList, node) : [];
-}
-
-export function getHoverData(router: Router, ssspList: SsspList, node: number): HoverPath[] {
-  const allPaths: HoverPath[] = [];
-  for (const sssp of ssspList) {
-    if ((sssp as unknown as { __wbg_ptr: number }).__wbg_ptr === 0) continue;
-    try {
-      const depTime = router.sssp_departure_time(sssp);
-      const arrival = router.node_arrival_time(sssp, node);
-      if (arrival >= 0xffffffff) {
-        allPaths.push({ segments: [], totalTime: null, departureTime: depTime, routeColor: '#888888' });
-        continue;
-      }
-      const pathArray = router.reconstruct_path(sssp, node);
-      const segments = parseSsspPathSegments(router, sssp, pathArray);
-      allPaths.push({
-        segments,
-        totalTime: arrival - depTime,
-        departureTime: depTime,
-        routeColor: getDominantSsspRouteColor(router, segments),
-      });
-    } catch (e) {
-      if (e instanceof Error && e.message && e.message.includes('null pointer')) continue;
-      throw e;
-    }
-  }
-  return allPaths;
-}
-
-function getDominantSsspRouteColor(router: Router, segments: PathSegment[]): string {
-  const transitSegs = segments.filter(s => s.edgeType === 1);
-  if (transitSegs.length === 0) return '#888888';
-  const dominant = transitSegs.reduce((a, b) => (a.duration >= b.duration ? a : b));
-  if (dominant.routeIdx >= 0xffffffff) return '#888888';
-  const hex = router.route_color(dominant.routeIdx);
-  return adjustColorVisibility(hex);
-}
-
-function adjustColorVisibility(hex: string): string {
-  if (!hex || hex.length < 7) return '#888888';
-  const r = parseInt(hex.slice(1, 3), 16);
-  const g = parseInt(hex.slice(3, 5), 16);
-  const b = parseInt(hex.slice(5, 7), 16);
-  if (Number.isNaN(r + g + b)) return hex;
-  const lum = (r * 299 + g * 587 + b * 114) / 1000;
-  if (lum > 0 && lum < 100) {
-    const s = 100 / lum;
-    return `rgb(${Math.min(255, Math.round(r * s))},${Math.min(255, Math.round(g * s))},${Math.min(255, Math.round(b * s))})`;
-  } else if (lum > 220) {
-    const s = 220 / lum;
-    return `rgb(${Math.round(r * s)},${Math.round(g * s)},${Math.round(b * s)})`;
-  }
-  return hex;
-}
-
-function parseSsspPathSegments(router: Router, sssp: WasmSsspResult, pathArray: Uint32Array): PathSegment[] {
-  const segments: PathSegment[] = [];
-  let i = 0;
-  while (i < pathArray.length) {
-    const startIdx = i;
-    const edgeType = pathArray[i + 1];
-    const routeIdx = pathArray[i + 2];
-    while (i + 3 < pathArray.length && pathArray[i + 3 + 1] === edgeType && pathArray[i + 3 + 2] === routeIdx) {
-      i += 3;
-    }
-    const endIdx = i;
-    const startNode = pathArray[startIdx];
-    const endNode = pathArray[endIdx];
-    const startTime = router.node_arrival_time(sssp, startNode);
-    const endTime = router.node_arrival_time(sssp, endNode);
-
-    let boardStopName = '';
-    let boardNode = startNode;
-    if (edgeType === 1 && segments.length > 0) {
-      const prev = segments[segments.length - 1];
-      boardStopName = prev.endStopName;
-      boardNode = prev.endNodeIdx;
-    }
-
-    // Build node sequence for shape retrieval.
-    const segNodes: number[] = [];
-    if (edgeType === 1 && boardNode !== startNode) segNodes.push(boardNode);
-    for (let j = startIdx; j <= endIdx; j += 3) segNodes.push(pathArray[j]);
-
-    const routeIndexForShape = edgeType === 1 && routeIdx < 0xffffffff ? routeIdx : undefined;
-    const flat = router.segment_shape(routeIndexForShape, new Uint32Array(segNodes));
-    const coords: Array<[number, number]> = [];
-    for (let j = 0; j + 1 < flat.length; j += 2) {
-      coords.push([flat[j], flat[j + 1]]);
-    }
-
-    let waitTime = 0;
-    if (edgeType === 1) {
-      const boardingTime = router.node_boarding_time(sssp, startNode);
-      if (boardingTime > 0 && segments.length > 0) {
-        const prev = segments[segments.length - 1];
-        const arrivalAtBoardStop = router.node_arrival_time(sssp, prev.endNodeIdx);
-        waitTime = boardingTime - arrivalAtBoardStop;
-      } else if (boardingTime > 0) {
-        const arrivalAtStop = router.node_arrival_time(sssp, boardNode);
-        waitTime = boardingTime - arrivalAtStop;
-      }
-    }
-
-    let duration;
-    if (edgeType === 1 && waitTime >= 0) {
-      const boardingTime = router.node_boarding_time(sssp, startNode);
-      duration = boardingTime > 0 ? endTime - boardingTime : endTime - startTime;
-    } else {
-      duration = endTime - startTime;
-    }
-
-    segments.push({
-      edgeType,
-      routeIdx,
-      routeName: edgeType === 1 && routeIdx < 0xffffffff ? router.route_name(routeIdx) : '',
-      startStopName: edgeType === 1 ? boardStopName : router.node_stop_name(startNode),
-      endStopName: router.node_stop_name(endNode),
-      endNodeIdx: endNode,
-      duration,
-      waitTime,
-      coords,
-    });
-    i += 3;
-  }
-  return segments;
+  return ssspList ? getSsspHoverData(router, ssspList, node) : [];
 }

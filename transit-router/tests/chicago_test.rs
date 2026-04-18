@@ -122,105 +122,18 @@ fn test_chicago_route() {
         boarding_events,
         departure_time,
     };
-    let path_flat = transit_router::reconstruct_path(&prepared, &sssp, dest_node);
-
-    // Group consecutive entries by (edge_type, route_idx)
-    let mut segments: Vec<PathSegment> = Vec::new();
-    let mut i = 0;
-    while i < path_flat.len() {
-        let node = path_flat[i];
-        let edge_type = path_flat[i + 1];
-        let route_idx = path_flat[i + 2];
-        let arrival = departure_time + sssp.results[node as usize].arrival_delta as u32;
-        let stop_name = if prepared.node_is_stop[node as usize] {
-            prepared
-                .node_stop_indices
-                .get(node)
-                .first()
-                .map(|&si| prepared.stops[si as usize].name.clone())
-                .unwrap_or_default()
-        } else {
-            String::new()
-        };
-
-        let should_start_new = match segments.last() {
-            None => true,
-            Some(last) => last.edge_type != edge_type || last.route_idx != route_idx,
-        };
-
-        if should_start_new {
-            segments.push(PathSegment {
-                edge_type,
-                route_idx,
-                end_node: node,
-                start_arrival: arrival,
-                end_arrival: arrival,
-                start_stop_name: stop_name.clone(),
-                end_stop_name: stop_name,
-                node_count: 1,
-            });
-        } else {
-            let last = segments.last_mut().unwrap();
-            last.end_node = node;
-            last.end_arrival = arrival;
-            last.end_stop_name = stop_name;
-            last.node_count += 1;
-        }
-        i += 3;
-    }
-
-    for (i, seg) in segments.iter().enumerate() {
-        let seg_duration = seg.end_arrival - seg.start_arrival;
-        let seg_min = seg_duration / 60;
-        let seg_sec = seg_duration % 60;
-        let (sh, sm) = (seg.start_arrival / 3600, (seg.start_arrival % 3600) / 60);
-        let (eh, em) = (seg.end_arrival / 3600, (seg.end_arrival % 3600) / 60);
-
-        if seg.edge_type == 0 {
-            eprintln!(
-                "  {}. WALK {} min {} sec ({:02}:{:02} -> {:02}:{:02}), {} nodes",
-                i + 1,
-                seg_min,
-                seg_sec,
-                sh,
-                sm,
-                eh,
-                em,
-                seg.node_count
-            );
-            if !seg.end_stop_name.is_empty() {
-                eprintln!("     to: {}", seg.end_stop_name);
-            }
-        } else {
-            let route_name = if (seg.route_idx as usize) < prepared.route_names.len() {
-                &prepared.route_names[seg.route_idx as usize]
-            } else {
-                "?"
-            };
-            eprintln!(
-                "  {}. TRANSIT route '{}' ({} min {} sec, {:02}:{:02} -> {:02}:{:02})",
-                i + 1,
-                route_name,
-                seg_min,
-                seg_sec,
-                sh,
-                sm,
-                eh,
-                em
-            );
-            // Boarding stop is last node of previous segment
-            let board_name = if i > 0 {
-                &segments[i - 1].end_stop_name
-            } else {
-                &seg.start_stop_name
-            };
-            if !board_name.is_empty() {
-                eprintln!("     board at: {}", board_name);
-            }
-            if !seg.end_stop_name.is_empty() {
-                eprintln!("     alight at: {}", seg.end_stop_name);
-            }
-        }
+    let path =
+        transit_router::sssp_path::optimal_path(&prepared, &sssp, dest_node).expect("path");
+    for (i, seg) in path.segments.iter().enumerate() {
+        let dur = seg.end_time.saturating_sub(seg.start_time);
+        eprintln!(
+            "  {}. {:?} {} sec: {} → {}",
+            i + 1,
+            seg.kind,
+            dur,
+            seg.start_stop_name,
+            seg.end_stop_name
+        );
     }
 
     eprintln!("\n=== COMPARISON ===");
@@ -290,48 +203,25 @@ fn test_green_line_no_pink_transfer() {
         boarding_events,
         departure_time,
     };
-    let path_flat = transit_router::reconstruct_path(&prepared, &sssp, dest);
-
-    eprintln!("\nPath reconstruction:");
-    let mut i = 0;
     let mut transit_routes: Vec<String> = Vec::new();
-    while i < path_flat.len() {
-        let node = path_flat[i] as usize;
-        let edge_type = path_flat[i + 1];
-        let route_idx = path_flat[i + 2];
-        let arrival = departure_time + sssp.results[node].arrival_delta as u32;
-
-        let stop_name = if prepared.node_is_stop[node] {
-            prepared
-                .node_stop_indices
-                .get(node as u32)
-                .first()
-                .map(|&si| prepared.stops[si as usize].name.clone())
-                .unwrap_or_default()
-        } else {
-            String::new()
-        };
-
-        let route_name = if edge_type == 1 && (route_idx as usize) < prepared.route_names.len() {
-            let name = prepared.route_names[route_idx as usize].clone();
-            if !transit_routes.contains(&name) {
-                transit_routes.push(name.clone());
+    if let Some(path) = transit_router::sssp_path::optimal_path(&prepared, &sssp, dest) {
+        eprintln!("\nPath reconstruction:");
+        for seg in &path.segments {
+            let kind = match seg.kind {
+                transit_router::profile::SegmentKind::Walk => "walk",
+                transit_router::profile::SegmentKind::Transit => "transit",
+            };
+            let route_name = seg.route_name.clone().unwrap_or_else(|| "walk".into());
+            if seg.kind == transit_router::profile::SegmentKind::Transit
+                && !transit_routes.contains(&route_name)
+            {
+                transit_routes.push(route_name.clone());
             }
-            name
-        } else {
-            "walk".to_string()
-        };
-
-        eprintln!(
-            "  node={} arrival={} type={} route='{}' stop='{}'",
-            node,
-            arrival,
-            if edge_type == 0 { "walk" } else { "transit" },
-            route_name,
-            stop_name
-        );
-
-        i += 3;
+            eprintln!(
+                "  {} route='{}' {} → {}",
+                kind, route_name, seg.start_stop_name, seg.end_stop_name
+            );
+        }
     }
 
     eprintln!("\nTransit routes used: {:?}", transit_routes);

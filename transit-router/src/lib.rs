@@ -2,6 +2,7 @@ pub mod data;
 pub mod path_display;
 pub mod profile;
 pub mod router;
+pub mod sssp_path;
 
 use data::PreparedData;
 use wasm_bindgen::prelude::*;
@@ -51,90 +52,6 @@ pub struct SsspResult {
     pub departure_time: u32,
 }
 
-/// Reconstruct path from source to destination.
-/// Returns flat array: [node_index, edge_type, route_index, ...]
-/// For transit segments, emits all intermediate stops by following the event chain.
-pub fn reconstruct_path(data: &PreparedData, sssp: &SsspResult, destination: u32) -> Vec<u32> {
-    // Follow prev_node chain to get the coarse path (boarding→alighting per transit leg)
-    let mut coarse = Vec::new();
-    let mut current = destination;
-    loop {
-        let r = &sssp.results[current as usize];
-        if r.arrival_delta == u16::MAX {
-            return Vec::new();
-        }
-        coarse.push(current);
-        if r.prev_node == u32::MAX || r.prev_node == current {
-            break;
-        }
-        current = r.prev_node;
-    }
-    coarse.reverse();
-
-    let mut result = Vec::new();
-    for (ci, &node) in coarse.iter().enumerate() {
-        let r = &sssp.results[node as usize];
-        let is_transit = r.route_index != u32::MAX;
-
-        if is_transit {
-            // Expand intermediate stops from boarding event chain.
-            if let Some(be) = sssp.boarding_events.get(&node) {
-                let pat = &data.patterns[be.pattern_index];
-                if be.event_index & FREQ_BOARDING_FLAG != 0 {
-                    // Frequency-based route: follow the FreqData chain from the boarding
-                    // entry until we reach the alighting node, emitting intermediate stops.
-                    let fi = be.event_index & !FREQ_BOARDING_FLAG;
-                    let mut next_fi = fi;
-                    loop {
-                        let leg = &pat.frequency_routes[next_fi as usize];
-                        let stop_node = data.stop_node_map[leg.next_stop_index as usize];
-                        if stop_node == node {
-                            break; // reached alighting stop
-                        }
-                        if stop_node != u32::MAX {
-                            result.extend_from_slice(&[stop_node, 1, r.route_index]);
-                        }
-                        if leg.next_freq_index == u32::MAX {
-                            break;
-                        }
-                        next_fi = leg.next_freq_index;
-                    }
-                } else {
-                    // Scheduled route: follow the EventData chain from after the boarding
-                    // event until we reach the alighting node.
-                    let boarding_event =
-                        &pat.stop_index.events_by_stop.data[be.event_index as usize];
-                    let mut idx = boarding_event.next_event_index;
-                    while idx != u32::MAX {
-                        let e = &pat.stop_index.events_by_stop.data[idx as usize];
-                        let stop_node = data.stop_node_map[e.stop_index as usize];
-                        if stop_node == node {
-                            break; // reached alighting stop
-                        }
-                        if stop_node != u32::MAX && e.travel_time > 0 {
-                            result.extend_from_slice(&[stop_node, 1, r.route_index]);
-                        }
-                        idx = e.next_event_index;
-                    }
-                }
-            }
-
-            // Emit the alighting stop
-            result.extend_from_slice(&[node, 1, r.route_index]);
-
-            // At transit→walk transition, re-emit as walk for dotted line
-            let next_is_walk = ci + 1 < coarse.len()
-                && sssp.results[coarse[ci + 1] as usize].route_index == u32::MAX;
-            if next_is_walk {
-                result.extend_from_slice(&[node, 0, u32::MAX]);
-            }
-        } else {
-            result.extend_from_slice(&[node, 0, u32::MAX]);
-        }
-    }
-    result
-}
-
 // === WASM wrappers ===
 
 #[wasm_bindgen]
@@ -175,12 +92,15 @@ impl WasmProfileRouting {
     /// calls `JSON.parse` once per hover. Requires a `TransitRouter` for access
     /// to the underlying `PreparedData` (names, colours).
     ///
-    /// The routing core produces colour-less `Path`s. `path_display` attaches
-    /// the dominant route colour here, at the display-layer boundary.
+    /// Emits `Vec<PathView>` — each element flattens a `Path` and adds the
+    /// display strings and dominant route colour computed from that path.
     pub fn optimal_paths(&self, router: &TransitRouter, destination: u32) -> String {
-        let mut paths = self.inner.optimal_paths(&router.data, destination);
-        path_display::attach_dominant_colors(&router.data, &mut paths);
-        serde_json::to_string(&paths).unwrap_or_else(|_| "[]".to_string())
+        let paths = self.inner.optimal_paths(&router.data, destination);
+        let views: Vec<path_display::PathView> = paths
+            .iter()
+            .map(|p| path_display::PathView::new(&router.data, p))
+            .collect();
+        serde_json::to_string(&views).unwrap_or_else(|_| "[]".to_string())
     }
 }
 
@@ -370,8 +290,20 @@ impl TransitRouter {
         sssp.inner.departure_time
     }
 
-    pub fn reconstruct_path(&self, sssp: &WasmSsspResult, destination: u32) -> Vec<u32> {
-        reconstruct_path(&self.data, &sssp.inner, destination)
+    /// Reconstruct the single optimal journey to `destination` as a
+    /// JSON-serialized `Option<PathView>` (null when unreachable).
+    ///
+    /// Mirror of `WasmProfileRouting::optimal_paths`' element shape so the
+    /// frontend can consume both modes through the same path of code.
+    pub fn sssp_optimal_path(&self, sssp: &WasmSsspResult, destination: u32) -> String {
+        let path = sssp_path::optimal_path(&self.data, &sssp.inner, destination);
+        match path {
+            Some(p) => {
+                let view = path_display::PathView::new(&self.data, &p);
+                serde_json::to_string(&view).unwrap_or_else(|_| "null".to_string())
+            }
+            None => "null".to_string(),
+        }
     }
 
     /// Run profile routing over `[window_start, window_end]`. Returns an opaque
