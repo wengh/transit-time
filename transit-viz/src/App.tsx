@@ -9,7 +9,7 @@ import HoverInfo from './components/HoverInfo';
 import { loadCity } from './utils/cityLoader';
 import { getCityFromUrl } from './cities';
 import { runQuery, getAnyHoverData } from './utils/router';
-import { getTravelTimeSummary, getMedianPath, formatSegments, getSortedTravelTimes } from './utils/hoverInfo';
+import { getTravelTimeSummary, getMedianPath, flattenDisplayLines, getSortedTravelTimes } from './utils/hoverInfo';
 import type { RunQueryParams } from './utils/router';
 import { getHashParams, setHashParams } from './utils/urlHash';
 import './styles.css';
@@ -178,7 +178,7 @@ function AppInner() {
         const medianPath = getMedianPath(allPaths);
         if (medianPath && medianPath.segments.length > 0) {
           lines.push('Route:');
-          for (const line of formatSegments(medianPath.segments)) {
+          for (const line of flattenDisplayLines(medianPath)) {
             lines.push(`  ${line}`);
           }
         }

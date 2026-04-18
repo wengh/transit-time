@@ -1,4 +1,4 @@
-import type { HoverPath, PathSegment } from './router';
+import type { HoverPath } from './router';
 
 export function getSortedTravelTimes(allPaths: HoverPath[]): number[] {
   return allPaths
@@ -35,19 +35,12 @@ export function getMedianPath(allPaths: HoverPath[]): HoverPath | null {
   return reachable[Math.floor(reachable.length / 2)] || null;
 }
 
-export function formatSegments(segments: PathSegment[]): string[] {
-  const lines: string[] = [];
-  for (const seg of segments) {
-    if (seg.edgeType === 0) {
-      lines.push(`Walk ${Math.round(seg.duration / 60)} min`);
-    } else {
-      const fromTo =
-        seg.startStopName && seg.endStopName ? ` · ${seg.startStopName} → ${seg.endStopName}` : '';
-      lines.push(`${seg.routeName || 'Transit'}${fromTo} ${Math.round(seg.duration / 60)} min`);
-      if (seg.waitTime > 0) {
-        lines.push(`  Wait: ${(seg.waitTime / 60).toFixed(1)} min`);
-      }
-    }
-  }
-  return lines;
+// Per-segment text lines now come from the Rust-side `PathDisplay`
+// (see `path.display.segmentLines`) — one source of truth for what the user
+// reads. Formerly `formatSegments` duplicated this in TypeScript.
+export function flattenDisplayLines(path: HoverPath): string[] {
+  if (!path.display) return [];
+  const out: string[] = [];
+  for (const lines of path.display.segmentLines) out.push(...lines);
+  return out;
 }

@@ -31,7 +31,7 @@ function computeChartInfo(
 ): ChartInfo {
   let walkTime: number | null = null;
   let walkPathIdx: number | null = null;
-  const tipsByKey = new Map<number, ChartTip & { depTime: number }>();
+  const rawTips: Array<ChartTip> = [];
 
   for (let i = 0; i < allPaths.length; i++) {
     const p = allPaths[i];
@@ -54,18 +54,14 @@ function computeChartInfo(
     const tipY = p.totalTime - w;
     if (tipY < 0) continue;
 
-    // Deduplicate by arrival time: same arrival = same destination reached at the
-    // same moment, so keep only the latest departure (least wasted waiting time).
-    const key = Math.round(p.departureTime + p.totalTime!);
-    const existing = tipsByKey.get(key);
-    if (!existing || p.departureTime > existing.depTime) {
-      tipsByKey.set(key, { tipX, tipY, pathIdx: i, color: p.routeColor, depTime: p.departureTime });
-    }
+    // No arrival-time dedup: Pareto dominance in the Rust profile router
+    // already guarantees unique (arrival, home_departure) pairs. If two
+    // entries collide here, that's a bug in the Rust filter — surface it
+    // rather than masking it in the chart.
+    rawTips.push({ tipX, tipY, pathIdx: i, color: p.routeColor });
   }
 
-  const tips: ChartTip[] = [...tipsByKey.values()]
-    .sort((a, b) => a.tipX - b.tipX)
-    .map(({ tipX, tipY, pathIdx, color }) => ({ tipX, tipY, pathIdx, color }));
+  const tips: ChartTip[] = rawTips.sort((a, b) => a.tipX - b.tipX);
 
   const yMax = maxTimeSec;
   return { tips, walkTime, walkPathIdx, windowStart, windowEnd, yMax };
@@ -483,42 +479,25 @@ export default function HoverInfo(): React.ReactNode {
           </button>
         </div>
 
-        {displayPath && displayPath.segments.length > 0 && (() => {
-          return (
-            <div className="border-t border-zinc-800 dark:border-zinc-800
-              [@media(prefers-color-scheme:light)]:border-zinc-200
-              pt-1.5 mt-0.5">
-              {displayPath.segments.map((seg, si) => (
-                <div key={si}>
-                  {seg.edgeType === 0 ? (
-                    <div className="text-[12px] text-zinc-500 dark:text-zinc-500
-                      [@media(prefers-color-scheme:light)]:text-zinc-500 py-0.5">
-                      Walk {(seg.duration / 60).toFixed(1)} min
-                    </div>
-                  ) : (
-                    <>
-                      {seg.waitTime > 0 && (
-                        <div className="text-[11px] text-zinc-600 dark:text-zinc-600
-                          [@media(prefers-color-scheme:light)]:text-zinc-500
-                          py-px italic">
-                          Wait {(seg.waitTime / 60).toFixed(1)} min
-                        </div>
-                      )}
-                      <div className="text-[12px] py-0.5 text-zinc-100 dark:text-zinc-100
-                        [@media(prefers-color-scheme:light)]:text-zinc-900">
-                        <b>{seg.routeName || 'Transit'}</b>
-                        {seg.startStopName && seg.endStopName
-                          ? ` · ${seg.startStopName} → ${seg.endStopName}`
-                          : ''}
-                        {' '}{(seg.duration / 60).toFixed(1)} min
-                      </div>
-                    </>
-                  )}
-                </div>
-              ))}
-            </div>
-          );
-        })()}
+        {displayPath && displayPath.display && displayPath.display.segmentLines.length > 0 && (
+          <div className="border-t border-zinc-800 dark:border-zinc-800
+            [@media(prefers-color-scheme:light)]:border-zinc-200
+            pt-1.5 mt-0.5">
+            {displayPath.display.segmentLines.map((lines, si) => (
+              <div key={si}>
+                {lines.map((line, li) => (
+                  <div
+                    key={li}
+                    className="text-[12px] py-0.5 text-zinc-100 dark:text-zinc-100
+                      [@media(prefers-color-scheme:light)]:text-zinc-900 whitespace-pre"
+                  >
+                    {line}
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       {isSampled && (
