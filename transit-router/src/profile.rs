@@ -179,6 +179,9 @@ struct QueueEntry {
 
 impl ProfileRouter for ProfileRouting {
     fn compute(data: &PreparedData, query: &ProfileQuery) -> Self {
+        assert!(query.window_start < query.window_end);
+        assert!(query.window_end - query.window_start + query.max_time < u32::MAX);
+
         let n = data.num_nodes;
         let active_patterns = crate::router::patterns_for_date(data, query.date);
 
