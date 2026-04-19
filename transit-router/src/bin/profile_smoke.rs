@@ -1,4 +1,4 @@
-/// Smoke test for profile routing.
+/// Smoke harness for profile routing. Prints isochrone stats.
 /// Usage:
 ///   cargo run --release --bin profile_smoke -- <city.bin> <src_lat> <src_lon> [YYYYMMDD] [window_start_hhmm] [window_minutes] [max_min] [slack_s]
 use std::path::PathBuf;
@@ -56,80 +56,49 @@ fn main() {
         slack,
     );
 
-    let t0 = std::time::Instant::now();
-    let result = profile::run_profile(
-        &prepared,
-        src,
+    let query = profile::ProfileQuery {
+        source_node: src,
         window_start,
         window_end,
         date,
-        slack,
+        transfer_slack: slack,
         max_time,
-    );
+    };
+
+    let t0 = std::time::Instant::now();
+    let routing = profile::ProfileRouting::compute(&prepared, &query);
     let elapsed = t0.elapsed();
 
-    // Stats.
-    let mut reachable_walk = 0usize;
-    let mut reachable_transit = 0usize;
-    let mut total_entries = 0usize;
-    let mut max_frontier = 0usize;
-    let mut histogram = [0usize; 10]; // 0, 1..2, 3..5, 6..10, 11..20, 21..50, 51..100, 101..200, 201..500, 500+
-    for (v, f) in result.frontier.iter().enumerate() {
-        if f.is_empty() {
-            continue;
-        }
-        let has_walk = f[0].is_walk_only();
-        let n_transit = f.len() - if has_walk { 1 } else { 0 };
-        if has_walk {
-            reachable_walk += 1;
-        }
-        if n_transit > 0 {
-            reachable_transit += 1;
-        }
-        total_entries += f.len();
-        max_frontier = max_frontier.max(f.len());
-        let bucket = match f.len() {
-            0 => 0,
-            1..=2 => 1,
-            3..=5 => 2,
-            6..=10 => 3,
-            11..=20 => 4,
-            21..=50 => 5,
-            51..=100 => 6,
-            101..=200 => 7,
-            201..=500 => 8,
-            _ => 9,
-        };
-        histogram[bucket] += 1;
-        if v == src as usize {
-            println!("Source frontier len: {}", f.len());
-        }
-    }
+    let iso = routing.isochrone();
+    let reachable: Vec<u32> = iso
+        .min_travel_time
+        .iter()
+        .filter(|&&t| t != u32::MAX)
+        .copied()
+        .collect();
 
-    let reached_any = result.frontier.iter().filter(|f| !f.is_empty()).count();
     println!();
     println!("Profile routing took {:?}", elapsed);
-    println!("Nodes reached (any): {reached_any}");
-    println!("  walk-only:    {reachable_walk}");
-    println!("  transit-any:  {reachable_transit}");
-    println!("Total frontier entries: {total_entries}");
-    if reached_any > 0 {
-        println!(
-            "Mean frontier length: {:.2}",
-            total_entries as f64 / reached_any as f64
-        );
-    }
-    println!("Max frontier length: {max_frontier}");
-    println!("Frontier nodes: {}", result.frontier.iter().filter(|f| !f.is_empty()).count());
+    println!("Nodes reached: {} / {}", reachable.len(), iso.min_travel_time.len());
 
-    let labels = [
-        "0 (unreached)", "1-2", "3-5", "6-10", "11-20", "21-50", "51-100", "101-200", "201-500",
-        "500+",
-    ];
-    println!("Frontier-length histogram:");
-    for (i, c) in histogram.iter().enumerate() {
-        if *c > 0 {
-            println!("  {:>10}: {}", labels[i], c);
-        }
+    if !reachable.is_empty() {
+        let min_t = reachable.iter().copied().min().unwrap_or(0);
+        let max_t = reachable.iter().copied().max().unwrap_or(0);
+        let avg_t = reachable.iter().map(|&t| t as u64).sum::<u64>() / reachable.len() as u64;
+        println!(
+            "Min travel time: {} min, avg: {} min, max: {} min",
+            min_t / 60,
+            avg_t / 60,
+            max_t / 60
+        );
+        let always_reachable = iso.reachable_fraction.iter().filter(|&&f| f >= 1.0).count();
+        let sometimes_reachable = iso
+            .reachable_fraction
+            .iter()
+            .filter(|&&f| f > 0.0 && f < 1.0)
+            .count();
+        println!(
+            "Always reachable (fraction=1): {always_reachable}, sometimes: {sometimes_reachable}"
+        );
     }
 }
