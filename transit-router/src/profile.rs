@@ -3,25 +3,18 @@
 //!
 //! # Public interface
 //!
-//! Two functions cross the boundary with the rest of the codebase:
-//!
-//! 1. [`ProfileRouting::compute`] — run routing from a source, get an opaque
-//!    routing state containing the per-node [`Isochrone`] for map rendering.
-//! 2. [`ProfileRouting::optimal_paths`] — given the state + a destination,
-//!    get a `Vec<Path>` of all Pareto-optimal journeys with fully-resolved
-//!    segment metadata (stop names, route names, times, waits, node sequences).
-//!
-//! Everything below those signatures is implementation detail and may be
-//! rewritten freely.
+//! [`ProfileRouter`] is the contract. The concrete type [`ProfileRouting`]
+//! implements it. Callers hold `impl ProfileRouter` or the concrete type;
+//! internal representation is free to change.
 
 use crate::data::PreparedData;
 use serde::Serialize;
 
 // ============================================================================
-// Public interface: input query, isochrone, paths
+// Input / output types
 // ============================================================================
 
-/// Input to [`ProfileRouting::compute`].
+/// Input to [`ProfileRouter::compute`].
 #[derive(Clone, Copy, Debug)]
 pub struct ProfileQuery {
     pub source_node: u32,
@@ -98,34 +91,51 @@ pub enum SegmentKind {
     Transit,
 }
 
-/// Opaque routing state. Holds the Pareto frontier plus cached isochrone.
-/// Internal representation is not part of the public interface.
+// ============================================================================
+// Trait
+// ============================================================================
+
+/// Contract for profile routing. Implement this to replace the routing engine
+/// without touching callers in `lib.rs` or tests.
+pub trait ProfileRouter: Sized {
+    /// Run profile routing from `query.source_node` over the departure window.
+    fn compute(data: &PreparedData, query: &ProfileQuery) -> Self;
+
+    /// Per-node isochrone for map rendering.
+    fn isochrone(&self) -> &Isochrone;
+
+    /// All Pareto-optimal paths to `destination`, sorted ascending by
+    /// `home_departure`. Stop and route names resolved from `data`.
+    fn optimal_paths(&self, data: &PreparedData, destination: u32) -> Vec<Path>;
+}
+
+// ============================================================================
+// Stub implementation (replace with real algorithm)
+// ============================================================================
+
+/// Opaque routing state. Internal representation is not part of the public
+/// interface — swap freely as long as [`ProfileRouter`] is satisfied.
 pub struct ProfileRouting {
     isochrone: Isochrone,
 }
 
-impl ProfileRouting {
-    /// Run profile routing from the query's source over the window.
-    /// Returns the state + per-node isochrone.
-    pub fn compute(_data: &PreparedData, query: &ProfileQuery) -> Self {
-        let n = _data.num_nodes;
+impl ProfileRouter for ProfileRouting {
+    fn compute(data: &PreparedData, query: &ProfileQuery) -> Self {
         ProfileRouting {
             isochrone: Isochrone {
-                min_travel_time: vec![u32::MAX; n],
-                reachable_fraction: vec![0.0; n],
+                min_travel_time: vec![u32::MAX; data.num_nodes],
+                reachable_fraction: vec![0.0; data.num_nodes],
                 window_start: query.window_start,
                 window_end: query.window_end,
             },
         }
     }
 
-    pub fn isochrone(&self) -> &Isochrone {
+    fn isochrone(&self) -> &Isochrone {
         &self.isochrone
     }
 
-    /// Enumerate all Pareto-optimal paths to `destination`, sorted ascending
-    /// by `home_departure`. Route names and stop names are resolved from `data`.
-    pub fn optimal_paths(&self, _data: &PreparedData, _destination: u32) -> Vec<Path> {
+    fn optimal_paths(&self, _data: &PreparedData, _destination: u32) -> Vec<Path> {
         Vec::new()
     }
 }

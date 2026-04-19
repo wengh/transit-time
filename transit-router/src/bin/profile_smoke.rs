@@ -2,6 +2,7 @@
 /// Usage:
 ///   cargo run --release --bin profile_smoke -- <city.bin> <src_lat> <src_lon> [YYYYMMDD] [window_start_hhmm] [window_minutes] [max_min] [slack_s]
 use std::path::PathBuf;
+use transit_router::profile::ProfileRouter as _;
 use transit_router::{data, profile, router};
 
 fn main() {
@@ -79,7 +80,11 @@ fn main() {
 
     println!();
     println!("Profile routing took {:?}", elapsed);
-    println!("Nodes reached: {} / {}", reachable.len(), iso.min_travel_time.len());
+    println!(
+        "Nodes reached: {} / {}",
+        reachable.len(),
+        iso.min_travel_time.len()
+    );
 
     if !reachable.is_empty() {
         let min_t = reachable.iter().copied().min().unwrap_or(0);
