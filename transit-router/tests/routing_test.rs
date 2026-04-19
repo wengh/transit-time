@@ -1,7 +1,7 @@
 use std::io::Read as _;
 use std::path::Path;
 use transit_router::profile::SegmentKind;
-use transit_router::{SsspResult, data, router, sssp_path};
+use transit_router::{data, router, sssp_path, SsspResult};
 
 /// Load a city's .bin file, returning None if it doesn't exist (skip test).
 /// Decompresses gzip automatically (files are stored gzip-compressed for the browser).
@@ -302,7 +302,7 @@ fn montreal_debug_patterns() {
                 let stop_events = &p.stop_index.events_by_stop[si as u32];
                 if !stop_events.is_empty() {
                     // Find route names for events at this stop
-                    for e in stop_events.iter().take(1) {
+                    for _ in stop_events.iter().take(1) {
                         if let Some(&ri) = p
                             .sentinel_routes
                             .get(&((p.stop_index.events_by_stop.offsets[si] as usize + 0) as u32))
