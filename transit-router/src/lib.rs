@@ -344,7 +344,7 @@ impl TransitRouter {
             Some(r) if r <= u16::MAX as u32 - 1 => Some(r as u16),
             Some(_) => None,
         };
-        profile::segment_shape(&self.data, ri, &nodes)
+        path_display::segment_shape(&self.data, ri, &nodes)
     }
 
     /// Get the shape polyline for a single leg between two consecutive stops (by node index).

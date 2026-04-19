@@ -9,8 +9,7 @@
 //!    routing state containing the per-node [`Isochrone`] for map rendering.
 //! 2. [`ProfileRouting::optimal_paths`] — given the state + a destination,
 //!    get a `Vec<Path>` of all Pareto-optimal journeys with fully-resolved
-//!    segment metadata (stop names, route names, times, waits, node
-//!    sequences). No shapes — those come from [`crate::TransitRouter::segment_shape`].
+//!    segment metadata (stop names, route names, times, waits, node sequences).
 //!
 //! Everything below those signatures is implementation detail and may be
 //! rewritten freely.
@@ -133,111 +132,11 @@ impl ProfileRouting {
         &self.isochrone
     }
 
-    /// Function 2: enumerate all Pareto-optimal paths to `destination`, sorted
-    /// ascending by `home_departure` (earliest-home-dep first). Route names,
-    /// stop names, and dominant colors are looked up directly from `data` —
-    /// no WASM router needed.
+    /// Enumerate all Pareto-optimal paths to `destination`, sorted ascending
+    /// by `home_departure`. Route names and stop names are resolved from `data`.
     pub fn optimal_paths(&self, data: &PreparedData, destination: u32) -> Vec<Path> {
         build_optimal_paths(data, &self.inner, destination)
     }
-}
-
-// ============================================================================
-// Shape helper — pure function, testable without WASM
-// ============================================================================
-
-/// Chain per-leg GTFS shapes or fall back to straight lines from node coordinates.
-///
-/// - Walk segment: `route_index = None`, `nodes = [start, end]` (len 2).
-///   Returns `[lat(start), lon(start), lat(end), lon(end)]`.
-/// - Transit segment: `route_index = Some(r)`, `nodes = [board, stop_1, …, alight]`
-///   (len ≥ 2). For each consecutive pair, looks up the GTFS leg shape; falls
-///   back to a straight line when a per-leg shape is missing. Chains results,
-///   dropping the duplicate endpoint between legs.
-///
-/// Returns flat `[lat0, lon0, lat1, lon1, …]`.
-pub fn segment_shape(data: &PreparedData, route_index: Option<u16>, nodes: &[u32]) -> Vec<f32> {
-    if nodes.len() < 2 {
-        return Vec::new();
-    }
-    match route_index {
-        None => {
-            // Walk: straight line from node coordinates.
-            let mut out = Vec::with_capacity(nodes.len() * 2);
-            for &n in nodes {
-                let n = n as usize;
-                out.push(data.nodes[n].lat as f32);
-                out.push(data.nodes[n].lon as f32);
-            }
-            out
-        }
-        Some(route_idx) => {
-            // Transit: chain GTFS leg shapes per consecutive stop pair.
-            let mut out: Vec<f32> = Vec::new();
-            for pair in nodes.windows(2) {
-                let leg = leg_shape_between(data, route_idx as u32, pair[0], pair[1]);
-                let skip = if out.is_empty() { 0 } else { 2 };
-                if leg.len() >= 4 {
-                    let src = &leg[skip..];
-                    out.extend(src.iter().map(|&f| f as f32));
-                } else {
-                    // Fallback: straight line between the two stop nodes.
-                    if out.is_empty() {
-                        out.push(data.nodes[pair[0] as usize].lat as f32);
-                        out.push(data.nodes[pair[0] as usize].lon as f32);
-                    }
-                    out.push(data.nodes[pair[1] as usize].lat as f32);
-                    out.push(data.nodes[pair[1] as usize].lon as f32);
-                }
-            }
-            out
-        }
-    }
-}
-
-/// Look up a per-leg GTFS shape between two consecutive stop nodes on a route.
-/// Returns flat `[lat0, lon0, lat1, lon1, …]` as f32, or empty if no shape is
-/// indexed for this (route, from_node, to_node).
-///
-/// Shares decoding with [`crate::TransitRouter::route_shape_between`] so the
-/// WASM-exposed version and this pure-Rust helper never drift.
-fn leg_shape_between(
-    data: &PreparedData,
-    route_idx: u32,
-    from_node: u32,
-    to_node: u32,
-) -> Vec<f32> {
-    let from_stop = match data.node_stop_indices.get(from_node).first() {
-        Some(&s) => s,
-        None => return Vec::new(),
-    };
-    let to_stop = match data.node_stop_indices.get(to_node).first() {
-        Some(&s) => s,
-        None => return Vec::new(),
-    };
-    let key = (route_idx, from_stop, to_stop);
-    let idx = match data.leg_shape_keys.binary_search(&key) {
-        Ok(i) => i,
-        Err(_) => return Vec::new(),
-    };
-    let start = data.leg_shapes.offsets[idx] as usize;
-    let end = data.leg_shapes.offsets[idx + 1] as usize;
-    let compressed = &data.leg_shapes.data[start..end];
-    if compressed.is_empty() {
-        return Vec::new();
-    }
-    let coords_u32: Vec<u32> = match pco::standalone::simple_decompress(compressed) {
-        Ok(c) => c,
-        Err(_) => return Vec::new(),
-    };
-    let mut out = Vec::with_capacity(coords_u32.len());
-    for chunk in coords_u32.chunks(2) {
-        if chunk.len() == 2 {
-            out.push(f32::from_bits(chunk[0]));
-            out.push(f32::from_bits(chunk[1]));
-        }
-    }
-    out
 }
 
 // ============================================================================
@@ -916,8 +815,6 @@ fn walk_only_pass(
 struct SourceEvent {
     t_effective: u32,
     stop_node: u32,
-    #[allow(dead_code)]
-    stop_idx: u32,
     pattern_index: u32,
     kind: SourceKind,
 }
@@ -978,7 +875,6 @@ fn build_source_events(
                     out.push(SourceEvent {
                         t_effective,
                         stop_node,
-                        stop_idx,
                         pattern_index: pat_idx as u32,
                         kind: SourceKind::Scheduled {
                             global_event_idx,
@@ -1011,7 +907,6 @@ fn build_source_events(
                         out.push(SourceEvent {
                             t_effective,
                             stop_node,
-                            stop_idx,
                             pattern_index: pat_idx as u32,
                             kind: SourceKind::Frequency {
                                 freq_index: fi,
@@ -1315,7 +1210,6 @@ fn ride_trip_profile(
     let mut prev_on_trip = boarding_node;
     let mut hop_edge_dep = edge_dep_delta;
     let mut hop_flag = flag_prev_origin_walk;
-    let mut is_first = true;
 
     while next_event_idx != u32::MAX {
         let event = &pat.stop_index.events_by_stop.data[next_event_idx as usize];
@@ -1340,10 +1234,6 @@ fn ride_trip_profile(
                 iter_touched,
                 heap,
             );
-            // After first alight, chain through intermediate stops.
-            if is_first {
-                is_first = false;
-            }
             prev_on_trip = dest_node;
             // Edge dep for next hop = arrival at this stop (vehicle departed here).
             hop_edge_dep = current_arrival
@@ -1428,72 +1318,6 @@ fn ride_freq_profile(
 // ============================================================================
 // Path reconstruction
 // ============================================================================
-
-/// Reconstruct path for frontier[destination][entry_index].
-/// Returns flat [(node, edge_type, route_idx)] triples in source→dest order.
-/// edge_type: 0=walk, 1=transit.
-pub fn reconstruct_profile_path(
-    result: &ProfileResult,
-    destination: u32,
-    entry_index: usize,
-) -> Vec<u32> {
-    let mut rev: Vec<(u32, u32, u32)> = Vec::new();
-    let f_dest = match result.frontier.get(destination as usize) {
-        Some(v) => v,
-        None => return Vec::new(),
-    };
-    let mut entry = match f_dest.get(entry_index) {
-        Some(e) => *e,
-        None => return Vec::new(),
-    };
-    let mut cur_node = destination;
-
-    let mut steps = 0usize;
-    while entry.prev_node != u32::MAX && steps < 1_000_000 {
-        // Walk-only entries form their own linked list via prev_node from the
-        // initial walk Dijkstra. Follow the chain directly — don't use
-        // find_predecessor_entry (which can't match the WALK_ONLY sentinel).
-        if entry.is_walk_only() {
-            rev.push((cur_node, 0, u32::MAX));
-            cur_node = entry.prev_node;
-            let f_prev = result.frontier.get(cur_node as usize);
-            entry = match f_prev.and_then(|f| f.first()).filter(|e| e.is_walk_only()) {
-                Some(e) => *e,
-                None => break,
-            };
-            steps += 1;
-            continue;
-        }
-
-        let edge_type: u32 = if entry.is_walk_edge() { 0 } else { 1 };
-        let route_u32: u32 = if entry.is_walk_edge() {
-            u32::MAX
-        } else {
-            entry.route_index as u32
-        };
-        rev.push((cur_node, edge_type, route_u32));
-        let prev = entry.prev_node;
-        entry = match find_predecessor_entry(result, prev, &entry) {
-            Some(e) => e,
-            None => {
-                rev.push((prev, 0, u32::MAX));
-                cur_node = prev;
-                break;
-            }
-        };
-        cur_node = prev;
-        steps += 1;
-    }
-    rev.push((cur_node, 0, u32::MAX));
-
-    let mut out = Vec::with_capacity(rev.len() * 3);
-    for (n, et, ri) in rev.into_iter().rev() {
-        out.push(n);
-        out.push(et);
-        out.push(ri);
-    }
-    out
-}
 
 /// Given current entry at `v` and its prev_node `p`, find the predecessor entry
 /// in F[p] that was used at insertion time.
@@ -1601,141 +1425,4 @@ fn sentinel_route_for(pat: &PatternData, mut idx: u32) -> u16 {
         idx = e.next_event_index;
     }
     0
-}
-
-// ============================================================================
-// Tests
-// ============================================================================
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn e(arr: u16, edge_dep: u16, prev: u32, route: u16, flag: bool) -> ProfileEntry {
-        ProfileEntry {
-            arrival_delta: arr,
-            edge_dep_delta: edge_dep,
-            prev_node: prev,
-            route_index: route,
-            flag_prev_origin_walk: flag,
-            _pad: 0,
-        }
-    }
-
-    fn walk_only(arr: u16) -> ProfileEntry {
-        ProfileEntry {
-            arrival_delta: arr,
-            edge_dep_delta: WALK_ONLY,
-            prev_node: u32::MAX,
-            route_index: WALK_ROUTE,
-            flag_prev_origin_walk: false,
-            _pad: 0,
-        }
-    }
-
-    fn result_with(
-        frontier: Vec<Vec<ProfileEntry>>,
-        hd: Vec<Vec<u16>>,
-        slack: u32,
-    ) -> ProfileResult {
-        ProfileResult {
-            frontier,
-            home_dep_deltas: hd,
-            window_start: 0,
-            window_end: 3600,
-            transfer_slack: slack,
-        }
-    }
-
-    #[test]
-    fn entry_layout_is_12_bytes() {
-        assert_eq!(std::mem::size_of::<ProfileEntry>(), 12);
-    }
-
-    #[test]
-    fn predecessor_walk_edge_exact_match() {
-        // F[prev] = [walk-only(arr=20), transit(arr=95), transit(arr=80)]
-        // current at v: walk edge with edge_dep_delta=80 ⇒ pred is transit arr=80.
-        let f_prev = vec![
-            walk_only(20),
-            e(95, 60, 99, 1, false),
-            e(80, 50, 99, 1, false),
-        ];
-        let res = result_with(vec![f_prev], vec![vec![WALK_ONLY, 40, 20]], 30);
-        let current = e(100, 80, 0, WALK_ROUTE, false); // walk edge, edge_dep=80
-        let pred = find_predecessor_entry(&res, 0, &current).unwrap();
-        assert_eq!(pred.arrival_delta, 80);
-        assert!(!pred.is_walk_only());
-    }
-
-    #[test]
-    fn predecessor_walk_edge_matches_walk_only() {
-        // F[prev] = [walk-only(arr=50), transit(arr=40)]
-        // current at v: walk edge with edge_dep_delta=50 ⇒ pred is walk-only.
-        let f_prev = vec![walk_only(50), e(40, 20, 99, 1, false)];
-        let res = result_with(vec![f_prev], vec![vec![WALK_ONLY, 30]], 30);
-        let current = e(80, 50, 0, WALK_ROUTE, false);
-        let pred = find_predecessor_entry(&res, 0, &current).unwrap();
-        assert!(pred.is_walk_only());
-        assert_eq!(pred.arrival_delta, 50);
-    }
-
-    #[test]
-    fn predecessor_transit_flag_true_uses_walk_only() {
-        // F[prev] = [walk-only(arr=55), transit(arr=40)]
-        // current at v: transit, flag=true ⇒ pred is walk-only (even though transit is feasible under slack).
-        let f_prev = vec![walk_only(55), e(40, 20, 99, 1, false)];
-        let res = result_with(vec![f_prev], vec![vec![WALK_ONLY, 30]], 10);
-        let current = e(160, 60, 0, 7, true); // transit, edge_dep=60, flag=true
-        let pred = find_predecessor_entry(&res, 0, &current).unwrap();
-        assert!(pred.is_walk_only());
-        assert_eq!(pred.arrival_delta, 55);
-    }
-
-    #[test]
-    fn predecessor_transit_flag_false_upper_bound() {
-        // F[prev] = [walk-only(arr=55), transit(arr=50), transit(arr=40), transit(arr=30)]
-        // current at v: transit, flag=false, edge_dep=60, slack=10 ⇒ need arr ≤ 50.
-        // Largest qualifying transit arr = 50.
-        let f_prev = vec![
-            walk_only(55),
-            e(50, 30, 99, 1, false),
-            e(40, 20, 99, 1, false),
-            e(30, 10, 99, 1, false),
-        ];
-        let res = result_with(vec![f_prev], vec![vec![WALK_ONLY, 40, 30, 20]], 10);
-        let current = e(160, 60, 0, 7, false);
-        let pred = find_predecessor_entry(&res, 0, &current).unwrap();
-        assert!(!pred.is_walk_only());
-        assert_eq!(pred.arrival_delta, 50);
-    }
-
-    #[test]
-    fn predecessor_transit_ride_through_exact_match() {
-        // Ride-through: stop_2's edge_dep = arrival_delta(stop_1) = 80.
-        // F[stop_1] has transit entry with arr=80. Exact match finds it.
-        let f_prev = vec![
-            walk_only(20),
-            e(80, 60, 99, 1, true), // transit entry from earlier hop
-        ];
-        let res = result_with(vec![f_prev], vec![vec![WALK_ONLY, 50]], 30);
-        let current = e(100, 80, 0, 1, false); // transit, edge_dep=80 = arr(prev)
-        let pred = find_predecessor_entry(&res, 0, &current).unwrap();
-        assert_eq!(pred.arrival_delta, 80);
-        assert!(!pred.is_walk_only());
-    }
-
-    #[test]
-    fn predecessor_transit_flag_false_skips_walk_only() {
-        // Walk-only's arr is largest and WITHIN edge_dep, but slack excludes it and
-        // flag=false says "skip walk-only". Expect the next-largest transit.
-        let f_prev = vec![walk_only(55), e(45, 20, 99, 1, false)];
-        let res = result_with(vec![f_prev], vec![vec![WALK_ONLY, 30]], 10);
-        let current = e(160, 60, 0, 7, false); // transit, edge_dep=60
-                                               // Walk-only arr=55 > budget=50, so it wouldn't qualify anyway.
-                                               // Transit arr=45 ≤ 50 ✓. Expect arr=45.
-        let pred = find_predecessor_entry(&res, 0, &current).unwrap();
-        assert!(!pred.is_walk_only());
-        assert_eq!(pred.arrival_delta, 45);
-    }
 }
