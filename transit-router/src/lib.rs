@@ -5,6 +5,7 @@ pub mod router;
 pub mod sssp_path;
 
 use data::PreparedData;
+use profile::ProfileRouter as _;
 use wasm_bindgen::prelude::*;
 
 use rayon::prelude::*;
