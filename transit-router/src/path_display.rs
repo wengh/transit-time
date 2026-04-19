@@ -8,6 +8,7 @@
 
 use crate::data::PreparedData;
 use crate::profile::{Path, PathSegment, SegmentKind};
+use pco;
 use serde::Serialize;
 
 /// Human-readable strings derived from a [`Path`].
@@ -77,12 +78,11 @@ fn format_segment(seg: &PathSegment) -> Vec<String> {
         SegmentKind::Walk => vec![format!("Walk {dur_min} min")],
         SegmentKind::Transit => {
             let route = seg.route_name.as_deref().unwrap_or("Transit");
-            let from_to =
-                if !seg.start_stop_name.is_empty() && !seg.end_stop_name.is_empty() {
-                    format!(" · {} → {}", seg.start_stop_name, seg.end_stop_name)
-                } else {
-                    String::new()
-                };
+            let from_to = if !seg.start_stop_name.is_empty() && !seg.end_stop_name.is_empty() {
+                format!(" · {} → {}", seg.start_stop_name, seg.end_stop_name)
+            } else {
+                String::new()
+            };
             let mut out = vec![format!("{route}{from_to} {dur_min} min")];
             if seg.wait_time > 0 {
                 out.push(format!("  Wait: {:.1} min", seg.wait_time as f32 / 60.0));
@@ -90,6 +90,72 @@ fn format_segment(seg: &PathSegment) -> Vec<String> {
             out
         }
     }
+}
+
+/// Build a flat `[lat, lon, …]` polyline for a path segment.
+///
+/// `route_index`: `None` for walk (straight line through nodes); `Some(r)` for
+/// transit (chains per-leg GTFS shapes with straight-line fallback).
+pub fn segment_shape(data: &PreparedData, route_index: Option<u16>, nodes: &[u32]) -> Vec<f32> {
+    if nodes.len() < 2 {
+        return Vec::new();
+    }
+    match route_index {
+        None => {
+            let mut out = Vec::with_capacity(nodes.len() * 2);
+            for &n in nodes {
+                out.push(data.nodes[n as usize].lat as f32);
+                out.push(data.nodes[n as usize].lon as f32);
+            }
+            out
+        }
+        Some(route_idx) => {
+            let mut out: Vec<f32> = Vec::new();
+            for pair in nodes.windows(2) {
+                let leg =
+                    leg_shape_between(data, route_idx as u32, pair[0], pair[1]).unwrap_or_default();
+                let skip = if out.is_empty() { 0 } else { 2 };
+                if leg.len() >= 4 {
+                    out.extend(leg[skip..].iter().copied());
+                } else {
+                    if out.is_empty() {
+                        out.push(data.nodes[pair[0] as usize].lat as f32);
+                        out.push(data.nodes[pair[0] as usize].lon as f32);
+                    }
+                    out.push(data.nodes[pair[1] as usize].lat as f32);
+                    out.push(data.nodes[pair[1] as usize].lon as f32);
+                }
+            }
+            out
+        }
+    }
+}
+
+fn leg_shape_between(
+    data: &PreparedData,
+    route_idx: u32,
+    from_node: u32,
+    to_node: u32,
+) -> Option<Vec<f32>> {
+    let from_stop = *data.node_stop_indices.get(from_node).first()?;
+    let to_stop = *data.node_stop_indices.get(to_node).first()?;
+    let key = (route_idx, from_stop, to_stop);
+    let idx = data.leg_shape_keys.binary_search(&key).ok()?;
+    let start = data.leg_shapes.offsets[idx] as usize;
+    let end = data.leg_shapes.offsets[idx + 1] as usize;
+    let compressed = &data.leg_shapes.data[start..end];
+    if compressed.is_empty() {
+        return None;
+    }
+    let coords_u32: Vec<u32> = pco::standalone::simple_decompress(compressed).ok()?;
+    let mut out = Vec::with_capacity(coords_u32.len());
+    for chunk in coords_u32.chunks(2) {
+        if chunk.len() == 2 {
+            out.push(f32::from_bits(chunk[0]));
+            out.push(f32::from_bits(chunk[1]));
+        }
+    }
+    Some(out)
 }
 
 fn adjust_color_for_visibility(hex: &str) -> Option<String> {
