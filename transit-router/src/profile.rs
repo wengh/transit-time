@@ -115,17 +115,14 @@ pub trait ProfileRouter: Sized {
 }
 
 // ============================================================================
-// Stub implementation (replace with real algorithm)
+// Implementation
 // ============================================================================
 
-/// Opaque routing state. Internal representation is not part of the public
-/// interface — swap freely as long as [`ProfileRouter`] is satisfied.
-pub struct ProfileRouting {
-    isochrone: Isochrone,
-}
-
 const ORIGIN_PREDECESSOR: u32 = u32::MAX;
+
 const INITIAL_WALK: u16 = u16::MAX;
+const PENDING_RELAXATION: u16 = INITIAL_WALK - 1;
+const MAX_DELTA: u16 = PENDING_RELAXATION - 1;
 
 // A single entry for a node, representing a Pareto-optimal
 // (home_departure, arrival) pair.
@@ -137,6 +134,9 @@ struct Entry {
     // Departure time from the transit leg or the walk edge
     // (seconds since start of profile window)
     // INITIAL_WALK if all predecessors are walks
+    // For Phase 2 (full transit routing) only:
+    // PENDING_RELAXATION if this entry is in the frontier but not yet finalized
+    // Only the last entry for each node can be PENDING_RELAXATION
     departure_delta: u16,
     // Arrival time (seconds since start of profile window)
     // Total travel time if is initial walk
@@ -148,7 +148,7 @@ struct Entry {
 #[derive(Debug, Default)]
 struct NodeEntries {
     // Sorted by descending arrival time and descending departure time,
-    // except the first entry which may be a walk-only entry
+    // except the first entry which is a walk-only entry iff it's reachable by walk from the source within max_time.
     entries: Vec<Entry>,
 }
 
@@ -166,7 +166,7 @@ struct Frontier {
 }
 
 #[derive(Debug, Copy, Clone)]
-struct PendingEntry {
+struct TransitLeg {
     node_id: u32,
     entry: Entry,
 }
@@ -174,13 +174,27 @@ struct PendingEntry {
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct QueueEntry {
     arrival_delta: u16,
+    departure_delta: u16,
     node_id: u32,
+}
+
+/// Opaque routing state. Internal representation is not part of the public
+/// interface — swap freely as long as [`ProfileRouter`] is satisfied.
+pub struct ProfileRouting {
+    frontier: Frontier,
+    isochrone: Isochrone,
 }
 
 impl ProfileRouter for ProfileRouting {
     fn compute(data: &PreparedData, query: &ProfileQuery) -> Self {
-        assert!(query.window_start < query.window_end);
-        assert!(query.window_end - query.window_start + query.max_time < u32::MAX);
+        assert!(
+            query.window_start <= query.window_end,
+            "Time window must have non-negative duration"
+        );
+        assert!(
+            query.window_end - query.window_start + query.max_time < MAX_DELTA as u32,
+            "Time values must fit in u16 deltas"
+        );
 
         let n = data.num_nodes;
         let active_patterns = crate::router::patterns_for_date(data, query.date);
@@ -198,11 +212,12 @@ impl ProfileRouter for ProfileRouting {
         //   i.e. home departure (= transit dep − walk_time) in [window_start, window_end].
         // - Sort the transit legs by home departure time.
 
-        let mut initial_transit_entries: Vec<PendingEntry> = Vec::new();
+        let mut initial_transit_entries: Vec<TransitLeg> = Vec::new();
 
         let mut queue: BinaryHeap<Reverse<QueueEntry>> = BinaryHeap::new();
         queue.push(Reverse(QueueEntry {
             arrival_delta: 0,
+            departure_delta: 0, // unused
             node_id: query.source_node,
         }));
         frontier.nodes[query.source_node as usize]
@@ -215,6 +230,7 @@ impl ProfileRouter for ProfileRouting {
 
         while let Some(Reverse(QueueEntry {
             arrival_delta,
+            departure_delta: _,
             node_id,
         })) = queue.pop()
         {
@@ -233,7 +249,7 @@ impl ProfileRouter for ProfileRouting {
             ));
 
             for &(neighbor, distance) in &data.adj[node_id] {
-                let new_arrival_delta = arrival_delta + get_walk_time(distance);
+                let new_arrival_delta = arrival_delta.saturating_add(get_walk_time(distance));
 
                 if new_arrival_delta as u32 > query.max_time {
                     continue;
@@ -257,20 +273,126 @@ impl ProfileRouter for ProfileRouting {
 
                 queue.push(Reverse(QueueEntry {
                     arrival_delta: new_arrival_delta,
+                    departure_delta: 0, // unused
                     node_id: neighbor,
                 }));
             }
         }
 
-        // Sort by home_departure (= transit_departure − walk_time) so the main
-        // pass sweeps entries in chronological order.
-        // e.entry.prev = boarding node (walk-settled); its arrival_delta = walk_time.
-        // departure_delta − walk_time = transit_dep − window_start − walk_time = home_dep − window_start.
-        initial_transit_entries.sort_by_key(|e| {
-            e.entry.departure_delta - frontier.nodes[e.entry.prev as usize].entries[0].arrival_delta
-        });
+        // Sort by descending home_departure (= transit_departure − walk_time)
+        initial_transit_entries.sort_by_key(|x| Reverse(get_initial_transit_home_departure_delta(&frontier, x)));
 
         // ── Phase 2: main profile routing pass ───────────────────────────────
+
+        // Iterate over initial transit entries in descending home departure order to guarantee that existing entries are never dominated.
+        for transit_leg in initial_transit_entries {
+            let home_departure_delta = get_initial_transit_home_departure_delta(&frontier, &transit_leg);
+
+            // Set up the Dijkstra search with this transit leg as the initial entry, if it's not dominated.
+            {
+                let TransitLeg { node_id, entry } = transit_leg;
+
+                let node_entries = &mut frontier.nodes[node_id as usize].entries;
+                // Invariant: `entry` always has home departure time earlier than existing (non-INITIAL_WALK) entries in frontier.
+                // Skip if this entry is dominated by the existing best entry.
+                if let Some(best) = node_entries.last() {
+                    if is_new_entry_dominated(home_departure_delta, &entry, best) {
+                        continue;
+                    }
+                }
+                frontier.initial_transit.insert(EntryRef {
+                    node_id,
+                    entry_index: node_entries.len() as u16,
+                });
+                node_entries.push(entry);
+                assert!(queue.is_empty());
+                queue.push(Reverse(QueueEntry {
+                    arrival_delta: entry.arrival_delta,
+                    departure_delta: entry.departure_delta,
+                    node_id,
+                }));
+            }
+
+            while let Some(Reverse(QueueEntry {
+                arrival_delta,
+                departure_delta,
+                node_id,
+            })) = queue.pop()
+            {
+                let entry = frontier.nodes[node_id as usize].entries.last_mut().unwrap();
+
+                // Skip stale queue entry
+                if arrival_delta != entry.arrival_delta {
+                    continue;
+                }
+
+                entry.departure_delta = departure_delta; // finalize this entry
+
+                // Relax walk edges
+                for &(neighbor, distance) in &data.adj[node_id] {
+                    let new_arrival_delta = arrival_delta.saturating_add(get_walk_time(distance));
+
+                    if new_arrival_delta as u32 > query.max_time {
+                        continue;
+                    }
+
+                    let new_entry = Entry {
+                        prev: node_id,
+                        // for walk edges, departure delta is the arrival delta at the predecessor node
+                        departure_delta: arrival_delta,
+                        arrival_delta: new_arrival_delta,
+                    };
+
+                    relax(
+                        &mut frontier,
+                        &mut queue,
+                        home_departure_delta,
+                        neighbor,
+                        new_entry,
+                    );
+                }
+
+                if !data.node_is_stop[node_id as usize] {
+                    continue;
+                }
+                // Relax transit legs
+                let min_departure_time =
+                    query.window_start + arrival_delta as u32 + query.transfer_slack;
+                let mut max_departure_time = query.window_end + query.max_time;
+                if let Some(prev_entry) =
+                    frontier.nodes[node_id as usize].entries.iter().nth_back(1)
+                {
+                    let prev_min_departure_time = query.window_start
+                        + get_arrival_delta(home_departure_delta, prev_entry) as u32
+                        + query.transfer_slack;
+                    // This might cause repeated relaxation for the same transit leg
+                    // For example maybe we already finalized a transit ride A -> B -> C boarding on A arriving to B at time 100
+                    // but then we find a new walk route to B with arrival time 90, allowing us to board the same vehicle for the B -> C ride
+                    // but the arrival at C will be dominated by the existing entry from A -> B -> C since the new walk route has earlier departure
+                    // so this will be a bit of wasted effort but harmless.
+                    max_departure_time = max_departure_time.min(prev_min_departure_time - 1);
+                }
+                if min_departure_time > max_departure_time {
+                    continue;
+                }
+                for leg in expand_transit_legs(
+                    data,
+                    node_id,
+                    min_departure_time,
+                    max_departure_time,
+                    query,
+                    &active_patterns,
+                ) {
+                    relax(
+                        &mut frontier,
+                        &mut queue,
+                        home_departure_delta,
+                        leg.node_id,
+                        leg.entry,
+                    );
+                }
+            }
+        }
 
         todo!();
     }
@@ -284,13 +406,65 @@ impl ProfileRouter for ProfileRouting {
     }
 }
 
+// Get home departure delta for an initial transit leg entry
+fn get_initial_transit_home_departure_delta(frontier: &Frontier, leg: &TransitLeg) -> u16 {
+    leg.entry.departure_delta - frontier.nodes[leg.entry.prev as usize].entries[0].arrival_delta
+}
+
 fn get_walk_time(distance: f32) -> u16 {
     const WALKING_SPEED_MPS: f32 = 1.4;
     ((distance / WALKING_SPEED_MPS).round() as u16).max(1)
 }
 
+fn relax(
+    frontier: &mut Frontier,
+    queue: &mut BinaryHeap<Reverse<QueueEntry>>,
+    home_departure_delta: u16,
+    node_id: u32,
+    mut new_entry: Entry,
+) {
+    let departure_delta = new_entry.departure_delta;
+    new_entry.departure_delta = PENDING_RELAXATION; // mark as pending relaxation
+
+    let neighbor_entries = &mut frontier.nodes[node_id as usize].entries;
+    if let Some(best) = neighbor_entries.last_mut() {
+        if is_new_entry_dominated(home_departure_delta, &new_entry, best) {
+            return;
+        }
+        if best.departure_delta == PENDING_RELAXATION {
+            // `best` was an entry from the current home departure time
+            *best = new_entry;
+        } else {
+            // `best` was an entry with a later home departure time
+            neighbor_entries.push(new_entry);
+        }
+    } else {
+        neighbor_entries.push(new_entry);
+    }
+
+    queue.push(Reverse(QueueEntry {
+        arrival_delta: new_entry.arrival_delta,
+        departure_delta,
+        node_id,
+    }));
+}
+
+// Get arrival delta for an entry with special handling for initial transit legs (which use arrival_delta field to store the total travel time since it has flexible home departure time)
+fn get_arrival_delta(home_departure_delta: u16, entry: &Entry) -> u16 {
+    entry.arrival_delta
+        + if entry.departure_delta == INITIAL_WALK {
+            home_departure_delta
+        } else {
+            0
+        }
+}
+
+fn is_new_entry_dominated(home_departure_delta: u16, new: &Entry, existing: &Entry) -> bool {
+    new.arrival_delta >= get_arrival_delta(home_departure_delta, existing)
+}
+
 /// For each transit vehicle departing `node` within `[min_departure, max_departure]`,
-/// follow the trip forward and emit one [`PendingEntry`] per downstream stop, with
+/// follow the trip forward and emit one [`TransitLeg`] per downstream stop, with
 /// `arrival_delta` filled in. `entry.prev` is set to `node` (the boarding stop) for
 /// path reconstruction. Covers both scheduled and frequency-based routes.
 ///
@@ -302,7 +476,7 @@ fn expand_transit_legs(
     max_departure: u32,
     query: &ProfileQuery,
     active_patterns: &[usize],
-) -> Vec<PendingEntry> {
+) -> Vec<TransitLeg> {
     if !data.node_is_stop[node as usize] {
         return Vec::new();
     }
@@ -338,7 +512,7 @@ fn expand_transit_legs(
                         break;
                     }
                     let next = &pat.stop_index.events_by_stop.data[cur.next_event_index as usize];
-                    entries.push(PendingEntry {
+                    entries.push(TransitLeg {
                         node_id: data.stop_node_map[next.stop_index as usize],
                         entry: Entry {
                             prev: node,
@@ -390,7 +564,7 @@ fn expand_transit_legs(
                         if arrival > max_arrival {
                             break;
                         }
-                        entries.push(PendingEntry {
+                        entries.push(TransitLeg {
                             node_id: data.stop_node_map[f.next_stop_index as usize],
                             entry: Entry {
                                 prev: node,
