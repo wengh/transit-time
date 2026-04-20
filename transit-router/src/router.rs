@@ -227,27 +227,25 @@ fn run_tdd_inner(
         }
 
         // Transit edges (only at stop nodes)
-        if data.node_is_stop[node as usize] {
-            for &stop_idx in data.node_stop_indices.get(node) {
-                for &(pat_idx, pat) in patterns {
-                    scan_pattern_at_stop(
-                        data,
-                        pat,
-                        pat_idx,
-                        stop_idx,
-                        t_current,
-                        current_event,
-                        current_leave_home,
-                        departure_time,
-                        transfer_slack,
-                        node,
-                        &mut result,
-                        &mut leave_home,
-                        &mut arrived_by_event,
-                        &mut boarding_events,
-                        &mut pq,
-                    );
-                }
+        if let Some(&stop_idx) = data.node_to_stop.get(&node) {
+            for &(pat_idx, pat) in patterns {
+                scan_pattern_at_stop(
+                    data,
+                    pat,
+                    pat_idx,
+                    stop_idx,
+                    t_current,
+                    current_event,
+                    current_leave_home,
+                    departure_time,
+                    transfer_slack,
+                    node,
+                    &mut result,
+                    &mut leave_home,
+                    &mut arrived_by_event,
+                    &mut boarding_events,
+                    &mut pq,
+                );
             }
         }
     }
@@ -318,7 +316,7 @@ fn scan_pattern_at_stop(
                 if arrival_delta > u16::MAX as u32 {
                     break;
                 }
-                let dest_node = data.stop_node_map[leg.next_stop_index as usize];
+                let dest_node = data.stop_to_node[leg.next_stop_index as usize];
                 if dest_node != u32::MAX {
                     let candidate = NodeResult {
                         arrival_delta: arrival_delta as u16,
@@ -457,7 +455,7 @@ fn ride_trip(
 ) {
     while next_event_idx != u32::MAX {
         let event = &pat.stop_index.events_by_stop.data[next_event_idx as usize];
-        let dest_node = data.stop_node_map[event.stop_index as usize];
+        let dest_node = data.stop_to_node[event.stop_index as usize];
         if dest_node != u32::MAX {
             let candidate = NodeResult {
                 arrival_delta: (current_arrival - departure_time) as u16,

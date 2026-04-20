@@ -154,7 +154,7 @@ impl TransitRouter {
     }
 
     pub fn stop_node(&self, idx: u32) -> u32 {
-        self.data.stop_node_map[idx as usize]
+        self.data.stop_to_node[idx as usize]
     }
 
     pub fn route_name(&self, idx: u32) -> String {
@@ -175,11 +175,8 @@ impl TransitRouter {
     }
 
     pub fn node_stop_name(&self, node_idx: u32) -> String {
-        let idx = node_idx as usize;
-        if idx < self.data.node_is_stop.len() && self.data.node_is_stop[idx] {
-            if let Some(&stop_idx) = self.data.node_stop_indices.get(node_idx).first() {
-                return self.data.stops[stop_idx as usize].name.clone();
-            }
+        if let Some(&stop_idx) = self.data.node_to_stop.get(&node_idx) {
+            return self.data.stops[stop_idx as usize].name.clone();
         }
         String::new()
     }
@@ -351,11 +348,11 @@ impl TransitRouter {
     /// Get the shape polyline for a single leg between two consecutive stops (by node index).
     /// Returns flat array [lat, lon, lat, lon, ...] of the pre-sliced sub-polyline, or empty.
     pub fn route_shape_between(&self, route_idx: u32, from_node: u32, to_node: u32) -> Vec<f64> {
-        let from_stop = match self.data.node_stop_indices.get(from_node).first() {
+        let from_stop = match self.data.node_to_stop.get(&from_node) {
             Some(&s) => s,
             None => return Vec::new(),
         };
-        let to_stop = match self.data.node_stop_indices.get(to_node).first() {
+        let to_stop = match self.data.node_to_stop.get(&to_node) {
             Some(&s) => s,
             None => return Vec::new(),
         };

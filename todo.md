@@ -106,3 +106,9 @@ then i'll manually implement profile routing.
 ultrathink
 
 also as much as possible of the logic should live in the rust side to make it easy to test. for example shapes should be returned as rust objects and only converted to json at the wasm boundary
+
+-------
+
+when backtracking we need the route/trip id of the transit leg, and early termination once found the desired transit leg. is there a way to satisfy this need without compromising performance and without duplicating too much code?
+
+i changed prep to ensure each node has at most 1 snapped stop, so we can store a dict of node_id -> stop_idx instead of a sparse jagged array. review my changes to prep and corresponding changes to router

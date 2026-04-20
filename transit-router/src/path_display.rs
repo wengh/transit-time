@@ -137,8 +137,8 @@ fn leg_shape_between(
     from_node: u32,
     to_node: u32,
 ) -> Option<Vec<f32>> {
-    let from_stop = *data.node_stop_indices.get(from_node).first()?;
-    let to_stop = *data.node_stop_indices.get(to_node).first()?;
+    let from_stop = *data.node_to_stop.get(&from_node)?;
+    let to_stop = *data.node_to_stop.get(&to_node)?;
     let key = (route_idx, from_stop, to_stop);
     let idx = data.leg_shape_keys.binary_search(&key).ok()?;
     let start = data.leg_shapes.offsets[idx] as usize;
