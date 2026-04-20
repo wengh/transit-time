@@ -543,6 +543,7 @@ struct SnapResult {
 /// Snap each transit stop to its nearest point on an OSM edge.
 /// For each stop, creates a node at the stop's original lat/lon and connects
 /// it with an edge to the nearest point on the graph (splitting the edge if needed).
+/// Each stop is guaranteed to have a unique new node, so no multiple stops share a node.
 pub fn snap_stops_to_nodes(stops: &[Stop], graph: &mut OsmGraph) -> Vec<(u32, u32)> {
     const MAX_SNAP_DISTANCE_METERS: f64 = 400.0;
     const CELL_SIZE_LAT: f64 = 0.0045;
@@ -682,8 +683,9 @@ pub fn snap_stops_to_nodes(stops: &[Stop], graph: &mut OsmGraph) -> Vec<(u32, u3
 
             // Create stop node at the original stop position and connect it.
             // If snap.dist is 0 the stop is exactly on the edge; reuse conn_node
-            // directly so we don't create an isolated zero-distance duplicate.
-            if snap.dist > 0.0 {
+            // directly so we don't create an isolated zero-distance duplicate,
+            // unless the conn_node is an existing node.
+            if snap.dist > 0.0 || conn_node == orig_u || conn_node == orig_v {
                 let stop_node = graph.nodes.len() as u32;
                 graph.nodes.push(OsmNode {
                     id: 0,

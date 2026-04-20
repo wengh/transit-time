@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{collections::HashMap, time::Duration};
 extern crate console_error_panic_hook;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -177,7 +177,7 @@ pub struct PreparedData {
     pub nodes: Vec<NodeData>,
     pub edges: Vec<EdgeData>,
     pub stops: Vec<StopData>,
-    pub stop_node_map: Vec<u32>, // stop_index -> node_index
+    pub stop_to_node: Vec<u32>, // stop_index -> node_index
     pub route_names: Vec<String>,
     pub route_colors: Vec<Option<Color>>,
     pub patterns: Vec<PatternData>,
@@ -185,8 +185,7 @@ pub struct PreparedData {
     pub num_edges: usize,
     pub num_stops: usize,
     pub adj: JaggedArray<(u32, f32)>,
-    pub node_is_stop: Vec<bool>,
-    pub node_stop_indices: SparseJaggedArray<u32>,
+    pub node_to_stop: HashMap<u32, u32>,
     /// Pre-sliced leg shapes: PCO-compressed sub-polylines per transit leg
     pub leg_shapes: JaggedArray<u8>,
     /// Sorted keys for leg_shapes: (route_index, from_stop, to_stop)
@@ -309,36 +308,15 @@ pub fn load_with_stats(buf: &[u8]) -> Result<(PreparedData, LoadStats), String> 
     // Stop-to-node mapping
     let t0 = Instant::now();
     let pos_before = pos;
-    let mut stop_node_map = vec![u32::MAX; num_stops];
-    let mut node_is_stop = vec![false; num_nodes];
-    let mut pairs: Vec<(u32, u32)> = Vec::with_capacity(num_stop_to_node); // (node_idx, stop_idx)
+    let mut node_to_stop = HashMap::with_capacity(num_stop_to_node);
+    let mut stop_to_node = vec![u32::MAX; num_stops];
     for _ in 0..num_stop_to_node {
         let stop_idx = read_u32(&buf, &mut pos);
         let node_idx = read_u32(&buf, &mut pos);
-        if (stop_idx as usize) < num_stops && (node_idx as usize) < num_nodes {
-            stop_node_map[stop_idx as usize] = node_idx;
-            node_is_stop[node_idx as usize] = true;
-            pairs.push((node_idx, stop_idx));
-        }
+        let prev = node_to_stop.insert(node_idx, stop_idx);
+        debug_assert!(prev.is_none(), "Node {node_idx} already mapped to {prev:?}");
+        stop_to_node[stop_idx as usize] = node_idx;
     }
-    // Build SparseJaggedArray: sort by node so we can group runs in one pass.
-    pairs.sort_unstable_by_key(|&(node, _)| node);
-    let mut nsi_offsets = std::collections::HashMap::with_capacity(pairs.len());
-    let mut nsi_data: Vec<u32> = Vec::with_capacity(pairs.len());
-    let mut i = 0;
-    while i < pairs.len() {
-        let node = pairs[i].0;
-        let start = nsi_data.len() as u32;
-        while i < pairs.len() && pairs[i].0 == node {
-            nsi_data.push(pairs[i].1);
-            i += 1;
-        }
-        nsi_offsets.insert(node, (start, nsi_data.len() as u32));
-    }
-    let node_stop_indices = SparseJaggedArray {
-        offsets: nsi_offsets,
-        data: nsi_data,
-    };
     binary_sections.push(("stop_to_node", pos - pos_before));
     timings.push(("parse stop_to_node", t0.elapsed()));
 
@@ -586,16 +564,11 @@ pub fn load_with_stats(buf: &[u8]) -> Result<(PreparedData, LoadStats), String> 
         .sum();
     memory_sections.push(("stops", stops_mem));
 
-    // stop_node_map
-    memory_sections.push(("stop_node_map", stop_node_map.capacity() * 4));
+    // stop_to_node
+    memory_sections.push(("stop_to_node", stop_to_node.capacity() * 4));
 
-    // node_is_stop
-    memory_sections.push(("node_is_stop", node_is_stop.capacity()));
-
-    // node_stop_indices: SparseJaggedArray — hashmap entries + flat data
-    let nsi_mem: usize = node_stop_indices.offsets.capacity() * (4 + 8 + 8) // key + (u32,u32) + hashmap overhead
-        + node_stop_indices.data.capacity() * 4;
-    memory_sections.push(("node_stop_indices", nsi_mem));
+    // node_to_stop
+    memory_sections.push(("node_to_stop", node_to_stop.capacity() * (4 + 8))); // key + hashmap overhead
 
     // route_names
     let rn_mem: usize = route_names
@@ -677,7 +650,7 @@ pub fn load_with_stats(buf: &[u8]) -> Result<(PreparedData, LoadStats), String> 
         nodes,
         edges,
         stops,
-        stop_node_map,
+        stop_to_node,
         route_names,
         route_colors,
         patterns,
@@ -685,8 +658,7 @@ pub fn load_with_stats(buf: &[u8]) -> Result<(PreparedData, LoadStats), String> 
         num_edges,
         num_stops,
         adj,
-        node_is_stop,
-        node_stop_indices,
+        node_to_stop,
         leg_shapes,
         leg_shape_keys,
         node_grid,

@@ -350,9 +350,6 @@ impl ProfileRouter for ProfileRouting {
                     relax(&mut frontier, &mut queue, neighbor, new_entry);
                 }
 
-                if !data.node_is_stop[node_id as usize] {
-                    continue;
-                }
                 // Relax transit legs
                 let min_departure_time =
                     query.window_start + arrival_delta as u32 + query.transfer_slack;
@@ -501,112 +498,110 @@ impl<'a> ProfileQueryContext<'a> {
             max_arrival,
         } = query;
 
-        if !self.data.node_is_stop[node as usize] {
-            return ControlFlow::Continue(());
-        }
+        let stop_idx = match self.data.node_to_stop.get(&node) {
+            Some(&idx) => idx,
+            None => return ControlFlow::Continue(()),
+        };
         let max_arrival = max_arrival.unwrap_or(self.query.window_end + self.query.max_time);
 
-        for &stop_idx in self.data.node_stop_indices.get(node) {
-            for &pat_idx in &self.active_patterns {
-                let pat = &self.data.patterns[pat_idx];
+        for &pat_idx in &self.active_patterns {
+            let pat = &self.data.patterns[pat_idx];
 
-                // ── Scheduled ────────────────────────────────────────────────────
-                let stop_events = &pat.stop_index.events_by_stop[stop_idx];
-                let base = pat.stop_index.events_by_stop.offsets[stop_idx as usize] as usize;
-                let start = stop_events.partition_point(|e| e.time_offset < min_departure);
+            // ── Scheduled ────────────────────────────────────────────────────
+            let stop_events = &pat.stop_index.events_by_stop[stop_idx];
+            let base = pat.stop_index.events_by_stop.offsets[stop_idx as usize] as usize;
+            let start = stop_events.partition_point(|e| e.time_offset < min_departure);
 
-                for (j, event) in stop_events[start..].iter().enumerate() {
-                    if event.time_offset > max_departure {
+            for (j, event) in stop_events[start..].iter().enumerate() {
+                if event.time_offset > max_departure {
+                    break;
+                }
+                if event.travel_time == 0 {
+                    continue; // sentinel
+                }
+                let board_delta = (event.time_offset - self.query.window_start) as u16;
+                let mut flat_idx = base + start + j;
+
+                loop {
+                    let cur = &pat.stop_index.events_by_stop.data[flat_idx];
+                    if cur.travel_time == 0 || cur.next_event_index == u32::MAX {
                         break;
                     }
-                    if event.travel_time == 0 {
-                        continue; // sentinel
+                    let arrival = cur.time_offset + cur.travel_time;
+                    if arrival > max_arrival {
+                        break;
                     }
-                    let board_delta = (event.time_offset - self.query.window_start) as u16;
-                    let mut flat_idx = base + start + j;
+                    let next = &pat.stop_index.events_by_stop.data[cur.next_event_index as usize];
+                    visit(TransitLeg {
+                        node_id: self.data.stop_to_node[next.stop_index as usize],
+                        board_delta,
+                        arrival_delta: (arrival - self.query.window_start) as u16,
+                        pattern_idx: pat_idx as u16,
+                        transit_ref: TransitRef::Scheduled {
+                            event_idx: flat_idx as u32,
+                        },
+                    })?;
+                    flat_idx = cur.next_event_index as usize;
+                }
+            }
+
+            // ── Frequency-based ───────────────────────────────────────────────
+            for &fi in &pat.stop_index.freq_by_stop[stop_idx] {
+                let freq = &pat.frequency_routes[fi as usize];
+                if freq.travel_time == 0 {
+                    continue;
+                }
+                if min_departure >= freq.end_time {
+                    continue;
+                }
+                let effective_start = freq.start_time.max(min_departure);
+                if effective_start > max_departure {
+                    continue;
+                }
+                let elapsed_to_eff = effective_start.saturating_sub(freq.start_time);
+                let wait = if elapsed_to_eff % freq.headway_secs == 0 {
+                    0
+                } else {
+                    freq.headway_secs - (elapsed_to_eff % freq.headway_secs)
+                };
+                let first_board = effective_start + wait;
+                if first_board > max_departure {
+                    continue;
+                }
+
+                let mut board = first_board;
+                while board <= max_departure && board < freq.end_time {
+                    let board_delta = (board - self.query.window_start) as u16;
+                    let mut freq_idx = fi;
+                    let mut elapsed = 0u32;
 
                     loop {
-                        let cur = &pat.stop_index.events_by_stop.data[flat_idx];
-                        if cur.travel_time == 0 || cur.next_event_index == u32::MAX {
+                        let f = &pat.frequency_routes[freq_idx as usize];
+                        if f.travel_time == 0 {
                             break;
                         }
-                        let arrival = cur.time_offset + cur.travel_time;
+                        elapsed += f.travel_time;
+                        let arrival = board + elapsed;
                         if arrival > max_arrival {
                             break;
                         }
-                        let next =
-                            &pat.stop_index.events_by_stop.data[cur.next_event_index as usize];
                         visit(TransitLeg {
-                            node_id: self.data.stop_node_map[next.stop_index as usize],
+                            node_id: self.data.stop_to_node[f.next_stop_index as usize],
                             board_delta,
                             arrival_delta: (arrival - self.query.window_start) as u16,
                             pattern_idx: pat_idx as u16,
-                            transit_ref: TransitRef::Scheduled {
-                                event_idx: flat_idx as u32,
-                            },
+                            transit_ref: TransitRef::Frequency { freq_idx },
                         })?;
-                        flat_idx = cur.next_event_index as usize;
-                    }
-                }
-
-                // ── Frequency-based ───────────────────────────────────────────────
-                for &fi in &pat.stop_index.freq_by_stop[stop_idx] {
-                    let freq = &pat.frequency_routes[fi as usize];
-                    if freq.travel_time == 0 {
-                        continue;
-                    }
-                    if min_departure >= freq.end_time {
-                        continue;
-                    }
-                    let effective_start = freq.start_time.max(min_departure);
-                    if effective_start > max_departure {
-                        continue;
-                    }
-                    let elapsed_to_eff = effective_start.saturating_sub(freq.start_time);
-                    let wait = if elapsed_to_eff % freq.headway_secs == 0 {
-                        0
-                    } else {
-                        freq.headway_secs - (elapsed_to_eff % freq.headway_secs)
-                    };
-                    let first_board = effective_start + wait;
-                    if first_board > max_departure {
-                        continue;
-                    }
-
-                    let mut board = first_board;
-                    while board <= max_departure && board < freq.end_time {
-                        let board_delta = (board - self.query.window_start) as u16;
-                        let mut freq_idx = fi;
-                        let mut elapsed = 0u32;
-
-                        loop {
-                            let f = &pat.frequency_routes[freq_idx as usize];
-                            if f.travel_time == 0 {
-                                break;
-                            }
-                            elapsed += f.travel_time;
-                            let arrival = board + elapsed;
-                            if arrival > max_arrival {
-                                break;
-                            }
-                            visit(TransitLeg {
-                                node_id: self.data.stop_node_map[f.next_stop_index as usize],
-                                board_delta,
-                                arrival_delta: (arrival - self.query.window_start) as u16,
-                                pattern_idx: pat_idx as u16,
-                                transit_ref: TransitRef::Frequency { freq_idx },
-                            })?;
-                            if f.next_freq_index == u32::MAX {
-                                break;
-                            }
-                            freq_idx = f.next_freq_index;
-                        }
-
-                        board += freq.headway_secs;
-
-                        if !expand_headways {
+                        if f.next_freq_index == u32::MAX {
                             break;
                         }
+                        freq_idx = f.next_freq_index;
+                    }
+
+                    board += freq.headway_secs;
+
+                    if !expand_headways {
+                        break;
                     }
                 }
             }

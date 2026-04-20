@@ -1,7 +1,7 @@
 use std::io::Read as _;
 use std::path::Path;
 use transit_router::profile::SegmentKind;
-use transit_router::{data, router, sssp_path, SsspResult};
+use transit_router::{SsspResult, data, router, sssp_path};
 
 /// Load a city's .bin file, returning None if it doesn't exist (skip test).
 /// Decompresses gzip automatically (files are stored gzip-compressed for the browser).
@@ -169,11 +169,17 @@ fn montreal_debug_patterns() {
     for &pi in &patterns {
         let p = &data.patterns[pi];
         let nstops = p.stop_index.events_by_stop.data.len();
-        eprintln!("  pattern {} day_mask={:07b} min_time={}({:.1}h) max_time={}({:.1}h) events={} route_count={}",
-            pi, p.day_mask,
-            p.min_time, p.min_time as f64 / 3600.0,
-            p.max_time, p.max_time as f64 / 3600.0,
-            nstops, p.stop_index.events_by_stop.offsets.len());
+        eprintln!(
+            "  pattern {} day_mask={:07b} min_time={}({:.1}h) max_time={}({:.1}h) events={} route_count={}",
+            pi,
+            p.day_mask,
+            p.min_time,
+            p.min_time as f64 / 3600.0,
+            p.max_time,
+            p.max_time as f64 / 3600.0,
+            nstops,
+            p.stop_index.events_by_stop.offsets.len()
+        );
     }
 
     // Print bounding box of transit-reached nodes
@@ -286,7 +292,7 @@ fn montreal_debug_patterns() {
     let src_lon = data.nodes[src_node as usize].lon;
     eprintln!("\nTransit stops within ~800m of source:");
     for (si, stop) in data.stops.iter().enumerate() {
-        let sn = data.stop_node_map[si];
+        let sn = data.stop_to_node[si];
         if sn == u32::MAX {
             continue;
         }
@@ -341,7 +347,7 @@ fn montreal_debug_patterns() {
         for (si, stop) in data.stops.iter().enumerate() {
             if stop.name.contains(keyword) {
                 found_any = true;
-                let sn = data.stop_node_map[si];
+                let sn = data.stop_to_node[si];
                 let node_info = if sn == u32::MAX {
                     "(no walk node)".to_string()
                 } else {
@@ -370,9 +376,16 @@ fn montreal_debug_patterns() {
         if stop.name.contains("Snowdon") {
             for (pi, p) in data.patterns.iter().enumerate() {
                 if !p.stop_index.events_by_stop[si as u32].is_empty() {
-                    eprintln!("  stop {} '{}' → pattern {} day_mask={:07b} start={} end={} active_on_20260405={}",
-                        si, stop.name, pi, p.day_mask, p.start_date, p.end_date,
-                        patterns.contains(&pi));
+                    eprintln!(
+                        "  stop {} '{}' → pattern {} day_mask={:07b} start={} end={} active_on_20260405={}",
+                        si,
+                        stop.name,
+                        pi,
+                        p.day_mask,
+                        p.start_date,
+                        p.end_date,
+                        patterns.contains(&pi)
+                    );
                 }
             }
         }

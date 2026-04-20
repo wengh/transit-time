@@ -40,8 +40,7 @@ pub fn optimal_path(data: &PreparedData, sssp: &SsspResult, destination: u32) ->
     }
 
     let home_departure = sssp.departure_time;
-    let arrival_time =
-        home_departure + sssp.results[destination as usize].arrival_delta as u32;
+    let arrival_time = home_departure + sssp.results[destination as usize].arrival_delta as u32;
     let total_time = arrival_time.saturating_sub(home_departure);
 
     let mut segments: Vec<PathSegment> = Vec::new();
@@ -66,10 +65,8 @@ pub fn optimal_path(data: &PreparedData, sssp: &SsspResult, destination: u32) ->
                 }
             }
             let last = *nodes.last().unwrap();
-            let start_time =
-                home_departure + sssp.results[from as usize].arrival_delta as u32;
-            let end_time =
-                home_departure + sssp.results[last as usize].arrival_delta as u32;
+            let start_time = home_departure + sssp.results[from as usize].arrival_delta as u32;
+            let end_time = home_departure + sssp.results[last as usize].arrival_delta as u32;
             segments.push(PathSegment {
                 kind: SegmentKind::Walk,
                 start_time,
@@ -105,7 +102,7 @@ pub fn optimal_path(data: &PreparedData, sssp: &SsspResult, destination: u32) ->
                     let mut next_fi = fi;
                     loop {
                         let leg = &pat.frequency_routes[next_fi as usize];
-                        let stop_node = data.stop_node_map[leg.next_stop_index as usize];
+                        let stop_node = data.stop_to_node[leg.next_stop_index as usize];
                         if stop_node == to {
                             break;
                         }
@@ -123,7 +120,7 @@ pub fn optimal_path(data: &PreparedData, sssp: &SsspResult, destination: u32) ->
                     let mut idx = boarding_event.next_event_index;
                     while idx != u32::MAX {
                         let e = &pat.stop_index.events_by_stop.data[idx as usize];
-                        let stop_node = data.stop_node_map[e.stop_index as usize];
+                        let stop_node = data.stop_to_node[e.stop_index as usize];
                         if stop_node == to {
                             break;
                         }
@@ -161,12 +158,9 @@ pub fn optimal_path(data: &PreparedData, sssp: &SsspResult, destination: u32) ->
 }
 
 fn stop_name_for_node(data: &PreparedData, node: u32) -> String {
-    let idx = node as usize;
-    if idx < data.node_is_stop.len() && data.node_is_stop[idx] {
-        if let Some(&stop_idx) = data.node_stop_indices.get(node).first() {
-            if let Some(s) = data.stops.get(stop_idx as usize) {
-                return s.name.clone();
-            }
+    if let Some(&stop_idx) = data.node_to_stop.get(&node) {
+        if let Some(s) = data.stops.get(stop_idx as usize) {
+            return s.name.clone();
         }
     }
     String::new()
