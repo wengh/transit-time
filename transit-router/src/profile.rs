@@ -193,6 +193,7 @@ struct QueueEntry {
     node_id: u32,
 }
 
+#[derive(Debug, Copy, Clone)]
 struct DestinationStats {
     mean_travel_time: u16,
     reachable_fraction: u16,
