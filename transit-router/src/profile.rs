@@ -37,9 +37,8 @@ pub struct ProfileQuery {
 #[derive(Debug, Clone)]
 pub struct Isochrone {
     /// Length = `data.num_nodes`. `u32::MAX` = unreachable within `max_time`.
-    /// `min_travel_time[v]` = min over all Pareto entries at `v` of
-    /// `(arrival − home_departure)`. Walk-only entry contributes its walk time.
-    pub min_travel_time: Vec<u32>,
+    /// Mean travel time excluding unreachable departure times. `u32::MAX` if node is never reachable.
+    pub mean_travel_time: Vec<u32>,
     /// Length = `data.num_nodes`. In `[0.0, 1.0]`. Fraction of the query window
     /// during which `v` is reachable within `max_time`, computed as the
     /// normalised interval union over the per-node Pareto frontier.
@@ -399,6 +398,8 @@ impl ProfileRouter for ProfileRouting {
                 );
             }
         }
+
+        // ── Phase 3: compute isochrone stats ───────────────────────────────
 
         todo!();
     }
