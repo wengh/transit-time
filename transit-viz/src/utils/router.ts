@@ -14,9 +14,10 @@ export type Router = TransitRouter;
 export type SsspList = WasmSsspResult[];
 export type Profile = WasmProfileRouting;
 
-// Scale factor mapping profile fraction ∈ [0,1] into the integer (sampleCounts, totalSamples) pair
-// the existing webgl shader consumes. Chosen so rounding error is < 0.1% of a full window.
-const PROFILE_FRACTION_SCALE = 1024;
+// Profile reachable_fraction is quantized over u16::MAX in Rust. The webgl
+// shader consumes (sampleCounts, totalSamples) — we forward the raw u16
+// numerator and use 0xffff as the denominator.
+const PROFILE_FRACTION_SCALE = 0xffff;
 
 /// Legacy per-segment shape consumed by HoverInfo.tsx and the map polyline
 /// renderer. edgeType: 0 = walk, 1 = transit.
@@ -121,14 +122,16 @@ export function runQuery(router: Router, params: RunQueryParams): QueryResult {
   const profile: Profile = router.compute_profile(
     sourceNode, departureTime, windowEnd, dateInt, transferSlack, maxTime
   );
-  // Pull per-node isochrone arrays in one WASM call each.
+  // Pull per-node isochrone arrays in one WASM call each. Both are u16 in Rust:
+  // mean_travel_times in seconds (undefined when the matching fraction is 0),
+  // reachable_fractions quantized over u16::MAX = PROFILE_FRACTION_SCALE.
   const meanTravel = profile.mean_travel_times();
   const fractions = profile.reachable_fractions();
   const travelTimes = new Float32Array(numNodes);
   const counts = new Uint32Array(numNodes);
   for (let i = 0; i < numNodes; i++) {
-    travelTimes[i] = meanTravel[i] < 0xffffffff ? meanTravel[i] : NaN;
-    counts[i] = Math.round(fractions[i] * PROFILE_FRACTION_SCALE);
+    travelTimes[i] = fractions[i] > 0 ? meanTravel[i] : NaN;
+    counts[i] = fractions[i];
   }
   return {
     travelTimes,

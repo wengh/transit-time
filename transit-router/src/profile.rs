@@ -36,16 +36,18 @@ pub struct ProfileQuery {
 /// Per-node isochrone summary for the map overlay.
 #[derive(Debug, Clone)]
 pub struct Isochrone {
-    /// Length = `data.num_nodes`. Mean of `(arrival − home_departure)`
-    /// *conditioned on reachability*: integrate travel time over the home-departure
-    /// sub-window where `v` is reachable within `max_time`, divide by the length
-    /// of that sub-window. Pairs with `reachable_fraction` as the orthogonal
-    /// "how often" signal. `u32::MAX` if `v` is never reachable.
-    pub mean_travel_time: Vec<u32>,
-    /// Length = `data.num_nodes`. In `[0.0, 1.0]`. Fraction of the query window
-    /// during which `v` is reachable within `max_time`, computed as the
-    /// normalised interval union over the per-node Pareto frontier.
-    pub reachable_fraction: Vec<f32>,
+    /// Length = `data.num_nodes`. Mean of `(arrival − home_departure)` in
+    /// seconds, *conditioned on reachability*: integrate travel time over the
+    /// home-departure sub-window where `v` is reachable within `max_time`,
+    /// divide by the length of that sub-window. Pairs with `reachable_fraction`
+    /// as the orthogonal "how often" signal. Undefined when
+    /// `reachable_fraction[v] == 0` (consumers must check that first).
+    pub mean_travel_time: Vec<u16>,
+    /// Length = `data.num_nodes`. Fraction of the query window during which
+    /// `v` is reachable within `max_time`, quantized over `u16::MAX`
+    /// (i.e. fraction = `value / u16::MAX as f32`). Computed as the normalised
+    /// interval union over the per-node Pareto frontier.
+    pub reachable_fraction: Vec<u16>,
     pub window_start: u32,
     pub window_end: u32,
 }
@@ -192,8 +194,8 @@ struct QueueEntry {
 }
 
 struct DestinationStats {
-    mean_travel_time: u32,
-    reachable_fraction: f32,
+    mean_travel_time: u16,
+    reachable_fraction: u16,
 }
 
 /// Opaque routing state. Internal representation is not part of the public
@@ -410,7 +412,7 @@ impl ProfileRouter for ProfileRouting {
         // ── Phase 3: compute isochrone stats ───────────────────────────────
         let mut isochrone = Isochrone {
             mean_travel_time: vec![0; n],
-            reachable_fraction: vec![0.0; n],
+            reachable_fraction: vec![0; n],
             window_start: query.window_start,
             window_end: query.window_end,
         };
@@ -515,8 +517,8 @@ impl<'a> ProfileQueryContext<'a> {
     fn compute_destination_stats(&self, mut entries: &[Entry]) -> DestinationStats {
         if entries.is_empty() {
             return DestinationStats {
-                mean_travel_time: u32::MAX,
-                reachable_fraction: 0.0,
+                mean_travel_time: 0,
+                reachable_fraction: 0,
             };
         }
 
@@ -574,13 +576,17 @@ impl<'a> ProfileQueryContext<'a> {
             denominator = window_length;
         }
 
+        // Quantize fraction over u16::MAX. `denominator <= window_length` by
+        // construction, so the ratio fits in u16 without saturation.
+        let fraction_q = (denominator as u64 * u16::MAX as u64 / window_length as u64) as u16;
+        let mean = if denominator > 0 {
+            (numerator / denominator as u64) as u16
+        } else {
+            0
+        };
         DestinationStats {
-            mean_travel_time: if denominator > 0 {
-                (numerator / denominator as u64) as u32
-            } else {
-                u32::MAX
-            },
-            reachable_fraction: denominator as f32 / window_length as f32,
+            mean_travel_time: mean,
+            reachable_fraction: fraction_q,
         }
     }
 
