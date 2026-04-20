@@ -72,7 +72,7 @@ fn main() {
 
     let iso = routing.isochrone();
     let reachable: Vec<u32> = iso
-        .min_travel_time
+        .mean_travel_time
         .iter()
         .filter(|&&t| t != u32::MAX)
         .copied()
@@ -83,7 +83,7 @@ fn main() {
     println!(
         "Nodes reached: {} / {}",
         reachable.len(),
-        iso.min_travel_time.len()
+        iso.mean_travel_time.len()
     );
 
     if !reachable.is_empty() {

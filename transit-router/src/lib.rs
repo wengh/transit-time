@@ -69,10 +69,10 @@ pub struct WasmProfileRouting {
 
 #[wasm_bindgen]
 impl WasmProfileRouting {
-    /// Per-node minimum travel time (arrival − home_departure). `u32::MAX` for
-    /// nodes unreachable within the query's `max_time`. Length = `num_nodes`.
-    pub fn min_travel_times(&self) -> Vec<u32> {
-        self.inner.isochrone().min_travel_time.clone()
+    /// Per-node mean travel time over reachable departures in the window.
+    /// `u32::MAX` if the node is never reachable. Length = `num_nodes`.
+    pub fn mean_travel_times(&self) -> Vec<u32> {
+        self.inner.isochrone().mean_travel_time.clone()
     }
 
     /// Per-node fraction of the departure window during which the node is

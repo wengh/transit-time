@@ -122,12 +122,12 @@ export function runQuery(router: Router, params: RunQueryParams): QueryResult {
     sourceNode, departureTime, windowEnd, dateInt, transferSlack, maxTime
   );
   // Pull per-node isochrone arrays in one WASM call each.
-  const minTravel = profile.min_travel_times();
+  const meanTravel = profile.mean_travel_times();
   const fractions = profile.reachable_fractions();
   const travelTimes = new Float32Array(numNodes);
   const counts = new Uint32Array(numNodes);
   for (let i = 0; i < numNodes; i++) {
-    travelTimes[i] = minTravel[i] < 0xffffffff ? minTravel[i] : NaN;
+    travelTimes[i] = meanTravel[i] < 0xffffffff ? meanTravel[i] : NaN;
     counts[i] = Math.round(fractions[i] * PROFILE_FRACTION_SCALE);
   }
   return {
