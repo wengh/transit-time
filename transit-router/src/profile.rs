@@ -122,8 +122,7 @@ pub trait ProfileRouter: Sized {
 const ORIGIN_PREDECESSOR: u32 = u32::MAX;
 
 const INITIAL_WALK: u16 = u16::MAX;
-const PENDING_RELAXATION: u16 = INITIAL_WALK - 1;
-const MAX_DELTA: u16 = PENDING_RELAXATION - 1;
+const MAX_DELTA: u16 = INITIAL_WALK - 1;
 
 /// A single entry for a node, representing a Pareto-optimal
 /// (home_departure, arrival) pair.
@@ -140,9 +139,6 @@ struct Entry {
 
     /// Time leaving the source node (seconds since start of profile window)
     /// - INITIAL_WALK if all predecessors are walks
-    /// - For Phase 2 (full transit routing) only:
-    ///   - PENDING_RELAXATION if this entry is in the frontier but not yet finalized
-    ///   - Only the last entry for each node can be PENDING_RELAXATION
     home_departure_delta: u16,
 
     /// Arrival time (seconds since start of profile window)
@@ -344,8 +340,6 @@ impl ProfileRouter for ProfileRouting {
                     continue;
                 }
 
-                entry.home_departure_delta = home_departure_delta; // finalize this entry
-
                 // Relax walk edges
                 for &(neighbor, distance) in &data.adj[node_id] {
                     let new_arrival_delta = arrival_delta.saturating_add(get_walk_time(distance));
@@ -451,23 +445,21 @@ fn relax(
     frontier: &mut Frontier,
     queue: &mut BinaryHeap<Reverse<QueueEntry>>,
     node_id: u32,
-    mut new_entry: Entry,
+    new_entry: Entry,
 ) {
     let neighbor_entries = &mut frontier.nodes[node_id as usize].entries;
     if let Some(best) = neighbor_entries.last_mut() {
         if is_new_entry_dominated(&new_entry, best) {
             return;
         }
-        new_entry.home_departure_delta = PENDING_RELAXATION;
-        if best.home_departure_delta == PENDING_RELAXATION {
-            // `best` was an entry from the current home departure time
+        if best.home_departure_delta == new_entry.home_departure_delta {
+            // `best` was an entry in the current round, so relax it
             *best = new_entry;
         } else {
-            // `best` was an entry with a later home departure time
+            // `best` was an entry with a later home departure time, so add a new frontier entry
             neighbor_entries.push(new_entry);
         }
     } else {
-        new_entry.home_departure_delta = PENDING_RELAXATION;
         neighbor_entries.push(new_entry);
     }
 
