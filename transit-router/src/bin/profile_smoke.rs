@@ -71,11 +71,14 @@ fn main() {
     let elapsed = t0.elapsed();
 
     let iso = routing.isochrone();
+    // Reachability is signaled by `reachable_fraction > 0`; the mean is
+    // undefined (zero-init) for never-reachable nodes.
     let reachable: Vec<u32> = iso
         .mean_travel_time
         .iter()
-        .filter(|&&t| t != u32::MAX)
-        .copied()
+        .zip(iso.reachable_fraction.iter())
+        .filter(|&(_, &f)| f > 0)
+        .map(|(&t, _)| t as u32)
         .collect();
 
     println!();
@@ -96,11 +99,15 @@ fn main() {
             avg_t / 60,
             max_t / 60
         );
-        let always_reachable = iso.reachable_fraction.iter().filter(|&&f| f >= 1.0).count();
+        let always_reachable = iso
+            .reachable_fraction
+            .iter()
+            .filter(|&&f| f == u16::MAX)
+            .count();
         let sometimes_reachable = iso
             .reachable_fraction
             .iter()
-            .filter(|&&f| f > 0.0 && f < 1.0)
+            .filter(|&&f| f > 0 && f < u16::MAX)
             .count();
         println!(
             "Always reachable (fraction=1): {always_reachable}, sometimes: {sometimes_reachable}"

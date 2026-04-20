@@ -69,15 +69,17 @@ pub struct WasmProfileRouting {
 
 #[wasm_bindgen]
 impl WasmProfileRouting {
-    /// Per-node mean travel time over reachable departures in the window.
-    /// `u32::MAX` if the node is never reachable. Length = `num_nodes`.
-    pub fn mean_travel_times(&self) -> Vec<u32> {
+    /// Per-node mean travel time (seconds) over reachable departures in the
+    /// window. Undefined when `reachable_fractions()[i] == 0` — consumers must
+    /// check that first. Length = `num_nodes`.
+    pub fn mean_travel_times(&self) -> Vec<u16> {
         self.inner.isochrone().mean_travel_time.clone()
     }
 
     /// Per-node fraction of the departure window during which the node is
-    /// reachable within `max_time`. Values in `[0, 1]`. Length = `num_nodes`.
-    pub fn reachable_fractions(&self) -> Vec<f32> {
+    /// reachable within `max_time`, quantized over `u16::MAX`
+    /// (i.e. fraction = `value / 65535`). Length = `num_nodes`.
+    pub fn reachable_fractions(&self) -> Vec<u16> {
         self.inner.isochrone().reachable_fraction.clone()
     }
 
