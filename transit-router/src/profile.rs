@@ -168,6 +168,9 @@ struct TransitLeg {
     transit_ref: TransitRef,
 }
 
+/// Identifies the trip a [`TransitLeg`] belongs to. Always points at the
+/// *boarding* stop's event/freq record (not the per-leg advancing index), so
+/// backtracking can walk the forward chain to enumerate intermediate stops.
 #[derive(Debug, Copy, Clone)]
 enum TransitRef {
     Scheduled { event_idx: u32 },
@@ -520,7 +523,8 @@ impl<'a> ProfileQueryContext<'a> {
                     continue; // sentinel
                 }
                 let board_delta = (event.time_offset - self.query.window_start) as u16;
-                let mut flat_idx = base + start + j;
+                let board_event_idx = (base + start + j) as u32;
+                let mut flat_idx = board_event_idx as usize;
 
                 loop {
                     let cur = &pat.stop_index.events_by_stop.data[flat_idx];
@@ -538,7 +542,7 @@ impl<'a> ProfileQueryContext<'a> {
                         arrival_delta: (arrival - self.query.window_start) as u16,
                         pattern_idx: pat_idx as u16,
                         transit_ref: TransitRef::Scheduled {
-                            event_idx: flat_idx as u32,
+                            event_idx: board_event_idx,
                         },
                     })?;
                     flat_idx = cur.next_event_index as usize;
@@ -590,7 +594,7 @@ impl<'a> ProfileQueryContext<'a> {
                             board_delta,
                             arrival_delta: (arrival - self.query.window_start) as u16,
                             pattern_idx: pat_idx as u16,
-                            transit_ref: TransitRef::Frequency { freq_idx },
+                            transit_ref: TransitRef::Frequency { freq_idx: fi },
                         })?;
                         if f.next_freq_index == u32::MAX {
                             break;
