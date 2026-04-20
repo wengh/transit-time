@@ -36,8 +36,11 @@ pub struct ProfileQuery {
 /// Per-node isochrone summary for the map overlay.
 #[derive(Debug, Clone)]
 pub struct Isochrone {
-    /// Length = `data.num_nodes`. `u32::MAX` = unreachable within `max_time`.
-    /// Mean travel time excluding unreachable departure times. `u32::MAX` if node is never reachable.
+    /// Length = `data.num_nodes`. Mean of `(arrival − home_departure)`
+    /// *conditioned on reachability*: integrate travel time over the home-departure
+    /// sub-window where `v` is reachable within `max_time`, divide by the length
+    /// of that sub-window. Pairs with `reachable_fraction` as the orthogonal
+    /// "how often" signal. `u32::MAX` if `v` is never reachable.
     pub mean_travel_time: Vec<u32>,
     /// Length = `data.num_nodes`. In `[0.0, 1.0]`. Fraction of the query window
     /// during which `v` is reachable within `max_time`, computed as the
@@ -186,6 +189,11 @@ struct PendingEntry {
 struct QueueEntry {
     arrival_delta: u16,
     node_id: u32,
+}
+
+struct DestinationStats {
+    mean_travel_time: u32,
+    reachable_fraction: f32,
 }
 
 /// Opaque routing state. Internal representation is not part of the public
@@ -400,8 +408,26 @@ impl ProfileRouter for ProfileRouting {
         }
 
         // ── Phase 3: compute isochrone stats ───────────────────────────────
-
-        todo!();
+        let mut isochrone = Isochrone {
+            mean_travel_time: vec![0; n],
+            reachable_fraction: vec![0.0; n],
+            window_start: query.window_start,
+            window_end: query.window_end,
+        };
+        for ((node_entries, mean_travel_time), reachable_fraction) in frontier
+            .nodes
+            .iter()
+            .zip(&mut isochrone.mean_travel_time)
+            .zip(&mut isochrone.reachable_fraction)
+        {
+            let stats = context.compute_destination_stats(&node_entries.entries);
+            *mean_travel_time = stats.mean_travel_time;
+            *reachable_fraction = stats.reachable_fraction;
+        }
+        Self {
+            frontier,
+            isochrone,
+        }
     }
 
     fn isochrone(&self) -> &Isochrone {
@@ -483,6 +509,78 @@ impl<'a> ProfileQueryContext<'a> {
             data,
             query,
             active_patterns,
+        }
+    }
+
+    fn compute_destination_stats(&self, mut entries: &[Entry]) -> DestinationStats {
+        if entries.is_empty() {
+            return DestinationStats {
+                mean_travel_time: u32::MAX,
+                reachable_fraction: 0.0,
+            };
+        }
+
+        let mut time_limit = self.query.max_time + 1; // exclusive limit
+        let walk_entry = match entries {
+            [walk, rest @ ..] if walk.home_departure_delta == INITIAL_WALK => {
+                entries = rest;
+                time_limit = walk.arrival_delta as u32;
+                Some(*walk)
+            }
+            _ => None,
+        };
+
+        // How many integer-second home_departure values fit in the window.
+        let window_length = self.query.window_end - self.query.window_start + 1;
+
+        // Iterating .rev() walks entries in ascending home_departure / ascending
+        // arrival. Each entry covers home-departure values t ∈ (prev_departure,
+        // departure]; for t in that segment travel(t) = arrival − t, ranging
+        // from `travel_min = arrival − departure` (at t = departure) up to
+        // `travel_min + segment_len − 1` (at t = prev_departure + 1).
+        //
+        // prev_departure starts at -1 (exclusive lower bound) so the first
+        // segment correctly includes t = 0.
+        let mut numerator: u64 = 0;
+        let mut denominator: u32 = 0;
+        let mut prev_departure: i32 = -1;
+
+        // Iterate in ascending arrival & departure order
+        for entry in entries.iter().rev() {
+            let arrival = entry.arrival_delta as u32;
+            let departure = entry.home_departure_delta as u32;
+            let travel = arrival - departure;
+            if travel >= time_limit {
+                continue;
+            }
+
+            let segment_len = (departure as i32 - prev_departure) as u32;
+            // Trim segment from the LEFT (largest travel times) when travel
+            // exceeds the limit: only the rightmost `time_limit − travel` t's
+            // are reachable via this entry.
+            let reachable = (time_limit - travel).min(segment_len);
+            denominator += reachable;
+            // Sum of travel(t) over the reachable t's:
+            //   reachable * travel_min + (0 + 1 + … + reachable − 1)
+            numerator += reachable as u64 * travel as u64;
+            numerator += (reachable as u64) * (reachable as u64 - 1) / 2;
+
+            prev_departure = departure as i32;
+        }
+
+        if let Some(walk) = walk_entry {
+            // Walk fills every t not claimed by a transit entry above.
+            numerator += walk.arrival_delta as u64 * (window_length - denominator) as u64;
+            denominator = window_length;
+        }
+
+        DestinationStats {
+            mean_travel_time: if denominator > 0 {
+                (numerator / denominator as u64) as u32
+            } else {
+                u32::MAX
+            },
+            reachable_fraction: denominator as f32 / window_length as f32,
         }
     }
 
