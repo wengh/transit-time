@@ -518,13 +518,14 @@ impl ProfileRouting {
                     } else {
                         self.isochrone.query.transfer_slack
                     };
+                let max_departure = delta_to_time(curr.arrival_delta);
                 let mut found = None;
                 let _ = context.expand_transit_legs(
                     ExpandTransitLegQuery {
                         node: prev_node,
                         min_departure,
-                        max_departure: delta_to_time(curr.arrival_delta),
-                        expand_headways: false,
+                        max_departure,
+                        expand_headways: true,
                         max_arrival: Some(delta_to_time(curr.arrival_delta)),
                     },
                     |leg| {
@@ -536,16 +537,20 @@ impl ProfileRouting {
                         }
                     },
                 );
-                let leg = found.expect("Transit leg not found during path reconstruction");
+                let leg = found.unwrap_or_else(|| {
+                    panic!(
+                        "No transit leg found from {} to {} departing between t={} and t={}\nprev_entries={:#?}\ncurr={:#?}",
+                        context.get_stop_name(prev_node),
+                        context.get_stop_name(curr_node),
+                        min_departure,
+                        max_departure,
+                        prev_entries,
+                        curr,
+                    )
+                });
 
                 // Find the route and the stops
                 let pat = &data.patterns[leg.pattern_idx as usize];
-                let start_stop_name = data.stops[data.node_to_stop[&prev_node] as usize]
-                    .name
-                    .clone();
-                let end_stop_name = data.stops[data.node_to_stop[&curr_node] as usize]
-                    .name
-                    .clone();
                 let mut node_sequence = Vec::new();
                 let end_stop = data.node_to_stop[&curr_node];
                 let route_index = match leg.transit_ref {
@@ -590,8 +595,8 @@ impl ProfileRouting {
                     start_time: delta_to_time(leg.board_delta),
                     end_time: delta_to_time(leg.arrival_delta),
                     wait_time: leg.board_delta as u32 - prev_arrival_delta as u32,
-                    start_stop_name,
-                    end_stop_name,
+                    start_stop_name: context.get_stop_name(prev_node).to_string(),
+                    end_stop_name: context.get_stop_name(curr_node).to_string(),
                     route_index: Some(route_index as u32),
                     route_name: Some(route_name),
                     node_sequence,
@@ -631,6 +636,12 @@ fn relax(
     new_entry: Entry,
 ) {
     let neighbor_entries = &mut frontier.nodes[node_id as usize].entries;
+    if let Some(first) = neighbor_entries.first()
+        && first.home_departure_delta == INITIAL_WALK
+        && is_new_entry_dominated(&new_entry, first)
+    {
+        return;
+    }
     if let Some(best) = neighbor_entries.last_mut() {
         if is_new_entry_dominated(&new_entry, best) {
             return;
@@ -688,6 +699,11 @@ impl<'a> ProfileQueryContext<'a> {
             query,
             active_patterns,
         }
+    }
+
+    fn get_stop_name(&self, node_id: u32) -> &'a str {
+        let stop_idx = self.data.node_to_stop[&node_id];
+        self.data.stops[stop_idx as usize].name.as_str()
     }
 
     fn compute_destination_stats(&self, mut entries: &[Entry]) -> DestinationStats {
