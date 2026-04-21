@@ -22,5 +22,6 @@
         "rail",
         "bus",
         "ferry"
-    ]
+    ],
+    "allow_stale": false
 }
