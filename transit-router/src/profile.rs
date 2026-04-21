@@ -48,8 +48,7 @@ pub struct Isochrone {
     /// (i.e. fraction = `value / u16::MAX as f32`). Computed as the normalised
     /// interval union over the per-node Pareto frontier.
     pub reachable_fraction: Vec<u16>,
-    pub window_start: u32,
-    pub window_end: u32,
+    pub query: ProfileQuery,
 }
 
 /// One Pareto-optimal journey from source to a destination.
@@ -78,10 +77,11 @@ pub struct PathSegment {
     /// Seconds between arriving at the boarding stop and vehicle_dep. `0` for
     /// walks.
     pub wait_time: u32,
+    // Empty string for walks.
     pub start_stop_name: String,
     pub end_stop_name: String,
     /// `None` for walks.
-    pub route_index: Option<u16>,
+    pub route_index: Option<u32>,
     /// `None` for walks. Human label (e.g. "Blue Line").
     pub route_name: Option<String>,
     /// Node indices. Walk: `[start, end]` (len 2). Transit: `[boarding,
@@ -408,8 +408,7 @@ impl ProfileRouter for ProfileRouting {
         let mut isochrone = Isochrone {
             mean_travel_time: vec![0; n],
             reachable_fraction: vec![0; n],
-            window_start: query.window_start,
-            window_end: query.window_end,
+            query: query.clone(),
         };
         for ((node_entries, mean_travel_time), reachable_fraction) in frontier
             .nodes
@@ -431,8 +430,192 @@ impl ProfileRouter for ProfileRouting {
         &self.isochrone
     }
 
-    fn optimal_paths(&self, _data: &PreparedData, _destination: u32) -> Vec<Path> {
-        todo!();
+    fn optimal_paths(&self, data: &PreparedData, destination: u32) -> Vec<Path> {
+        self.frontier.nodes[destination as usize]
+            .entries
+            .iter()
+            .map(|entry| self.reconstruct_path(data, destination, *entry))
+            .collect()
+    }
+}
+
+impl ProfileRouting {
+    fn reconstruct_path(&self, data: &PreparedData, destination: u32, entry: Entry) -> Path {
+        let home_departure_delta = if entry.home_departure_delta == INITIAL_WALK {
+            0 // For walk-only entries, just use window_start as home departure since it doesn't matter
+        } else {
+            entry.home_departure_delta
+        };
+
+        let context = ProfileQueryContext::new(data, &self.isochrone.query);
+        let delta_to_time = |delta: u16| delta as u32 + self.isochrone.query.window_start;
+
+        let mut segments: Vec<PathSegment> = Vec::new();
+
+        let source = self.isochrone.query.source_node;
+        let mut curr_node = destination;
+        let mut curr = entry;
+        while curr_node != source {
+            let prev_node = curr.prev;
+
+            // Find predecessor entry
+            let prev_entries = &self.frontier.nodes[prev_node as usize].entries;
+            assert!(!prev_entries.is_empty());
+            let prev_entry_idx = prev_entries
+                .binary_search_by_key(&Reverse(curr.home_departure_delta), |e| {
+                    Reverse(e.home_departure_delta)
+                })
+                // If not found, it means we reached this from initial walk, so switch to the initial walk entry at index 0
+                .unwrap_or(0);
+            let prev = prev_entries[prev_entry_idx];
+            assert!(
+                prev.home_departure_delta == INITIAL_WALK
+                    || prev.home_departure_delta == entry.home_departure_delta
+            );
+
+            // Determine whether this entry is walk or transit
+            let prev_arrival_delta = get_true_arrival_delta(home_departure_delta, &prev);
+            let is_walk = curr.home_departure_delta == INITIAL_WALK || {
+                let edge_weight = data.adj[prev_node]
+                    .iter()
+                    .find(|&&(neighbor, _)| neighbor == curr_node)
+                    .map(|&(_, w)| w);
+                match edge_weight {
+                    Some(w) => {
+                        prev_arrival_delta.saturating_add(get_walk_time(w)) == curr.arrival_delta
+                    }
+                    None => false,
+                }
+            };
+
+            if is_walk {
+                if let Some(segment) = segments.last_mut()
+                    && segment.kind == SegmentKind::Walk
+                {
+                    // Merge into next walk segment
+                    segment.start_time = delta_to_time(prev_arrival_delta);
+                    segment.node_sequence.push(curr_node);
+                } else {
+                    segments.push(PathSegment {
+                        kind: SegmentKind::Walk,
+                        start_time: delta_to_time(prev_arrival_delta),
+                        end_time: delta_to_time(curr.arrival_delta),
+                        wait_time: 0,
+                        start_stop_name: String::new(),
+                        end_stop_name: String::new(),
+                        route_index: None,
+                        route_name: None,
+                        node_sequence: vec![curr_node, prev_node], // For walk we have the sequence in reverse order so insert is fast. Flip to correct order at the end.
+                    });
+                }
+            } else {
+                // Is transit
+                // Find the transit leg taken
+                // Require transfer slack unless this is from initial walk
+                let min_departure = delta_to_time(prev_arrival_delta)
+                    + if prev.home_departure_delta == INITIAL_WALK {
+                        0
+                    } else {
+                        self.isochrone.query.transfer_slack
+                    };
+                let mut found = None;
+                let _ = context.expand_transit_legs(
+                    ExpandTransitLegQuery {
+                        node: prev_node,
+                        min_departure,
+                        max_departure: delta_to_time(curr.arrival_delta),
+                        expand_headways: false,
+                        max_arrival: Some(delta_to_time(curr.arrival_delta)),
+                    },
+                    |leg| {
+                        if leg.node_id == curr_node && leg.arrival_delta == curr.arrival_delta {
+                            found = Some(leg);
+                            ControlFlow::Break(())
+                        } else {
+                            ControlFlow::Continue(())
+                        }
+                    },
+                );
+                let leg = found.expect("Transit leg not found during path reconstruction");
+
+                // Find the route and the stops
+                let pat = &data.patterns[leg.pattern_idx as usize];
+                let start_stop_name = data.stops[data.node_to_stop[&prev_node] as usize]
+                    .name
+                    .clone();
+                let end_stop_name = data.stops[data.node_to_stop[&curr_node] as usize]
+                    .name
+                    .clone();
+                let mut node_sequence = Vec::new();
+                let end_stop = data.node_to_stop[&curr_node];
+                let route_index = match leg.transit_ref {
+                    TransitRef::Scheduled { event_idx } => {
+                        let events = &pat.stop_index.events_by_stop.data;
+                        let mut curr_event_idx = event_idx;
+                        let mut reached_end_stop = false;
+                        let route_index = loop {
+                            let event = &events[curr_event_idx as usize];
+                            if !reached_end_stop {
+                                node_sequence.push(data.stop_to_node[event.stop_index as usize]);
+                            }
+                            if event.stop_index == end_stop {
+                                reached_end_stop = true;
+                            }
+                            if event.next_event_index == u32::MAX {
+                                // Last event
+                                break pat.sentinel_routes[&(curr_event_idx as u32)];
+                            }
+                            curr_event_idx = event.next_event_index;
+                        };
+                        assert!(reached_end_stop);
+                        route_index
+                    }
+                    TransitRef::Frequency { freq_idx } => {
+                        let freqs = &pat.frequency_routes;
+                        let mut curr_idx = freq_idx;
+                        loop {
+                            let freq = &freqs[curr_idx as usize];
+                            node_sequence.push(data.stop_to_node[freq.stop_index as usize]);
+                            if freq.stop_index == end_stop {
+                                break;
+                            }
+                            curr_idx = freq.next_freq_index;
+                        }
+                        freqs[freq_idx as usize].route_index
+                    }
+                };
+                let route_name = data.route_names[route_index as usize].clone();
+                segments.push(PathSegment {
+                    kind: SegmentKind::Transit,
+                    start_time: delta_to_time(leg.board_delta),
+                    end_time: delta_to_time(leg.arrival_delta),
+                    wait_time: leg.board_delta as u32 - prev_arrival_delta as u32,
+                    start_stop_name,
+                    end_stop_name,
+                    route_index: Some(route_index as u32),
+                    route_name: Some(route_name),
+                    node_sequence,
+                });
+            }
+
+            curr_node = prev_node;
+            curr = prev;
+        }
+
+        segments.reverse();
+        for segment in &mut segments {
+            if segment.kind == SegmentKind::Walk {
+                // We built it in reverse order so now flip it back
+                segment.node_sequence.reverse();
+            }
+        }
+
+        Path {
+            home_departure: delta_to_time(home_departure_delta),
+            arrival_time: delta_to_time(entry.arrival_delta),
+            total_time: entry.arrival_delta as u32 - home_departure_delta as u32,
+            segments,
+        }
     }
 }
 

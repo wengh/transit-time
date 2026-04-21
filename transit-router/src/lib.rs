@@ -84,11 +84,11 @@ impl WasmProfileRouting {
     }
 
     pub fn window_start(&self) -> u32 {
-        self.inner.isochrone().window_start
+        self.inner.isochrone().query.window_start
     }
 
     pub fn window_end(&self) -> u32 {
-        self.inner.isochrone().window_end
+        self.inner.isochrone().query.window_end
     }
 
     /// All Pareto-optimal paths to `destination`, JSON-serialized. The TS side
