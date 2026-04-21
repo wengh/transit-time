@@ -344,7 +344,7 @@ impl ProfileRouter for ProfileRouting {
                 for &(neighbor, distance) in &data.adj[node_id] {
                     let new_arrival_delta = arrival_delta.saturating_add(get_walk_time(distance));
 
-                    if new_arrival_delta as u32 > query.max_time {
+                    if (new_arrival_delta - home_departure_delta) as u32 > query.max_time {
                         continue;
                     }
 
@@ -527,7 +527,7 @@ impl ProfileRouting {
                         min_departure,
                         max_departure,
                         expand_headways: true,
-                        max_arrival: Some(delta_to_time(curr.arrival_delta)),
+                        max_arrival: Some(max_departure),
                     },
                     |leg| {
                         if leg.node_id == curr_node && leg.arrival_delta == curr.arrival_delta {
