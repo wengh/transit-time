@@ -253,11 +253,12 @@ impl ProfileRouter for ProfileRouting {
                 continue;
             }
 
+            let window_length = (query.window_end - query.window_start) as u16;
             let _ = context.expand_transit_legs(
                 ExpandTransitLegQuery {
                     node: node_id,
                     min_departure: query.window_start + arrival_delta as u32,
-                    max_departure: query.window_end + arrival_delta as u32,
+                    max_departure: query.window_end + query.max_time,
                     expand_headways: true,
                     max_arrival: None,
                 },
@@ -266,7 +267,9 @@ impl ProfileRouter for ProfileRouting {
                         node_id: leg.node_id,
                         entry: Entry {
                             prev: node_id,
-                            home_departure_delta: leg.board_delta - arrival_delta,
+                            // Clamp home departure to be within the query window
+                            home_departure_delta: window_length
+                                .min(leg.board_delta - arrival_delta),
                             arrival_delta: leg.arrival_delta,
                         },
                     });
