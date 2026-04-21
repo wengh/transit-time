@@ -422,10 +422,17 @@ pub fn load_with_stats(buf: &[u8]) -> Result<(PreparedData, LoadStats), String> 
             num_stops as u32,
         );
 
-        // Build sentinel_routes for this pattern
+        // Build sentinel_routes for this pattern.
+        //
+        // The prep format stores 0 for non-sentinel slots, which collides with
+        // the real route_index=0 (first route in the feed). Toronto trips that
+        // end on route 0 used to fall out of this map and panic later in
+        // `profile.rs` via direct HashMap indexing. Use the intrinsic sentinel
+        // predicate (`next_event_index == u32::MAX`) to decide membership instead
+        // of treating 0 as the absence marker.
         let mut pattern_sentinel_routes = std::collections::HashMap::new();
         for (i, route_idx) in sentinel_route_indices.iter().enumerate() {
-            if *route_idx != 0 {
+            if next_event_indices[i] == u32::MAX {
                 pattern_sentinel_routes.insert(i as u32, *route_idx);
             }
         }
