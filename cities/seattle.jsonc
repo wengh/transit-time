@@ -17,5 +17,6 @@
         "usa",
         "rail",
         "bus"
-    ]
+    ],
+    "allow_stale": false
 }
