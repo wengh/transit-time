@@ -496,10 +496,11 @@ impl ProfileRouting {
                     segment.start_time = delta_to_time(prev_arrival_delta);
                     segment.node_sequence.push(curr_node);
                 } else {
+                    let curr_arrival_time = get_true_arrival_delta(home_departure_delta, &curr);
                     segments.push(PathSegment {
                         kind: SegmentKind::Walk,
                         start_time: delta_to_time(prev_arrival_delta),
-                        end_time: delta_to_time(curr.arrival_delta),
+                        end_time: delta_to_time(curr_arrival_time),
                         wait_time: 0,
                         start_stop_name: String::new(),
                         end_stop_name: String::new(),
