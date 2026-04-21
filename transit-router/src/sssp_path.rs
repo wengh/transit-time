@@ -141,7 +141,7 @@ pub fn optimal_path(data: &PreparedData, sssp: &SsspResult, destination: u32) ->
                 wait_time,
                 start_stop_name: stop_name_for_node(data, from),
                 end_stop_name: stop_name_for_node(data, to),
-                route_index: Some(route_idx as u16),
+                route_index: Some(route_idx),
                 route_name,
                 node_sequence: nodes,
             });

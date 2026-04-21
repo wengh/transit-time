@@ -138,22 +138,6 @@ impl<T> JaggedArray<T> {
     }
 }
 
-/// Sparse map from a node index to a slice of stop indices.
-/// Only nodes that are stops have entries; all stop-index data lives in one flat vec.
-pub struct SparseJaggedArray<T> {
-    pub offsets: std::collections::HashMap<u32, (u32, u32)>, // key -> (start, end) in data
-    pub data: Vec<T>,
-}
-
-impl<T> SparseJaggedArray<T> {
-    pub fn get(&self, key: u32) -> &[T] {
-        match self.offsets.get(&key) {
-            Some(&(start, end)) => &self.data[start as usize..end as usize],
-            None => &[],
-        }
-    }
-}
-
 pub struct PatternStopIndex {
     pub freq_by_stop: JaggedArray<u32>,
     pub events_by_stop: JaggedArray<EventData>,
@@ -169,13 +153,12 @@ pub struct PatternData {
     pub max_time: u32,
     pub frequency_routes: Vec<FreqData>,
     pub stop_index: PatternStopIndex,
-    /// Maps flat event index to route_index for sentinel events (travel_time == 0)
+    /// Maps flat event index to route_index for sentinel events (travel_time == 0 and next_event_index == u32::MAX).
     pub sentinel_routes: std::collections::HashMap<u32, u32>,
 }
 
 pub struct PreparedData {
     pub nodes: Vec<NodeData>,
-    pub edges: Vec<EdgeData>,
     pub stops: Vec<StopData>,
     pub stop_to_node: Vec<u32>, // stop_index -> node_index
     pub route_names: Vec<String>,
@@ -648,7 +631,6 @@ pub fn load_with_stats(buf: &[u8]) -> Result<(PreparedData, LoadStats), String> 
 
     let data = PreparedData {
         nodes,
-        edges,
         stops,
         stop_to_node,
         route_names,
