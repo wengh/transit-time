@@ -9,7 +9,7 @@ import HoverInfo from './components/HoverInfo';
 import { loadCity } from './utils/cityLoader';
 import { getCityFromUrl } from './cities';
 import { runQuery, getAnyHoverData } from './utils/router';
-import { getTravelTimeSummary, getMedianPath, flattenDisplayLines, getSortedTravelTimes } from './utils/hoverInfo';
+import { getMedianPath, flattenDisplayLines, getSortedTravelTimes } from './utils/hoverInfo';
 import type { RunQueryParams } from './utils/router';
 import { getHashParams, setHashParams } from './utils/urlHash';
 import './styles.css';
@@ -69,7 +69,19 @@ function AppInner() {
     const latLng: [number, number] = [nodeCoords[node * 2], nodeCoords[node * 2 + 1]];
     const allPaths = getAnyHoverData(router, ssspList, profile, node);
     const travelTimes = getSortedTravelTimes(allPaths);
-    dispatch({ type: 'PIN_DESTINATION', node, latLng, hoverData: { allPaths, travelTimes } });
+    // Mirror MapView.showDestination: pull the analytic summary out of the
+    // Rust-side per-node arrays rather than re-aggregating from `allPaths`.
+    const tt = state.travelTimes ? state.travelTimes[node] : NaN;
+    const avgTravelTime = isFinite(tt) ? tt : null;
+    const reachableFraction = state.sampleCounts && state.totalSamples > 0
+      ? state.sampleCounts[node] / state.totalSamples
+      : null;
+    dispatch({
+      type: 'PIN_DESTINATION',
+      node,
+      latLng,
+      hoverData: { allPaths, travelTimes, avgTravelTime, reachableFraction },
+    });
     if (trip !== null && trip < allPaths.length) {
       dispatch({ type: 'LOCK_SAMPLE', idx: trip });
     }
@@ -166,21 +178,22 @@ function AppInner() {
 
     if (s.hoverData) {
       lines.push('');
-      const { allPaths, travelTimes } = s.hoverData;
-      const timeSummary = getTravelTimeSummary(travelTimes, allPaths);
-      if (timeSummary) {
-        if (timeSummary.isSampled) {
-          lines.push(`Travel time: ${timeSummary.min}–${timeSummary.avg}–${timeSummary.max} min (${timeSummary.count}/${timeSummary.total} samples)`);
+      const { allPaths, avgTravelTime, reachableFraction } = s.hoverData;
+      if (avgTravelTime !== null) {
+        const avgMin = Math.round(avgTravelTime / 60);
+        if (reachableFraction !== null) {
+          const pct = Math.round(reachableFraction * 100);
+          lines.push(`Avg travel time: ${avgMin} min (${pct}% reachable)`);
         } else {
-          lines.push(`Travel time: ${timeSummary.avg} min`);
+          lines.push(`Travel time: ${avgMin} min`);
         }
-        // Add median path details
-        const medianPath = getMedianPath(allPaths);
-        if (medianPath && medianPath.segments.length > 0) {
-          lines.push('Route:');
-          for (const line of flattenDisplayLines(medianPath)) {
-            lines.push(`  ${line}`);
-          }
+      }
+      // Add median path details
+      const medianPath = getMedianPath(allPaths);
+      if (medianPath && medianPath.segments.length > 0) {
+        lines.push('Route:');
+        for (const line of flattenDisplayLines(medianPath)) {
+          lines.push(`  ${line}`);
         }
       }
     }

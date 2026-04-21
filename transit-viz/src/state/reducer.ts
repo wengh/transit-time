@@ -49,6 +49,13 @@ export interface AppState {
 export interface HoverData {
   allPaths: HoverPath[];
   travelTimes: number[];
+  // Per-node analytic summary from the Rust profile router. Populated from
+  // `state.travelTimes[node]` and `state.sampleCounts[node] / state.totalSamples`.
+  // In single (point) mode: `avgTravelTime` is the single arrival time (seconds)
+  // and `reachableFraction` is null (fraction isn't meaningful for one departure).
+  // `avgTravelTime` is null when the node is unreachable.
+  avgTravelTime: number | null;
+  reachableFraction: number | null;
 }
 
 export type Action =

@@ -346,7 +346,10 @@ export default function HoverInfo(): React.ReactNode {
 
   const { hoverData, maxTimeMin, departureTime, mode, pinnedNode, selectedSampleIdx, lockedSampleIdx } = state;
 
-  const isSampled = mode === 'sampled' && (hoverData?.allPaths.length ?? 0) > 1;
+  // Show the chart whenever we're in window (sampled) mode with any hover target.
+  // Single-path windows still have a meaningful walk line / departure-time axis,
+  // so don't gate on path count.
+  const isSampled = mode === 'sampled' && hoverData !== null;
 
   // Recompute chart info and redraw whenever relevant state changes
   useEffect(() => {
@@ -402,7 +405,7 @@ export default function HoverInfo(): React.ReactNode {
       </button>
     );
   }
-  const { allPaths, travelTimes } = hoverData;
+  const { allPaths } = hoverData;
 
   // Which path to show details for
   const displayPath = selectedSampleIdx !== null
@@ -437,12 +440,18 @@ export default function HoverInfo(): React.ReactNode {
       titleText = 'Unreachable';
     }
   } else if (isSampled) {
-    const reachable = travelTimes.length;
-    const total = allPaths.length;
-    const avgMin = reachable > 0
-      ? Math.round(travelTimes.reduce((a, b) => a + b, 0) / reachable / 60)
-      : 0;
-    titleText = `Avg travel time: ${avgMin} min (${reachable}/${total} samples)`;
+    // Title comes straight from the Rust profile's per-node analytic summary
+    // (mean_travel_times[node], reachable_fractions[node]) — this covers the
+    // full continuous departure window, not just the Pareto-path sample.
+    const avgSec = hoverData?.avgTravelTime ?? null;
+    const frac = hoverData?.reachableFraction ?? 0;
+    if (avgSec === null || frac <= 0) {
+      titleText = 'Unreachable';
+    } else {
+      const avgMin = Math.round(avgSec / 60);
+      const pct = Math.round(frac * 100);
+      titleText = `Avg travel time: ${avgMin} min (${pct}% reachable)`;
+    }
   } else {
     const p = allPaths[0];
     titleText = p?.totalTime != null

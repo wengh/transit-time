@@ -73,20 +73,21 @@ pub fn dominant_route_color(data: &PreparedData, path: &Path) -> Option<String> 
 }
 
 fn format_segment(seg: &PathSegment) -> Vec<String> {
-    let dur_min = (seg.end_time.saturating_sub(seg.start_time) + 30) / 60;
+    let dur_min = (seg.end_time.saturating_sub(seg.start_time) + 30) as f32 / 60.0;
     match seg.kind {
-        SegmentKind::Walk => vec![format!("Walk {dur_min} min")],
+        SegmentKind::Walk => vec![format!("Walk {dur_min:.1} min")],
         SegmentKind::Transit => {
+            let mut out = Vec::new();
+            if seg.wait_time > 0 {
+                out.push(format!("  Wait: {:.1} min", seg.wait_time as f32 / 60.0));
+            }
             let route = seg.route_name.as_deref().unwrap_or("Transit");
             let from_to = if !seg.start_stop_name.is_empty() && !seg.end_stop_name.is_empty() {
                 format!(" · {} → {}", seg.start_stop_name, seg.end_stop_name)
             } else {
                 String::new()
             };
-            let mut out = vec![format!("{route}{from_to} {dur_min} min")];
-            if seg.wait_time > 0 {
-                out.push(format!("  Wait: {:.1} min", seg.wait_time as f32 / 60.0));
-            }
+            out.push(format!("{route}{from_to} {dur_min:.1} min"));
             out
         }
     }
@@ -158,7 +159,11 @@ fn leg_shape_between(
     Some(out)
 }
 
-fn adjust_color_for_visibility(hex: &str) -> Option<String> {
+/// Brightness-adjust a `#rrggbb` route colour into the `[100, 220]` luminance
+/// band so the stroke stays visible on both very-dark and very-light map tiles.
+/// Pure black (lum=0) can't be lifted by multiplication, so it falls back to a
+/// neutral grey. Returns `None` for malformed input.
+pub fn adjust_color_for_visibility(hex: &str) -> Option<String> {
     let hex = hex.strip_prefix('#').unwrap_or(hex);
     if hex.len() != 6 {
         return None;
@@ -167,7 +172,10 @@ fn adjust_color_for_visibility(hex: &str) -> Option<String> {
     let g = u8::from_str_radix(&hex[2..4], 16).ok()? as f32;
     let b = u8::from_str_radix(&hex[4..6], 16).ok()? as f32;
     let lum = (r * 299.0 + g * 587.0 + b * 114.0) / 1000.0;
-    let (r, g, b) = if lum > 0.0 && lum < 100.0 {
+    if lum <= 0.0 {
+        return Some("#646464".to_string());
+    }
+    let (r, g, b) = if lum < 100.0 {
         let s = 100.0 / lum;
         ((r * s).min(255.0), (g * s).min(255.0), (b * s).min(255.0))
     } else if lum > 220.0 {

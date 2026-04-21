@@ -167,10 +167,14 @@ impl TransitRouter {
         }
     }
 
+    /// Hex route colour for `idx`, brightness-adjusted via
+    /// [`path_display::adjust_color_for_visibility`] so callers don't re-run
+    /// the luminance check in JS. Empty string when the route has no colour.
     pub fn route_color(&self, idx: u32) -> String {
         if (idx as usize) < self.data.route_colors.len() {
             if let Some(color) = self.data.route_colors[idx as usize] {
-                return color.to_hex();
+                return path_display::adjust_color_for_visibility(&color.to_hex())
+                    .unwrap_or_default();
             }
         }
         String::new()
