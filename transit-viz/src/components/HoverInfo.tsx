@@ -488,21 +488,36 @@ export default function HoverInfo(): React.ReactNode {
           </button>
         </div>
 
-        {displayPath && displayPath.display && displayPath.display.segmentLines.length > 0 && (
+        {displayPath && displayPath.segments.length > 0 && (
           <div className="border-t border-zinc-800 dark:border-zinc-800
             [@media(prefers-color-scheme:light)]:border-zinc-200
             pt-1.5 mt-0.5">
-            {displayPath.display.segmentLines.map((lines, si) => (
+            {displayPath.segments.map((seg, si) => (
               <div key={si}>
-                {lines.map((line, li) => (
-                  <div
-                    key={li}
-                    className="text-[12px] py-0.5 text-zinc-100 dark:text-zinc-100
-                      [@media(prefers-color-scheme:light)]:text-zinc-900 whitespace-pre"
-                  >
-                    {line}
+                {seg.edgeType === 0 ? (
+                  <div className="text-[12px] text-zinc-500 dark:text-zinc-500
+                    [@media(prefers-color-scheme:light)]:text-zinc-500 py-0.5">
+                    Walk {(seg.duration / 60).toFixed(1)} min
                   </div>
-                ))}
+                ) : (
+                  <>
+                    {seg.waitTime > 0 && (
+                      <div className="text-[11px] text-zinc-600 dark:text-zinc-600
+                        [@media(prefers-color-scheme:light)]:text-zinc-500
+                        py-px italic">
+                        Wait {(seg.waitTime / 60).toFixed(1)} min
+                      </div>
+                    )}
+                    <div className="text-[12px] py-0.5 text-zinc-100 dark:text-zinc-100
+                      [@media(prefers-color-scheme:light)]:text-zinc-900">
+                      <b>{seg.routeName || 'Transit'}</b>
+                      {seg.startStopName && seg.endStopName
+                        ? ` · ${seg.startStopName} → ${seg.endStopName}`
+                        : ''}
+                      {' '}{(seg.duration / 60).toFixed(1)} min
+                    </div>
+                  </>
+                )}
               </div>
             ))}
           </div>
