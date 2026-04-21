@@ -572,6 +572,7 @@ impl ProfileRouting {
                             }
                             if event.next_event_index == u32::MAX {
                                 // Last event
+                                // BUG: no entry found for key
                                 break pat.sentinel_routes[&(curr_event_idx as u32)];
                             }
                             curr_event_idx = event.next_event_index;

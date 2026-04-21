@@ -3,7 +3,7 @@ import L from 'leaflet';
 import { useAppState } from '../state/AppContext';
 import { initWebGL, renderIsochrone } from '../utils/webgl';
 import { getAnyHoverData, type HoverPath } from '../utils/router';
-import { ROUTE_COLORS, hexToRgb } from '../utils/colors';
+import { ROUTE_COLORS } from '../utils/colors';
 import { getHashParams, setHashParams } from '../utils/urlHash';
 import { getSortedTravelTimes } from '../utils/hoverInfo';
 import { resolveMapStyle, DEFAULT_MAP_STYLE } from '../utils/mapStyles';
@@ -126,37 +126,14 @@ export default function MapView(): React.ReactNode {
             weight = 3;
           } else {
             if (!(seg.routeName in routeColorMap)) {
-              let routeColor: string | null = null;
-              // Try to get actual color from GTFS
+              // Rust's `TransitRouter::route_color` returns the map-legible hex
+              // (already luminance-adjusted via `adjust_color_for_visibility`).
+              // Empty string means the route has no GTFS colour — fall back to
+              // the palette.
               const s = stateRef.current;
-              if (s.router && seg.routeIdx < 0xffffffff) {
-                const hexColor = s.router.route_color(seg.routeIdx);
-                if (hexColor) {
-                  const rgb = hexToRgb(hexColor);
-                  if (rgb) {
-                    // Ensure color has enough brightness for dark background
-                    const brightness = (rgb[0] * 299 + rgb[1] * 587 + rgb[2] * 114) / 1000;
-                    const minBrightness = 100;
-                    const maxBrightness = 220;
-
-                    if (brightness <= 0) {
-                      // Pure black route colors produce NaN when scaled; use a visible neutral fallback.
-                      routeColor = 'rgb(100, 100, 100)';
-                    } else if (brightness < minBrightness) {
-                      // Too dark, lighten it
-                      const scale = minBrightness / brightness;
-                      routeColor = `rgb(${Math.min(255, Math.round(rgb[0] * scale))}, ${Math.min(255, Math.round(rgb[1] * scale))}, ${Math.min(255, Math.round(rgb[2] * scale))})`;
-                    } else if (brightness > maxBrightness) {
-                      // Too light, darken it
-                      const scale = maxBrightness / brightness;
-                      routeColor = `rgb(${Math.round(rgb[0] * scale)}, ${Math.round(rgb[1] * scale)}, ${Math.round(rgb[2] * scale)})`;
-                    } else {
-                      routeColor = hexColor;
-                    }
-                  }
-                }
-              }
-              // Fall back to palette colors if GTFS color unavailable
+              let routeColor = s.router && seg.routeIdx < 0xffffffff
+                ? s.router.route_color(seg.routeIdx)
+                : '';
               if (!routeColor) {
                 routeColor = ROUTE_COLORS[colorIdx % ROUTE_COLORS.length];
               }
@@ -212,6 +189,15 @@ export default function MapView(): React.ReactNode {
 
       drawRouteSegments(allPaths.filter((p) => p.segments.length > 0));
 
+      // Analytic per-node summary comes straight from the Rust profile router —
+      // avoids re-aggregating from the (Pareto-filtered) `allPaths`, which no
+      // longer corresponds to discrete sample counts.
+      const avgTravelTime = isFinite(tt) ? tt : null;
+      const reachableFraction = s.sampleCounts && s.totalSamples > 0
+        ? s.sampleCounts[node] / s.totalSamples
+        : null;
+      const hoverData = { allPaths, travelTimes, avgTravelTime, reachableFraction };
+
       const latLng = getNodeLatLng(node);
       if (!latLng) return;
 
@@ -228,9 +214,9 @@ export default function MapView(): React.ReactNode {
             pane: 'transitLines',
           }).addTo(map);
         }
-        dispatch({ type: 'PIN_DESTINATION', node, latLng, hoverData: { allPaths, travelTimes } });
+        dispatch({ type: 'PIN_DESTINATION', node, latLng, hoverData });
       } else {
-        dispatch({ type: 'SET_HOVER_DATA', hoverData: { allPaths, travelTimes } });
+        dispatch({ type: 'SET_HOVER_DATA', hoverData });
       }
     }
 
