@@ -1,7 +1,8 @@
-/// Smoke harness for profile routing. Prints isochrone stats.
+/// Smoke harness for profile routing. Prints load timings and isochrone stats.
 /// Usage:
-///   cargo run --release --bin benchmark_smoke -- <city.bin> <src_lat> <src_lon> [YYYYMMDD] [window_start_hhmm] [window_minutes] [max_min] [slack_s]
+///   cargo run --release --bin benchmark_smoke -- <city.bin> <src_lat> <src_lon> [YYYYMMDD] [window_start_hhmm] [window_minutes] [max_min] [slack_s] [repeats]
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 use transit_router::profile::ProfileRouter as _;
 use transit_router::{data, profile, router};
 
@@ -23,6 +24,7 @@ fn main() {
     let window_minutes: u32 = args.get(6).and_then(|s| s.parse().ok()).unwrap_or(60);
     let max_min: u32 = args.get(7).and_then(|s| s.parse().ok()).unwrap_or(45);
     let slack: u32 = args.get(8).and_then(|s| s.parse().ok()).unwrap_or(60);
+    let repeats: u32 = args.get(9).and_then(|s| s.parse().ok()).unwrap_or(1).max(1);
 
     let window_start = (hhmm / 100) * 3600 + (hhmm % 100) * 60;
     let window_end = window_start + window_minutes * 60;
@@ -42,7 +44,9 @@ fn main() {
     } else {
         &raw[..]
     };
-    let prepared = data::load(buf).expect("load");
+    let (prepared, load_stats) = data::load_with_stats(buf).expect("load");
+    println!();
+    load_stats.print();
 
     let src = router::snap_to_node(&prepared, src_lat, src_lon).expect("snap source");
     println!("Source node: {src}");
@@ -66,9 +70,23 @@ fn main() {
         max_time,
     };
 
-    let t0 = std::time::Instant::now();
-    let routing = profile::ProfileRouting::compute(&prepared, &query);
-    let elapsed = t0.elapsed();
+    let mut timings: Vec<Duration> = Vec::with_capacity(repeats as usize);
+    let mut routing_opt = None;
+    for i in 0..repeats {
+        let t0 = Instant::now();
+        let routing = profile::ProfileRouting::compute(&prepared, &query);
+        let dt = t0.elapsed();
+        timings.push(dt);
+        println!("  run {}/{}: {:.3} s", i + 1, repeats, dt.as_secs_f64());
+        routing_opt = Some(routing);
+    }
+    let routing = routing_opt.unwrap();
+
+    let total: Duration = timings.iter().sum();
+    let avg = total / timings.len() as u32;
+    let min = *timings.iter().min().unwrap();
+    let max = *timings.iter().max().unwrap();
+    let elapsed = avg;
 
     let iso = routing.isochrone();
     // Reachability is signaled by `reachable_fraction > 0`; the mean is
@@ -82,7 +100,17 @@ fn main() {
         .collect();
 
     println!();
-    println!("Profile routing took {:?}", elapsed);
+    if repeats > 1 {
+        println!(
+            "Profile routing ({} runs): avg {:.3} s, min {:.3} s, max {:.3} s",
+            repeats,
+            avg.as_secs_f64(),
+            min.as_secs_f64(),
+            max.as_secs_f64()
+        );
+    } else {
+        println!("Profile routing took {:.3}", elapsed.as_secs_f32());
+    }
     println!(
         "Nodes reached: {} / {}",
         reachable.len(),

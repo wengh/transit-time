@@ -10,7 +10,7 @@ Note: this project is mostly vibe coded.
 
 ### Picking a city
 
-The landing page lists available cities. Click one to load it. The city's transit and street data (~470 KB–23 MB compressed depending on city size) downloads and loads in the browser; a progress bar shows the download, then a brief indexing phase (~350 ms for a large city like Chicago).
+The landing page lists available cities. Click one to load it. The city's transit and street data (up to ~20 MB compressed depending on city size) downloads and loads in the browser; a progress bar shows the download, then a brief indexing phase.
 
 ### Setting an origin
 
@@ -20,7 +20,7 @@ The landing page lists available cities. Click one to load it. The city's transi
 
 Once an origin is set, the map fills with a color-coded isochrone overlay. Green/yellow areas are reachable quickly; the color shifts through orange and red as travel time increases, fading out where nothing is reachable within the time limit.
 
-In **hour-window average** mode the overlay also encodes how consistently a location is reachable across the sampled departure times. Locations reachable from every sampled departure use the warm (yellow→red) scale. Locations reachable from only some departures shift toward cool colors — cyan for nearby spots that are only sometimes served, through blue and purple for farther or less reliably served locations. Locations never reachable in any sample are not shown.
+The overlay also encodes how consistently a location is reachable across the departure window. Locations reachable from every departure within the window use the warm (yellow→red) scale. Locations reachable from only some departures shift toward cool colors — cyan for nearby spots that are only sometimes served, through blue and purple for farther or less reliably served locations. Locations never reachable within the window are not shown.
 
 ### Exploring destinations
 
@@ -34,23 +34,17 @@ In **hour-window average** mode the overlay also encodes how consistently a loca
 
 All controls re-run the routing query immediately when changed.
 
-**Mode**
-- *Single Departure Time* — computes travel times for one exact departure.
-- *Hour-Window Average* — runs the router at multiple evenly-spaced departure times across a one-hour window and averages the results. This smooths out the "lucky timing" effect and shows more typical travel times. The number of sample departures is adjustable.
-
 **Date** — select any calendar date. The tool activates only the transit schedules valid on that date (weekday, weekend, or holiday service), and shows how many service patterns are active.
 
-**Departure time** — slider from midnight to midnight in 5-minute steps.
-
-**Samples** — (hour-window average only) number of departure times spread across the hour window. More samples give a smoother average at the cost of longer computation. Default is 15.
+**Departure time** — slider from midnight to midnight in 5-minute steps. The router computes travel times across a one-hour window starting at this time, smoothing out the "lucky timing" effect of any single departure.
 
 **Max travel time** — caps the search at 10–180 minutes. Locations unreachable within this limit are not shown.
 
 **Transfer slack** — minimum connection time required when switching between transit vehicles (0–300 seconds, default 60 s). A higher value avoids tight transfers that might be missed in practice.
 
-### Sawtooth chart (hour-window average)
+### Sawtooth chart
 
-When a destination is pinned in hour-window average mode, a chart appears below the itinerary. The X-axis is departure time within the hour window; the Y-axis is travel time to the destination. Each diagonal line represents one transit trip: as your departure time gets later and closer to when the vehicle leaves the stop, your wait shrinks and total travel time decreases — that is the downward slope. When you depart late enough to miss that vehicle, travel time jumps up because you must wait for the next one, forming the sawtooth pattern. The dashed horizontal line (if present) is the walk-only time. Shaded grey columns mark departure times where no transit option falls within the travel-time limit.
+When a destination is pinned, a chart appears below the itinerary. The X-axis is departure time within the hour window; the Y-axis is travel time to the destination. Each diagonal line represents one transit trip: as your departure time gets later and closer to when the vehicle leaves the stop, your wait shrinks and total travel time decreases — that is the downward slope. When you depart late enough to miss that vehicle, travel time jumps up because you must wait for the next one, forming the sawtooth pattern. The dashed horizontal line (if present) is the walk-only time. Shaded grey columns mark departure times where no transit option falls within the travel-time limit.
 
 Hover over a transit segment to highlight that departure and see its route on the map; click to lock it.
 
@@ -95,19 +89,13 @@ The preprocessor downloads and caches both the GTFS feeds and the OSM extract. F
 
    The assembled binary is then gzip-compressed for transfer; the browser decompresses it on the fly during download.
 
-File sizes for the included cities range from 470 KB (Chapel Hill) to 23 MB (NYC), reflecting network and schedule size.
-
 ### In-browser: routing and rendering
 
-The city `.bin` file is fetched and streamed through the browser's native gzip decompression. The decompressed bytes are handed to a WebAssembly module (~700 KB) compiled from the Rust routing engine.
+The city `.bin` file is fetched and streamed through the browser's native gzip decompression. The decompressed bytes are handed to a WebAssembly module compiled from the Rust routing engine.
 
-**Loading and indexing (~344 ms for Chicago):** The WASM module decodes all Pcodec-compressed sections and builds two additional in-memory structures: a flat (jagged array) adjacency list for the street graph, and a spatial grid index over all nodes for snapping a clicked lat/lon to the nearest node in ~8 µs. Because nodes are stored in SFC order, walking a neighborhood during Dijkstra accesses nodes that are close together in both geography and memory, improving cache locality. The in-memory footprint for Chicago is about 188 MB, dominated by the pattern event index (~105 MB), the adjacency list (~21 MB), and the raw input buffer (~17 MB).
+**Loading and indexing:** The WASM module decodes all Pcodec-compressed sections and builds two additional in-memory structures: a flat (jagged array) adjacency list for the street graph, and a spatial grid index over all nodes for snapping a clicked lat/lon to the nearest node. Because nodes are stored in SFC order, walking a neighborhood during the search accesses nodes that are close together in both geography and memory, improving cache locality.
 
-**Routing — time-dependent Dijkstra:** When an origin is set, the router runs a shortest-path search over the combined graph. Walking edges have a fixed cost based on distance at 1.4 m/s (~5 km/h). At each node that is a transit stop, the router scans the event arrays for all active service patterns and boards vehicles. The search is time-dependent: the cost of boarding a transit vehicle is the wait time until its next departure plus the scheduled ride time. A transfer between different vehicles requires at least the configured transfer slack. During the search, the router also tracks the latest possible home-departure time that still makes each connection — this is used to prefer paths that allow leaving later — but it is transient and not retained after the query completes. The result stored per reached node is 12 bytes: two u16 offsets from the query departure time (arrival and boarding times, supporting up to ~18 hours of travel), the incoming route index, and the predecessor node for path reconstruction.
-
-For a city the size of Chicago (817K nodes, 1.2M edges, 211 routes, 6.3M raw trip events), a single query takes about 138 ms and reaches roughly 536K nodes. In hour-window average mode, one result set is kept per sample departure and all are live simultaneously for path reconstruction on hover; at 15 samples (the default) this adds about 150 MB on top of the ~188 MB base footprint.
-
-**Hour-window average mode** runs multiple queries in parallel using a Rayon thread pool initialized via WebAssembly threads (SharedArrayBuffer). If the browser does not support shared memory, it falls back to sequential execution.
+**Routing — profile search over a departure window:** When an origin is set, the router computes a Pareto frontier of (departure, arrival) pairs for every reachable node in a single pass across the full one-hour window. Walking edges have a fixed cost based on distance at 1.4 m/s. At each node that is a transit stop, the router scans the event arrays for all active service patterns and considers every boarding that sits on the frontier; a transfer between different vehicles requires at least the configured transfer slack. From the frontier the router derives, per node, the mean travel time and the fraction of departures within the window from which the node is reachable — the two quantities the overlay and hover summaries display. A compact set of representative (Pareto-optimal) departures is retained for path reconstruction on hover, which drives the sawtooth chart and the itinerary view.
 
 **Rendering:** After routing, each node's travel time is sent to a WebGL shader that maps it to a color. Points are rendered onto an offscreen canvas at a size proportional to the map zoom level, producing a continuous-looking coverage surface. The canvas is then composited onto the Leaflet map as an image overlay. Route polylines are drawn using the GTFS shape data where available, falling back to straight-line segments between stops.
 
@@ -206,104 +194,102 @@ The frontend includes `transit-viz/public/_headers` (COOP/COEP for WASM threads)
 
 ## Performance
 
-The numbers below are from a release build on a Chicago dataset (14 MB compressed / 188 MB in memory). To reproduce:
+The numbers below are from a release build on a Chicago dataset. To reproduce:
 
 ```
-cargo test --release --test profile_router -- --nocapture
+cargo run --release --bin benchmark_smoke -- transit-viz/public/data/chicago.bin 41.8781 -87.6298 20260413 900 60 45 60 10
 ```
 
 ```
 === Binary Section Sizes (decompressed) ===
 Section                          Bytes % of total
 header                            36 B     0.0%
-nodes                          1.83 MB    11.5%
-edges                          1.44 MB     9.1%
-stops                         671.5 KB     4.1%
-stop_to_node                  134.9 KB     0.8%
+nodes                          1.83 MB    14.4%
+edges                          1.45 MB    11.5%
+stops                         665.7 KB     5.1%
+stop_to_node                  133.5 KB     1.0%
 route_names                     1.5 KB     0.0%
 route_colors                     844 B     0.0%
-patterns                       9.91 MB    62.4%
-leg_shapes                     1.92 MB    12.1%
-TOTAL decompressed            15.88 MB
+patterns                       7.29 MB    57.6%
+leg_shapes                     1.30 MB    10.2%
+TOTAL decompressed            12.65 MB
 
 === In-Memory Sizes ===
 Structure                        Bytes % of total
-nodes                         12.69 MB     6.8%
-edges                         13.87 MB     7.4%
-stops                        1008.8 KB     0.5%
-stop_node_map                  67.5 KB     0.0%
-node_is_stop                  812.1 KB     0.4%
-node_stop_indices             627.5 KB     0.3%
+nodes                         12.69 MB     8.4%
+edges                         13.87 MB     9.2%
+stops                         999.5 KB     0.6%
+stop_to_node                   66.8 KB     0.0%
+node_to_stop                  336.0 KB     0.2%
 route_names                     5.6 KB     0.0%
 route_colors                     844 B     0.0%
-patterns/events              104.52 MB    55.8%
-patterns/freq                  8.90 MB     4.7%
-patterns/other                   468 B     0.0%
-adj list                      21.67 MB    11.6%
-leg_shapes                     2.27 MB     1.2%
-node_grid                      5.07 MB     2.7%
-input buf                     15.88 MB     8.5%
-TOTAL in-memory              187.33 MB
+patterns/events               76.95 MB    51.1%
+patterns/freq                  4.56 MB     3.0%
+patterns/other                   148 B     0.0%
+adj list                      21.66 MB    14.4%
+leg_shapes                     1.72 MB     1.1%
+node_grid                      5.07 MB     3.4%
+input buf                     12.65 MB     8.4%
+TOTAL in-memory              150.55 MB
 
 === Load Timings ===
 Phase                           Time % of total
-parse nodes                  13.5 ms     4.0%
-parse edges                  73.1 ms    21.6%
-parse stops                   1.1 ms     0.3%
-parse stop_to_node            1.4 ms     0.4%
+parse nodes                  13.5 ms     4.8%
+parse edges                  73.2 ms    25.8%
+parse stops                   0.9 ms     0.3%
+parse stop_to_node            0.6 ms     0.2%
 parse route_names             0.0 ms     0.0%
 parse route_colors            0.0 ms     0.0%
-parse+index patterns        199.0 ms    58.9%
-parse leg_shapes              0.4 ms     0.1%
-build adj list               16.4 ms     4.8%
-build node_grid              32.9 ms     9.7%
-TOTAL                       337.8 ms
+parse+index patterns        145.7 ms    51.4%
+parse leg_shapes              0.6 ms     0.2%
+build adj list               18.0 ms     6.3%
+build node_grid              31.0 ms    10.9%
+TOTAL                       283.4 ms
 
 === Counts ===
-nodes                         831541
-edges                        1212169
-stops                          17273
-stop_to_node                   17273
-patterns                         135
+nodes                         831341
+edges                        1211969
+stops                          17094
+stop_to_node                   17094
+patterns                          70
 route_names                      211
-leg_shapes                     22307
-total events (raw)           6266609
+leg_shapes                     21822
+total events (raw)           4743765
 sentinel events                    0
 total freq entries                 0
 grid cells                      6312
-Monday patterns: 12 total
+Source node: 713547
+Window: 09:00–10:00 (60 min), max_time=45 min, slack=60s
+  run 1/10: 1.271 s
+  run 2/10: 1.315 s
+  run 3/10: 1.283 s
+  run 4/10: 1.256 s
+  run 5/10: 1.240 s
+  run 6/10: 1.287 s
+  run 7/10: 1.300 s
+  run 8/10: 1.286 s
+  run 9/10: 1.287 s
+  run 10/10: 1.284 s
 
-Depart     Time(ms)    Reached    Transit
-------------------------------------------
-09:00      143.1ms     547520       3096
-09:06      125.5ms     545449       2946
-09:12      129.4ms     562520       2885
-09:18      129.4ms     550761       3064
-09:24      126.9ms     549999       3141
-09:30      118.7ms     515777       3098
-09:36      125.6ms     542200       3049
-09:42      119.4ms     532480       3028
-09:48      121.0ms     526795       2870
-09:54      114.2ms     502977       3215
-
-=== Summary (10 runs) ===
-Avg: 125.3ms  Min: 114.2ms  Max: 143.1ms
+Profile routing (10 runs): avg 1.281 s, min 1.240 s, max 1.315 s
+Nodes reached: 453116 / 831341
+Min travel time: 0 min, avg: 35 min, max: 45 min
+Always reachable (fraction=1): 216589, sometimes: 236527
 ```
 
 **Binary sizes** (`ls -lh transit-viz/public/data/`):
 
 | City | Compressed |
 |---|---|
-| Chapel Hill | 470K |
-| Waterloo | 1.8M |
-| Mexico City | 2.0M |
-| Seattle | 7.0M |
-| Vancouver | 10M |
+| Chicago | 12M |
+| Mexico City | 2.1M |
+| Montreal | 21M |
+| NYC | 20M |
+| Ottawa | 8.0M |
+| Seattle | 7.1M |
 | SF Bay | 13M |
-| Ottawa | 14M |
-| Chicago | 14M |
-| Toronto | 17M |
-| Montreal | 22M |
-| NYC | 23M |
+| Toronto | 19M |
+| Vancouver | 11M |
+| Waterloo | 1.9M |
 
-**WASM module** (`ls -lh transit-viz/pkg/transit_router_bg.wasm`): 691 KB
+**WASM module** (`ls -lh transit-viz/pkg/transit_router_bg.wasm`): 223 KB
