@@ -507,28 +507,29 @@ fn build_graph_from_raw(raw: RawOsmData) -> Result<OsmGraph> {
     Ok(OsmGraph { nodes, edges })
 }
 
-/// Project point P onto line segment AB. Returns (t, proj_lat, proj_lon) where
-/// t is the fractional position along AB (0.0 = A, 1.0 = B) and proj is the
-/// closest point on the segment. Uses cos(lat)-corrected linear interpolation
-/// in lat/lon space.
-fn project_onto_segment(
-    p_lat: f64,
-    p_lon: f64,
-    a_lat: f64,
-    a_lon: f64,
-    b_lat: f64,
-    b_lon: f64,
-) -> (f64, f64, f64) {
-    let cos_lat = ((a_lat + b_lat) / 2.0).to_radians().cos();
-    let dx = (b_lon - a_lon) * cos_lat;
-    let dy = b_lat - a_lat;
+/// Project `p` onto segment `a`→`b` using a caller-supplied `cos_lat`
+/// (typically the cosine of a region-representative latitude).
+/// Returns (t, projected point, squared distance from p to projection),
+/// where t is the clamped fractional position along AB (0.0 = A, 1.0 = B).
+pub(crate) fn project_on_segment(
+    p: (f64, f64),
+    a: (f64, f64),
+    b: (f64, f64),
+    cos_lat: f64,
+) -> (f64, (f64, f64), f64) {
+    let dx = (b.1 - a.1) * cos_lat;
+    let dy = b.0 - a.0;
     let len_sq = dx * dx + dy * dy;
-    if len_sq < 1e-20 {
-        return (0.0, a_lat, a_lon);
-    }
-    let t = (((p_lon - a_lon) * cos_lat) * dx + (p_lat - a_lat) * dy) / len_sq;
-    let t = t.clamp(0.0, 1.0);
-    (t, a_lat + t * (b_lat - a_lat), a_lon + t * (b_lon - a_lon))
+    let t = if len_sq < 1e-20 {
+        0.0
+    } else {
+        let num = ((p.1 - a.1) * cos_lat) * dx + (p.0 - a.0) * dy;
+        (num / len_sq).clamp(0.0, 1.0)
+    };
+    let proj = (a.0 + t * (b.0 - a.0), a.1 + t * (b.1 - a.1));
+    let ddlat = p.0 - proj.0;
+    let ddlon = (p.1 - proj.1) * cos_lat;
+    (t, proj, ddlat * ddlat + ddlon * ddlon)
 }
 
 struct SnapResult {
@@ -548,6 +549,20 @@ pub fn snap_stops_to_nodes(stops: &[Stop], graph: &mut OsmGraph) -> Vec<(u32, u3
     const MAX_SNAP_DISTANCE_METERS: f64 = 400.0;
     const CELL_SIZE_LAT: f64 = 0.0045;
     const CELL_SIZE_LON: f64 = 0.006;
+
+    // Region-representative cos(lat) for cheap planar projection.
+    // For a city-scale graph the error vs. per-segment midpoint cos_lat is
+    // negligible, and we save a trig call per edge projection.
+    let cos_lat = if stops.is_empty() {
+        1.0
+    } else {
+        let (mut min_lat, mut max_lat) = (f64::INFINITY, f64::NEG_INFINITY);
+        for s in stops {
+            min_lat = min_lat.min(s.lat);
+            max_lat = max_lat.max(s.lat);
+        }
+        ((min_lat + max_lat) / 2.0).to_radians().cos()
+    };
 
     // Pass 1: Compute snap points (read-only on graph) — run in parallel per stop.
     // Wrapped in a block so the immutable reborrow of `graph` is released before
@@ -593,8 +608,11 @@ pub fn snap_stops_to_nodes(stops: &[Stop], graph: &mut OsmGraph) -> Vec<(u32, u3
                                 let edge = &graph_ref.edges[ei];
                                 let u = &graph_ref.nodes[edge.u as usize];
                                 let v = &graph_ref.nodes[edge.v as usize];
-                                let (t, proj_lat, proj_lon) = project_onto_segment(
-                                    stop.lat, stop.lon, u.lat, u.lon, v.lat, v.lon,
+                                let (t, (proj_lat, proj_lon), _) = project_on_segment(
+                                    (stop.lat, stop.lon),
+                                    (u.lat, u.lon),
+                                    (v.lat, v.lon),
+                                    cos_lat,
                                 );
                                 let dist = haversine(stop.lat, stop.lon, proj_lat, proj_lon);
                                 if dist < best_dist {

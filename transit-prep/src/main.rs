@@ -313,13 +313,21 @@ fn validate_feed_id(feed_id: &str, api_key: Option<&str>) -> Result<()> {
     )
 }
 
-/// DP subsequence matching: find the minimum-cost monotone assignment of stops to shape points.
-/// Returns the shape point index for each stop, or None if matching is impossible.
+#[derive(Clone, Copy)]
+struct ShapeMatch {
+    seg_idx: usize,
+    t: f64,
+    proj: (f64, f64),
+    dist_sq: f64,
+}
+
+/// DP subsequence matching: find the minimum-cost monotone assignment of stops
+/// to shape *segments*, recording the projection of each stop onto its segment.
 fn match_stops_to_shape(
     stop_coords: &[(f64, f64)],
     shape: &[(f64, f64)],
     cos_lat: f64,
-) -> Option<Vec<usize>> {
+) -> Option<Vec<ShapeMatch>> {
     let (cost, assignment) = match_stops_to_shape_impl(stop_coords, shape, cos_lat)?;
 
     // Try reverse direction if the cost is abnormally high.
@@ -345,36 +353,49 @@ fn match_stops_to_shape_impl(
     stop_coords: &[(f64, f64)],
     shape: &[(f64, f64)],
     cos_lat: f64,
-) -> Option<(f64, Vec<usize>)> {
+) -> Option<(f64, Vec<ShapeMatch>)> {
     let n = stop_coords.len();
     let m = shape.len();
-    if n == 0 || m == 0 || n > m {
+    // Need at least one segment, i.e. m >= 2.
+    if n == 0 || m < 2 || n > m {
         return None;
     }
+    let segs = m - 1;
 
-    let dist = |s: (f64, f64), p: (f64, f64)| -> f64 {
-        let dlat = s.0 - p.0;
-        let dlon = (s.1 - p.1) * cos_lat;
-        dlat * dlat + dlon * dlon
-    };
+    // Precompute the projection of every stop onto every segment once.
+    // matches[i * segs + j] = projection of stop i onto segment j.
+    let mut matches: Vec<ShapeMatch> = Vec::with_capacity(n * segs);
+    for i in 0..n {
+        for j in 0..segs {
+            let (t, proj, d) =
+                graph::project_on_segment(stop_coords[i], shape[j], shape[j + 1], cos_lat);
+            matches.push(ShapeMatch {
+                seg_idx: j,
+                t,
+                proj,
+                dist_sq: d,
+            });
+        }
+    }
+    let at = |i: usize, j: usize| matches[i * segs + j];
 
-    let mut dp = vec![f64::MAX; m];
-    let mut backtrack = vec![vec![0usize; m]; n];
+    let mut dp = vec![f64::MAX; segs];
+    let mut backtrack = vec![vec![0usize; segs]; n];
 
     // Base case: stop 0
-    for j in 0..m {
-        dp[j] = dist(stop_coords[0], shape[j]);
+    for j in 0..segs {
+        dp[j] = at(0, j).dist_sq;
     }
 
     // Fill remaining stops
     for i in 1..n {
-        let mut new_dp = vec![f64::MAX; m];
+        let mut new_dp = vec![f64::MAX; segs];
         let mut min_prev = f64::MAX;
         let mut argmin_prev = 0;
 
-        for j in 0..m {
+        for j in 0..segs {
             if min_prev < f64::MAX {
-                new_dp[j] = dist(stop_coords[i], shape[j]) + min_prev;
+                new_dp[j] = at(i, j).dist_sq + min_prev;
                 backtrack[i][j] = argmin_prev;
             }
             if dp[j] < min_prev {
@@ -399,11 +420,12 @@ fn match_stops_to_shape_impl(
     }
 
     // Backtrack
-    let mut result = vec![0usize; n];
-    result[n - 1] = best_j;
+    let mut picks = vec![0usize; n];
+    picks[n - 1] = best_j;
     for i in (1..n).rev() {
-        result[i - 1] = backtrack[i][result[i]];
+        picks[i - 1] = backtrack[i][picks[i]];
     }
+    let result = (0..n).map(|i| at(i, picks[i])).collect();
     Some((best_cost, result))
 }
 
@@ -1368,9 +1390,9 @@ pub fn run_prep(
                     })
                     .collect();
 
-                // DP subsequence matching
-                let shape_indices = match match_stops_to_shape(&stop_coords, shape, cos_lat) {
-                    Some(indices) => indices,
+                // DP subsequence matching (point-to-segment)
+                let shape_matches = match match_stops_to_shape(&stop_coords, shape, cos_lat) {
+                    Some(m) => m,
                     None => {
                         return TripShapeResult {
                             had_shape: true,
@@ -1386,31 +1408,35 @@ pub fn run_prep(
                     let to_stop = times[w + 1].stop_index;
                     let key = (new_route_idx, from_stop, to_stop);
 
-                    let si_from = shape_indices[w];
-                    let si_to = shape_indices[w + 1];
+                    let mf = shape_matches[w];
+                    let mt = shape_matches[w + 1];
 
-                    // Quality = max distance of the two matched shape points to their stops
-                    let d_from = {
-                        let dlat = stop_coords[w].0 - shape[si_from].0;
-                        let dlon = (stop_coords[w].1 - shape[si_from].1) * cos_lat;
-                        dlat * dlat + dlon * dlon
-                    };
-                    let d_to = {
-                        let dlat = stop_coords[w + 1].0 - shape[si_to].0;
-                        let dlon = (stop_coords[w + 1].1 - shape[si_to].1) * cos_lat;
-                        dlat * dlat + dlon * dlon
-                    };
-                    let quality = d_from.max(d_to);
+                    // Quality = max squared distance of the two stops to their
+                    // projected points on the shape.
+                    let quality = mf.dist_sq.max(mt.dist_sq);
 
-                    // Build the leg polyline: from_stop coords + shape slice + to_stop coords
-                    let mut leg_points = Vec::with_capacity(si_to.abs_diff(si_from) + 3);
-                    leg_points.push(stop_coords[w]);
-                    if si_from < si_to {
-                        leg_points.extend_from_slice(&shape[si_from..=si_to]);
+                    // Build the leg polyline by splitting the shape at each
+                    // stop's projected point: [proj_from] + intermediate shape
+                    // vertices strictly between the two projections + [proj_to].
+                    let forward = (mf.seg_idx, mf.t) <= (mt.seg_idx, mt.t);
+                    let span = mf.seg_idx.abs_diff(mt.seg_idx);
+                    let mut leg_points = Vec::with_capacity(span + 2);
+                    leg_points.push(mf.proj);
+                    if forward {
+                        // Vertices shape[mf.seg_idx + 1 ..= mt.seg_idx] lie between
+                        // the projection on segment mf.seg_idx (ends at shape[mf.seg_idx + 1])
+                        // and the projection on segment mt.seg_idx (starts at shape[mt.seg_idx]).
+                        if mf.seg_idx + 1 <= mt.seg_idx {
+                            leg_points.extend_from_slice(&shape[mf.seg_idx + 1..=mt.seg_idx]);
+                        }
                     } else {
-                        leg_points.extend(shape[si_to..=si_from].iter().rev());
+                        // Reverse: walk shape backwards from mf.seg_idx down to mt.seg_idx + 1.
+                        if mt.seg_idx + 1 <= mf.seg_idx {
+                            leg_points
+                                .extend(shape[mt.seg_idx + 1..=mf.seg_idx].iter().rev().copied());
+                        }
                     }
-                    leg_points.push(stop_coords[w + 1]);
+                    leg_points.push(mt.proj);
 
                     legs.push((key, (quality, leg_points)));
                 }
