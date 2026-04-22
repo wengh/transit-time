@@ -8,7 +8,7 @@ import Legend from './components/Legend';
 import HoverInfo from './components/HoverInfo';
 import { loadCity } from './utils/cityLoader';
 import { getCityFromUrl } from './cities';
-import { runQuery, getAnyHoverData } from './utils/router';
+import { runQuery, getProfileHoverData } from './utils/router';
 import { getMedianPath, flattenDisplayLines, getSortedTravelTimes } from './utils/hoverInfo';
 import type { RunQueryParams } from './utils/router';
 import { getHashParams, setHashParams } from './utils/urlHash';
@@ -31,17 +31,15 @@ function AppInner() {
           const { router, nodeCoords } = await loadCity(city, dispatch, true);
           // Restore controls
           if (hash.style) dispatch({ type: 'SET_MAP_STYLE', style: hash.style });
-          if (hash.mode) dispatch({ type: 'SET_MODE', mode: hash.mode });
           if (hash.date) dispatch({ type: 'SET_DATE', value: hash.date });
           if (hash.time !== undefined) dispatch({ type: 'SET_DEPARTURE_TIME', value: hash.time });
-          if (hash.samples !== undefined) dispatch({ type: 'SET_SAMPLES', value: hash.samples });
           if (hash.maxtime !== undefined) dispatch({ type: 'SET_MAX_TIME', value: hash.maxtime });
           if (hash.slack !== undefined) dispatch({ type: 'SET_SLACK', value: hash.slack });
           // Restore source (triggers query)
           if (hash.src) {
             const [lat, lng] = hash.src;
             const node = router.snap_to_node(lat, lng);
-            if (node !== null) {
+            if (node !== undefined) {
               const latLng: [number, number] = [nodeCoords[node * 2], nodeCoords[node * 2 + 1]];
               dispatch({ type: 'SET_SOURCE', node, latLng });
               if (hash.dst) pendingDestRef.current = { latlng: hash.dst, trip: hash.trip ?? null };
@@ -59,15 +57,15 @@ function AppInner() {
   // Restore pinned destination (and locked trip) after query completes
   useEffect(() => {
     if (state.computeStatus !== 'done' || !pendingDestRef.current) return;
-    const { router, ssspList, profile, nodeCoords } = state;
-    if (!router || (!ssspList && !profile) || !nodeCoords) return;
+    const { router, profile, nodeCoords } = state;
+    if (!router || !profile || !nodeCoords) return;
     const { latlng, trip } = pendingDestRef.current;
     pendingDestRef.current = null;
     const [lat, lng] = latlng;
     const node = router.snap_to_node(lat, lng);
-    if (node === null) return;
+    if (node === undefined) return;
     const latLng: [number, number] = [nodeCoords[node * 2], nodeCoords[node * 2 + 1]];
-    const allPaths = getAnyHoverData(router, ssspList, profile, node);
+    const allPaths = getProfileHoverData(router, profile, node);
     const travelTimes = getSortedTravelTimes(allPaths);
     // Mirror MapView.showDestination: pull the analytic summary out of the
     // Rust-side per-node arrays rather than re-aggregating from `allPaths`.
@@ -96,16 +94,14 @@ function AppInner() {
       dst: state.pinnedLatLng ?? undefined,
       trip: state.lockedSampleIdx ?? undefined,
       style: state.mapStyle,
-      mode: state.mode,
       date: state.date,
       time: state.departureTime,
-      samples: state.nSamples,
       maxtime: state.maxTimeMin,
       slack: state.transferSlack,
       zoom: current.zoom,
       center: current.center,
     });
-  }, [state.sourceLatLng, state.pinnedLatLng, state.lockedSampleIdx, state.mapStyle, state.mode, state.date, state.departureTime, state.nSamples, state.maxTimeMin, state.transferSlack]);
+  }, [state.sourceLatLng, state.pinnedLatLng, state.lockedSampleIdx, state.mapStyle, state.date, state.departureTime, state.maxTimeMin, state.transferSlack]);
 
   // Run query when source or params change
   const handleRunQuery = useCallback((overrides: Record<string, any> = {}) => {
@@ -114,13 +110,10 @@ function AppInner() {
 
     const params: RunQueryParams = {
       sourceNode: s.sourceNode,
-      mode: overrides.mode ?? s.mode,
       departureTime: overrides.departureTime ?? s.departureTime,
       date: overrides.date ?? s.date,
-      nSamples: overrides.nSamples ?? s.nSamples,
       transferSlack: overrides.transferSlack ?? s.transferSlack,
       maxTime: (overrides.maxTimeMin ?? s.maxTimeMin) * 60,
-      prevSsspList: s.ssspList || undefined,
       prevProfile: s.profile || undefined,
     };
 
@@ -132,7 +125,6 @@ function AppInner() {
         dispatch({
           type: 'QUERY_DONE',
           travelTimes: result.travelTimes,
-          ssspList: result.ssspList,
           profile: result.profile,
           sampleCounts: result.sampleCounts,
           totalSamples: result.totalSamples,
@@ -169,10 +161,8 @@ function AppInner() {
     }
 
     lines.push('');
-    lines.push(`Mode: ${s.mode}`);
     lines.push(`Date: ${s.date}`);
     lines.push(`Departure: ${new Date(s.departureTime * 1000).toISOString().substring(11, 16)}`);
-    if (s.mode === 'sampled') lines.push(`Samples: ${s.nSamples}`);
     lines.push(`Max time: ${s.maxTimeMin} min`);
     lines.push(`Transfer slack: ${s.transferSlack}s`);
 

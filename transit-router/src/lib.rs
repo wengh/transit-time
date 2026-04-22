@@ -2,27 +2,18 @@ pub mod data;
 pub mod path_display;
 pub mod profile;
 pub mod router;
-pub mod sssp_path;
 
 use data::PreparedData;
 use profile::ProfileRouter as _;
 use wasm_bindgen::prelude::*;
 
-use rayon::prelude::*;
 pub use wasm_bindgen_rayon::init_thread_pool;
 
-use std::collections::HashMap;
-
 use pco;
-use router::{BoardingEvent, NodeResult};
 
 /// Whether the rayon thread pool has been initialized (via `initThreadPool` from JS).
 /// When false, we fall back to sequential iteration.
 static RAYON_INITIALIZED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-/// High bit of `BoardingEvent::event_index` set for frequency-based boardings.
-/// Lower 31 bits encode the `freq_index` (index into `PatternData::frequency_routes`).
-pub const FREQ_BOARDING_FLAG: u32 = 0x8000_0000;
 
 /// Called from the JS-side `initThreadPool` wrapper to mark rayon as ready.
 #[wasm_bindgen(js_name = "__markRayonReady")]
@@ -30,35 +21,12 @@ pub fn mark_rayon_ready() {
     RAYON_INITIALIZED.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
+#[allow(dead_code)]
 fn rayon_available() -> bool {
     RAYON_INITIALIZED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// Map + collect, using par_iter when rayon is available, plain iter otherwise.
-fn par_map_collect<R: Send>(
-    range: std::ops::Range<u32>,
-    f: impl Fn(u32) -> R + Sync + Send,
-) -> Vec<R> {
-    if rayon_available() {
-        range.into_par_iter().map(f).collect()
-    } else {
-        range.into_iter().map(f).collect()
-    }
-}
-
-/// SSSP result from a TDD query. Usable from both WASM and native code.
-pub struct SsspResult {
-    pub results: Vec<NodeResult>,
-    pub boarding_events: HashMap<u32, BoardingEvent>,
-    pub departure_time: u32,
-}
-
 // === WASM wrappers ===
-
-#[wasm_bindgen]
-pub struct WasmSsspResult {
-    inner: SsspResult,
-}
 
 /// Thin WASM adapter over [`profile::ProfileRouting`]. All logic lives inside
 /// the inner pure-Rust struct; this exists only to serialize outputs for JS.
@@ -201,113 +169,6 @@ impl TransitRouter {
 
     pub fn snap_to_node(&self, lat: f64, lon: f64) -> Option<u32> {
         router::snap_to_node(&self.data, lat, lon)
-    }
-
-    /// Run sampled TDD over a time window. Returns individual full results.
-    pub fn run_tdd_sampled_full_for_date(
-        &self,
-        source_node: u32,
-        window_start: u32,
-        window_end: u32,
-        n_samples: u32,
-        date: u32,
-        transfer_slack: u32,
-        max_time: u32,
-    ) -> Vec<WasmSsspResult> {
-        let pattern_indices = router::patterns_for_date(&self.data, date);
-        let step = if n_samples > 1 {
-            (window_end - window_start) / (n_samples - 1)
-        } else {
-            0
-        };
-
-        par_map_collect(0..n_samples, |i| {
-            let dep_time = window_start + i * step;
-            let (results, boarding_events) = router::run_tdd_multi(
-                &self.data,
-                source_node,
-                dep_time,
-                &pattern_indices,
-                transfer_slack,
-                max_time,
-            );
-            WasmSsspResult {
-                inner: SsspResult {
-                    results,
-                    boarding_events,
-                    departure_time: dep_time,
-                },
-            }
-        })
-    }
-
-    /// Run TDD and return full SSSP result for path reconstruction.
-    pub fn run_tdd_full_for_date(
-        &self,
-        source_node: u32,
-        departure_time: u32,
-        date: u32,
-        transfer_slack: u32,
-        max_time: u32,
-    ) -> WasmSsspResult {
-        let pat_indices = router::patterns_for_date(&self.data, date);
-        let (results, boarding_events) = router::run_tdd_multi(
-            &self.data,
-            source_node,
-            departure_time,
-            &pat_indices,
-            transfer_slack,
-            max_time,
-        );
-        WasmSsspResult {
-            inner: SsspResult {
-                results,
-                boarding_events,
-                departure_time,
-            },
-        }
-    }
-
-    pub fn node_arrival_time(&self, sssp: &WasmSsspResult, node: u32) -> u32 {
-        let r = &sssp.inner.results[node as usize];
-        if r.arrival_delta == u16::MAX {
-            u32::MAX
-        } else {
-            sssp.inner.departure_time + r.arrival_delta as u32
-        }
-    }
-
-    pub fn node_leave_home(&self, _sssp: &WasmSsspResult, _node: u32) -> u32 {
-        0 // leave_home is now transient and not retained after routing
-    }
-
-    pub fn node_boarding_time(&self, sssp: &WasmSsspResult, node: u32) -> u32 {
-        let r = &sssp.inner.results[node as usize];
-        if r.boarding_delta == u16::MAX {
-            0 // walk edge or source — no boarding time
-        } else {
-            sssp.inner.departure_time + r.boarding_delta as u32
-        }
-    }
-
-    pub fn sssp_departure_time(&self, sssp: &WasmSsspResult) -> u32 {
-        sssp.inner.departure_time
-    }
-
-    /// Reconstruct the single optimal journey to `destination` as a
-    /// JSON-serialized `Option<PathView>` (null when unreachable).
-    ///
-    /// Mirror of `WasmProfileRouting::optimal_paths`' element shape so the
-    /// frontend can consume both modes through the same path of code.
-    pub fn sssp_optimal_path(&self, sssp: &WasmSsspResult, destination: u32) -> String {
-        let path = sssp_path::optimal_path(&self.data, &sssp.inner, destination);
-        match path {
-            Some(p) => {
-                let view = path_display::PathView::new(&self.data, &p);
-                serde_json::to_string(&view).unwrap_or_else(|_| "null".to_string())
-            }
-            None => "null".to_string(),
-        }
     }
 
     /// Run profile routing over `[window_start, window_end]`. Returns an opaque

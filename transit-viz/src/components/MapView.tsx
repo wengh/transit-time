@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef } from 'react';
 import L from 'leaflet';
 import { useAppState } from '../state/AppContext';
 import { initWebGL, renderIsochrone } from '../utils/webgl';
-import { getAnyHoverData, type HoverPath } from '../utils/router';
+import { getProfileHoverData, type HoverPath } from '../utils/router';
 import { ROUTE_COLORS } from '../utils/colors';
 import { getHashParams, setHashParams } from '../utils/urlHash';
 import { getSortedTravelTimes } from '../utils/hoverInfo';
@@ -172,7 +172,7 @@ export default function MapView(): React.ReactNode {
 
     function showDestination(node: number, pin: boolean) {
       const s = stateRef.current;
-      if (!s.router || !s.travelTimes || (!s.ssspList && !s.profile)) return;
+      if (!s.router || !s.travelTimes || !s.profile) return;
       const tt = s.travelTimes[node];
       if (isNaN(tt) || tt < 0) {
         clearRouteOverlay();
@@ -184,7 +184,7 @@ export default function MapView(): React.ReactNode {
         return;
       }
 
-      const allPaths = getAnyHoverData(s.router, s.ssspList, s.profile, node);
+      const allPaths = getProfileHoverData(s.router, s.profile, node);
       const travelTimes = getSortedTravelTimes(allPaths);
 
       drawRouteSegments(allPaths.filter((p) => p.segments.length > 0));
@@ -281,7 +281,7 @@ export default function MapView(): React.ReactNode {
     // Hover: show route (desktop, no pinned dest)
     function onMouseMove(e: L.LeafletMouseEvent) {
       const s = stateRef.current;
-      if (!s.router || !s.travelTimes || (!s.ssspList && !s.profile) || s.pinnedNode !== null) return;
+      if (!s.router || !s.travelTimes || !s.profile || s.pinnedNode !== null) return;
 
       const node = snapToNode(e.latlng.lat, e.latlng.lng);
       if (node === lastHoveredNodeRef.current || node === null) return;
@@ -481,9 +481,10 @@ export default function MapView(): React.ReactNode {
     }
   }, [state.pinnedNode, clearDestination]);
 
-  // Redraw routes when selected sample changes (chart hover/click)
+  // Redraw routes when the pinned hover data or the selected sample changes.
+  // With a selection, show only that path; otherwise show the full Pareto set.
   useEffect(() => {
-    const { hoverData, selectedSampleIdx, pinnedNode } = state;
+    const { hoverData, pinnedNode, selectedSampleIdx } = state;
     if (!drawRouteLayersRef.current || !hoverData || pinnedNode === null) return;
     const paths = selectedSampleIdx !== null
       ? [hoverData.allPaths[selectedSampleIdx]].filter((p): p is HoverPath => !!p && p.segments.length > 0)

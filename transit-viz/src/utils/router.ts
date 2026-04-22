@@ -1,4 +1,4 @@
-import init, { initThreadPool, TransitRouter, WasmSsspResult, WasmProfileRouting, __markRayonReady } from '../../pkg/transit_router';
+import init, { initThreadPool, TransitRouter, WasmProfileRouting, __markRayonReady } from '../../pkg/transit_router';
 
 // Rust-side display strings for a path (`PathDisplay`). Produced in Rust once
 // per hover and consumed verbatim by HoverInfo — keeps the text the single
@@ -11,7 +11,6 @@ export interface PathDisplay {
 let wasmReady = false;
 
 export type Router = TransitRouter;
-export type SsspList = WasmSsspResult[];
 export type Profile = WasmProfileRouting;
 
 // Profile reachable_fraction is quantized over u16::MAX in Rust. The webgl
@@ -35,22 +34,18 @@ export interface PathSegment {
 
 export interface QueryResult {
   travelTimes: Float32Array;
-  ssspList: SsspList;          // single mode: [sssp]; sampled mode: []
-  profile: Profile | null;     // sampled mode: the WasmProfileRouting; single mode: null
-  sampleCounts: Uint32Array | null; // null in single mode; counts[i]/totalSamples = reachable fraction
-  totalSamples: number;             // 1 in single; PROFILE_FRACTION_SCALE in sampled (profile-backed)
-  departureTime: number;            // window start (sampled) or the exact departure (single)
+  profile: Profile;
+  sampleCounts: Uint32Array;
+  totalSamples: number;
+  departureTime: number;
 }
 
 export interface RunQueryParams {
   sourceNode: number;
-  mode: 'single' | 'sampled';
   departureTime: number;
   date: string;
-  nSamples: number;
   transferSlack: number;
   maxTime: number;
-  prevSsspList?: SsspList;
   prevProfile?: Profile | null;
 }
 
@@ -86,38 +81,19 @@ export async function loadRouter(cityFile: string, onProgress?: (progress: numbe
   return new TransitRouter(dataBytes);
 }
 
-export function freeSsspList(ssspList: SsspList | null | undefined) {
-  if (!ssspList) return;
-  for (const sssp of ssspList) {
-    try { sssp.free(); } catch { /* ignore */ }
-  }
-}
-
 export function freeProfile(profile: Profile | null | undefined) {
   if (!profile) return;
   try { profile.free(); } catch { /* ignore */ }
 }
 
 export function runQuery(router: Router, params: RunQueryParams): QueryResult {
-  const { sourceNode, mode, departureTime, date, transferSlack, maxTime, prevSsspList, prevProfile } = params;
+  const { sourceNode, departureTime, date, transferSlack, maxTime, prevProfile } = params;
 
-  freeSsspList(prevSsspList);
   freeProfile(prevProfile);
   const numNodes = router.num_nodes();
   const dateInt = parseInt(date.replace(/-/g, ''));
 
-  if (mode === 'single') {
-    const sssp = router.run_tdd_full_for_date(sourceNode, departureTime, dateInt, transferSlack, maxTime);
-    const ssspList: SsspList = [sssp];
-    const travelTimes = new Float32Array(numNodes);
-    for (let i = 0; i < numNodes; i++) {
-      const arr = router.node_arrival_time(sssp, i);
-      travelTimes[i] = arr < 0xffffffff ? arr - departureTime : NaN;
-    }
-    return { travelTimes, ssspList, profile: null, sampleCounts: null, totalSamples: 1, departureTime };
-  }
-
-  // Sampled mode = analytic profile routing over a 1-hour window.
+  // Analytic profile routing over a 1-hour window.
   const windowEnd = departureTime + 3600;
   const profile: Profile = router.compute_profile(
     sourceNode, departureTime, windowEnd, dateInt, transferSlack, maxTime
@@ -135,7 +111,6 @@ export function runQuery(router: Router, params: RunQueryParams): QueryResult {
   }
   return {
     travelTimes,
-    ssspList: [],
     profile,
     sampleCounts: counts,
     totalSamples: PROFILE_FRACTION_SCALE,
@@ -152,7 +127,7 @@ export interface HoverPath {
 }
 
 // ============================================================================
-// Profile mode: single call into WASM returns fully-structured paths.
+// Hover data: a single call into WASM returns fully-structured paths.
 // ============================================================================
 
 // Matches the Rust `Path` / `PathSegment` structs in profile.rs (serde
@@ -220,45 +195,4 @@ export function getProfileHoverData(router: Router, profile: Profile, node: numb
   const json = profile.optimal_paths(router, node);
   const views: RustPathView[] = JSON.parse(json);
   return views.map((p) => rustPathToHoverPath(router, p));
-}
-
-// Single-departure mode now goes through the same Rust `PathView` pipeline as
-// profile mode — one call into WASM returns the fully-formatted path.
-export function getSsspHoverData(router: Router, ssspList: SsspList, node: number): HoverPath[] {
-  const out: HoverPath[] = [];
-  for (const sssp of ssspList) {
-    if ((sssp as unknown as { __wbg_ptr: number }).__wbg_ptr === 0) continue;
-    try {
-      const depTime = router.sssp_departure_time(sssp);
-      const json = router.sssp_optimal_path(sssp, node);
-      const view: RustPathView | null = JSON.parse(json);
-      if (!view) {
-        out.push({
-          segments: [],
-          totalTime: null,
-          departureTime: depTime,
-          routeColor: '#888888',
-          display: null,
-        });
-        continue;
-      }
-      out.push(rustPathToHoverPath(router, view));
-    } catch (e) {
-      if (e instanceof Error && e.message && e.message.includes('null pointer')) continue;
-      throw e;
-    }
-  }
-  return out;
-}
-
-export function getAnyHoverData(
-  router: Router,
-  ssspList: SsspList | null,
-  profile: Profile | null,
-  node: number,
-): HoverPath[] {
-  if (profile && (profile as unknown as { __wbg_ptr: number }).__wbg_ptr !== 0) {
-    return getProfileHoverData(router, profile, node);
-  }
-  return ssspList ? getSsspHoverData(router, ssspList, node) : [];
 }

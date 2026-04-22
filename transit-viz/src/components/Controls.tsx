@@ -1,7 +1,7 @@
 import React, { useState, useRef } from 'react';
 import { useAppState } from '../state/AppContext';
 import { formatTime, formatSlack, dateToYYYYMMDD } from '../utils/format';
-import { freeSsspList, freeProfile } from '../utils/router';
+import { freeProfile } from '../utils/router';
 import { MAP_STYLES } from '../utils/mapStyles';
 import { LegendContent } from './Legend';
 
@@ -58,7 +58,7 @@ interface ControlsProps {
 
 export default function Controls({ onRunQuery, onCopy }: ControlsProps): React.ReactNode {
   const { state, dispatch } = useAppState();
-  const { loadingState, mode, mapStyle, departureTime, date, nSamples, maxTimeMin, transferSlack, computeStatus, computeTimeMs, patternCount, nodeCount, stopCount, sourceNode, showCopiedMessage } = state;
+  const { loadingState, mapStyle, departureTime, date, maxTimeMin, transferSlack, computeStatus, computeTimeMs, patternCount, nodeCount, stopCount, sourceNode, showCopiedMessage } = state;
 
   const [collapsed, setCollapsed] = useState(() => window.innerWidth < 600);
 
@@ -86,12 +86,6 @@ export default function Controls({ onRunQuery, onCopy }: ControlsProps): React.R
     dispatch({ type: 'SET_MAP_STYLE', style: e.target.value });
   }
 
-  function handleModeChange(e: React.ChangeEvent<HTMLSelectElement>) {
-    const newMode = e.target.value as 'single' | 'sampled';
-    dispatch({ type: 'SET_MODE', mode: newMode });
-    onRunQuery({ mode: newMode });
-  }
-
   function handleDateChange(e: React.ChangeEvent<HTMLInputElement>) {
     dispatch({ type: 'SET_DATE', value: e.target.value });
     if (state.router) {
@@ -102,7 +96,6 @@ export default function Controls({ onRunQuery, onCopy }: ControlsProps): React.R
   }
 
   function handleChangeCity() {
-    freeSsspList(state.ssspList);
     freeProfile(state.profile);
     dispatch({ type: 'CHANGE_CITY' });
     history.replaceState(null, '', import.meta.env.BASE_URL);
@@ -162,16 +155,6 @@ export default function Controls({ onRunQuery, onCopy }: ControlsProps): React.R
         </select>
       </div>
 
-      {/* Mode */}
-      <div className="mb-0">
-        <label className="block text-[13px] text-zinc-500 dark:text-zinc-400">Mode</label>
-        <select id="mode" value={mode} onChange={handleModeChange}
-          className={selectClass}>
-          <option value="single">Single Departure Time</option>
-          <option value="sampled">Hour-Window Average</option>
-        </select>
-      </div>
-
       {/* Date */}
       <div className="mb-0">
         <label className="block text-[13px] text-zinc-500 dark:text-zinc-400">Date</label>
@@ -198,26 +181,6 @@ export default function Controls({ onRunQuery, onCopy }: ControlsProps): React.R
         </label>
       </div>
 
-      {/* Samples (sampled mode only) */}
-      {mode === 'sampled' && (
-        <div className="mb-0">
-          <label className="block text-[13px] text-zinc-500 dark:text-zinc-400">
-            Samples:{' '}
-            <RangeSlider
-              id="samples-slider"
-              min={3}
-              max={30}
-              step={1}
-              defaultValue={nSamples}
-              formatDisplay={(v) => `${v}`}
-              onCommit={(val) => {
-                dispatch({ type: 'SET_SAMPLES', value: val });
-                onRunQuery({ nSamples: val });
-              }}
-            />
-          </label>
-        </div>
-      )}
 
       {/* Max travel time */}
       <div className="mb-0">
