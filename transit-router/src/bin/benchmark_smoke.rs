@@ -1,6 +1,6 @@
 /// Smoke harness for profile routing. Prints isochrone stats.
 /// Usage:
-///   cargo run --release --bin profile_smoke -- <city.bin> <src_lat> <src_lon> [YYYYMMDD] [window_start_hhmm] [window_minutes] [max_min] [slack_s]
+///   cargo run --release --bin benchmark_smoke -- <city.bin> <src_lat> <src_lon> [YYYYMMDD] [window_start_hhmm] [window_minutes] [max_min] [slack_s]
 use std::path::PathBuf;
 use transit_router::profile::ProfileRouter as _;
 use transit_router::{data, profile, router};

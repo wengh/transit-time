@@ -13,7 +13,7 @@ OUT="${1:-flamegraph.svg}"
 RUSTFLAGS="-C force-frame-pointers=yes" \
 cargo flamegraph \
   -c "record -g" \
-  --bin profile \
+  --bin benchmark \
   -p transit-router \
   --release \
   -o "$OUT"
