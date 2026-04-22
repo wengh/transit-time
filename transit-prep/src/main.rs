@@ -149,6 +149,121 @@ fn warn_if_expired(feed_id: &str, data: &gtfs::GtfsData) {
     }
 }
 
+/// Adjust per-feed service calendars for stale feeds so the data remains
+/// useful for isochrone queries on today's date.
+///
+/// `allow_stale` overrides:
+///   - `Some(false)` — never adjust; honor all dates strictly.
+///   - `Some(true)`  — force-wipe every service's date range to unbounded.
+///
+/// Automatic mode (`None`):
+///   1. Compute `feed_max` (YYYYMMDD): prefer `feed_info.feed_end_date`, else
+///      the max of service `end_date`s and `added_dates`. If nothing bounded
+///      exists, do nothing.
+///   2. If `today_days + 14 <= feed_max_days`, the feed is still fresh — do
+///      nothing and let the router's date filter work normally.
+///   3. Otherwise the feed is stale or nearly stale. For each service A, check
+///      whether another service B "replaces" A: B.start_date lands within
+///      ±14 days of A.end_date + 1, and B's end is after A's end. If A has
+///      such a successor, leave A alone (router will drop it on today's
+///      date). Otherwise wipe A's `start_date`/`end_date` to 0 so it remains
+///      queryable as a fallback schedule.
+fn apply_stale_policy(data: &mut gtfs::GtfsData, allow_stale: Option<bool>, today_days: u32) {
+    match allow_stale {
+        Some(false) => return,
+        Some(true) => {
+            for s in &mut data.services {
+                s.start_date = 0;
+                s.end_date = 0;
+            }
+            return;
+        }
+        None => {}
+    }
+
+    // `feed_max` in YYYYMMDD, then converted to days-since-epoch.
+    let feed_max_days = data
+        .feed_end_date
+        .filter(|&d| d != 0)
+        .or_else(|| {
+            data.services
+                .iter()
+                .flat_map(|s| {
+                    let end = (s.end_date != 0).then_some(s.end_date);
+                    s.added_dates.iter().copied().chain(end)
+                })
+                .max()
+        })
+        .map(yyyymmdd_to_days);
+
+    let Some(feed_max_days) = feed_max_days else {
+        return;
+    };
+
+    // Gate: only intervene when we're within 14 days of the feed's end.
+    if today_days + 14 <= feed_max_days {
+        return;
+    }
+
+    // Precompute (start_days, end_days) per service with sentinel values so
+    // unbounded endpoints compare correctly. u32::MIN for "no start", u32::MAX
+    // for "no end" (i.e. the service runs forever already).
+    let service_info: Vec<(u32, u32)> = data
+        .services
+        .iter()
+        .map(|s| {
+            (
+                if s.start_date != 0 {
+                    yyyymmdd_to_days(s.start_date)
+                } else {
+                    u32::MIN
+                },
+                if s.end_date != 0 {
+                    yyyymmdd_to_days(s.end_date)
+                } else {
+                    u32::MAX
+                },
+            )
+        })
+        .collect();
+
+    let superseded: Vec<bool> = service_info
+        .iter()
+        .enumerate()
+        .map(|(i, &(_, a_end))| {
+            // Already-unbounded services have nothing to extend and no
+            // meaningful "end" to compare against.
+            if a_end == u32::MAX {
+                return false;
+            }
+            let handoff = a_end as i64 + 1;
+            service_info
+                .iter()
+                .enumerate()
+                .any(|(j, &(b_start, b_end))| {
+                    if i == j {
+                        return false;
+                    }
+                    if b_start == u32::MIN {
+                        return false;
+                    }
+                    if b_end <= a_end {
+                        return false;
+                    }
+                    (b_start as i64 - handoff).abs() <= 7
+                })
+        })
+        .collect();
+
+    for (i, s) in data.services.iter_mut().enumerate() {
+        if superseded[i] {
+            continue;
+        }
+        s.start_date = 0;
+        s.end_date = 0;
+    }
+}
+
 /// Check if a feed ID is a Transitland onestop ID (starts with "f-").
 fn is_transitland_id(feed_id: &str) -> bool {
     feed_id.starts_with("f-")
@@ -1060,10 +1175,11 @@ pub fn run_prep(
 
     use rayon::prelude::*;
 
+    let today_days = unix_days_now();
     let parsed: Vec<gtfs::GtfsData> = gtfs_paths
         .par_iter()
         .map(|path| -> Result<gtfs::GtfsData> {
-            let data = gtfs::parse_gtfs(path, bbox)?;
+            let mut data = gtfs::parse_gtfs(path, bbox)?;
             eprintln!(
                 "  {:?}: {} stops, {} routes, {} trips",
                 path.file_name().unwrap_or_default(),
@@ -1072,6 +1188,7 @@ pub fn run_prep(
                 data.trips.len()
             );
             warn_if_expired(&path.to_string_lossy(), &data);
+            apply_stale_policy(&mut data, allow_stale, today_days);
             Ok(data)
         })
         .collect::<Result<Vec<_>>>()?;
@@ -1094,16 +1211,6 @@ pub fn run_prep(
         gtfs_data.stop_times.len(),
         gtfs_data.services.len(),
     );
-
-    // Allow stale by default since this app is meant for
-    // data analysis, not guiding actual transit riders.
-    if allow_stale.unwrap_or(true) {
-        for s in &mut gtfs_data.services {
-            // Setting to 0 means indefinitely valid
-            s.start_date = 0;
-            s.end_date = 0;
-        }
-    }
 
     // Filter stops to bbox and re-index sequentially so out-of-bbox stops occupy no ids.
     // Also remap stop_times to the new stop indices (dropping entries for out-of-bbox stops).

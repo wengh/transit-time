@@ -117,6 +117,8 @@ i changed prep to ensure each node has at most 1 snapped stop, so we can store a
 
 change shape dp to split segment at where it's closest to the stop location
 
+handle stale schedules better? idk
+
 profile routing performance
 - get flamegraph of profile routing
 - maybe add parallelism somewhere?

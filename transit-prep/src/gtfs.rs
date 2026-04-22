@@ -86,6 +86,11 @@ pub struct GtfsData {
     pub services: Vec<Service>,
     pub frequencies: Vec<Frequency>,
     pub shapes: HashMap<String, Vec<(f64, f64)>>, // shape_id -> [(lat, lon)]
+    /// From feed_info.txt — publisher's authoritative end-of-coverage date
+    /// (YYYYMMDD). None if feed_info.txt or its feed_end_date column is absent.
+    /// Only meaningful pre-merge; after merging feeds it reflects whichever
+    /// feed was the merge base and should not be relied on.
+    pub feed_end_date: Option<u32>,
 }
 
 impl GtfsData {
@@ -601,6 +606,32 @@ pub fn parse_gtfs(path: &Path, bbox: (f64, f64, f64, f64)) -> Result<GtfsData> {
         }
     }
 
+    // Parse feed_info.txt — optional file, optional column. Read feed_end_date
+    // by header-index lookup so a missing column doesn't error.
+    let mut feed_end_date: Option<u32> = None;
+    if let Some(fi_csv) = read_file_from_zip(&mut archive, "feed_info.txt")? {
+        let mut rdr = csv::ReaderBuilder::new()
+            .flexible(true)
+            .trim(csv::Trim::All)
+            .from_reader(fi_csv.as_bytes());
+        if let Ok(headers) = rdr.headers() {
+            let col = headers.iter().position(|h| h == "feed_end_date");
+            if let Some(col) = col {
+                for result in rdr.records() {
+                    if let Ok(rec) = result {
+                        if let Some(v) = rec.get(col) {
+                            if let Ok(d) = v.parse::<u32>() {
+                                if d != 0 {
+                                    feed_end_date = Some(d);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // Parse frequencies
     let mut frequencies = Vec::new();
     if let Some(freq_csv) = read_file_from_zip(&mut archive, "frequencies.txt")? {
@@ -669,6 +700,7 @@ pub fn parse_gtfs(path: &Path, bbox: (f64, f64, f64, f64)) -> Result<GtfsData> {
         services: services.into_values().collect(),
         frequencies,
         shapes,
+        feed_end_date,
     })
 }
 
