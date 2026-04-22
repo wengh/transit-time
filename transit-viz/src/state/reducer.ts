@@ -1,4 +1,4 @@
-import type { Router, SsspList, Profile, HoverPath } from '../utils/router';
+import type { Router, Profile, HoverPath } from '../utils/router';
 import type { City } from '../cities';
 import { DEFAULT_MAP_STYLE } from '../utils/mapStyles';
 
@@ -10,10 +10,8 @@ export interface AppState {
 
   // Controls
   mapStyle: string;
-  mode: 'single' | 'sampled';
   departureTime: number;
   date: string;
-  nSamples: number;
   maxTimeMin: number;
   transferSlack: number;
 
@@ -25,7 +23,6 @@ export interface AppState {
 
   // Query results
   travelTimes: Float32Array | null;
-  ssspList: SsspList | null;
   profile: Profile | null;
   sampleCounts: Uint32Array | null;
   totalSamples: number;
@@ -39,6 +36,9 @@ export interface AppState {
   pinnedNode: number | null;
   pinnedLatLng: [number, number] | null;
   hoverData: HoverData | null;
+  // Which Pareto path the user is inspecting in the chart. `selected` is
+  // ephemeral (follows the cursor); `locked` pins it across cursor moves and
+  // survives unpin/repin. Both are indices into `hoverData.allPaths` or null.
   selectedSampleIdx: number | null;
   lockedSampleIdx: number | null;
 
@@ -51,8 +51,6 @@ export interface HoverData {
   travelTimes: number[];
   // Per-node analytic summary from the Rust profile router. Populated from
   // `state.travelTimes[node]` and `state.sampleCounts[node] / state.totalSamples`.
-  // In single (point) mode: `avgTravelTime` is the single arrival time (seconds)
-  // and `reachableFraction` is null (fraction isn't meaningful for one departure).
   // `avgTravelTime` is null when the node is unreachable.
   avgTravelTime: number | null;
   reachableFraction: number | null;
@@ -67,15 +65,13 @@ export type Action =
   | { type: 'CHANGE_CITY' }
   | { type: 'SET_SOURCE'; node: number; latLng: [number, number] }
   | { type: 'SET_MAP_STYLE'; style: string }
-  | { type: 'SET_MODE'; mode: 'single' | 'sampled' }
   | { type: 'SET_DEPARTURE_TIME'; value: number }
   | { type: 'SET_DATE'; value: string }
-  | { type: 'SET_SAMPLES'; value: number }
   | { type: 'SET_MAX_TIME'; value: number }
   | { type: 'SET_SLACK'; value: number }
   | { type: 'SET_PATTERN_COUNT'; count: number }
   | { type: 'COMPUTING' }
-  | { type: 'QUERY_DONE'; travelTimes: Float32Array; ssspList: SsspList; profile: Profile | null; sampleCounts: Uint32Array | null; totalSamples: number; timeMs: number }
+  | { type: 'QUERY_DONE'; travelTimes: Float32Array; profile: Profile; sampleCounts: Uint32Array; totalSamples: number; timeMs: number }
   | { type: 'QUERY_ERROR' }
   | { type: 'PIN_DESTINATION'; node: number; latLng: [number, number]; hoverData: HoverData }
   | { type: 'UNPIN_DESTINATION' }
@@ -94,10 +90,8 @@ export const initialState: AppState = {
 
   // Controls
   mapStyle: DEFAULT_MAP_STYLE,
-  mode: 'sampled',
   departureTime: 11 * 3600, // 11:00 AM
   date: new Date().toISOString().slice(0, 10),
-  nSamples: 15,
   maxTimeMin: 45,
   transferSlack: 60,
 
@@ -109,7 +103,6 @@ export const initialState: AppState = {
 
   // Query results
   travelTimes: null,
-  ssspList: null,
   profile: null,
   sampleCounts: null,
   totalSamples: 1,
@@ -149,13 +142,10 @@ export function reducer(state: AppState, action: Action): AppState {
         sourceNode: null,
         sourceLatLng: null,
         travelTimes: null,
-        ssspList: null,
         profile: null,
         pinnedNode: null,
         pinnedLatLng: null,
         hoverData: null,
-        selectedSampleIdx: null,
-        lockedSampleIdx: null,
         computeStatus: 'idle',
       };
     case 'LOAD_ERROR':
@@ -168,28 +158,21 @@ export function reducer(state: AppState, action: Action): AppState {
         router: null,
         nodeCoords: null,
         travelTimes: null,
-        ssspList: null,
         profile: null,
         sourceNode: null,
         sourceLatLng: null,
         pinnedNode: null,
         pinnedLatLng: null,
         hoverData: null,
-        selectedSampleIdx: null,
-        lockedSampleIdx: null,
       };
     case 'SET_SOURCE':
-      return { ...state, sourceNode: action.node, sourceLatLng: action.latLng, pinnedNode: null, pinnedLatLng: null, hoverData: null, selectedSampleIdx: null, lockedSampleIdx: null };
+      return { ...state, sourceNode: action.node, sourceLatLng: action.latLng, pinnedNode: null, pinnedLatLng: null, hoverData: null };
     case 'SET_MAP_STYLE':
       return { ...state, mapStyle: action.style };
-    case 'SET_MODE':
-      return { ...state, mode: action.mode };
     case 'SET_DEPARTURE_TIME':
       return { ...state, departureTime: action.value };
     case 'SET_DATE':
       return { ...state, date: action.value };
-    case 'SET_SAMPLES':
-      return { ...state, nSamples: action.value };
     case 'SET_MAX_TIME':
       return { ...state, maxTimeMin: action.value };
     case 'SET_SLACK':
@@ -199,22 +182,22 @@ export function reducer(state: AppState, action: Action): AppState {
     case 'COMPUTING':
       return { ...state, computeStatus: 'computing' };
     case 'QUERY_DONE':
-      return { ...state, travelTimes: action.travelTimes, ssspList: action.ssspList, profile: action.profile, sampleCounts: action.sampleCounts, totalSamples: action.totalSamples, computeStatus: 'done', computeTimeMs: action.timeMs, selectedSampleIdx: null, lockedSampleIdx: null };
+      return { ...state, travelTimes: action.travelTimes, profile: action.profile, sampleCounts: action.sampleCounts, totalSamples: action.totalSamples, computeStatus: 'done', computeTimeMs: action.timeMs };
     case 'QUERY_ERROR':
       return { ...state, computeStatus: 'error' };
-    case 'SELECT_SAMPLE':
-      return { ...state, selectedSampleIdx: action.idx };
-    case 'LOCK_SAMPLE':
-      return { ...state, selectedSampleIdx: action.idx, lockedSampleIdx: action.idx };
     case 'PIN_DESTINATION':
-      return { ...state, pinnedNode: action.node, pinnedLatLng: action.latLng, hoverData: action.hoverData, selectedSampleIdx: null, lockedSampleIdx: null };
+      return { ...state, pinnedNode: action.node, pinnedLatLng: action.latLng, hoverData: action.hoverData };
     case 'UNPIN_DESTINATION':
       return { ...state, pinnedNode: null, pinnedLatLng: null, hoverData: null, selectedSampleIdx: null, lockedSampleIdx: null };
     case 'SET_HOVER_DATA':
       return { ...state, hoverData: action.hoverData };
     case 'CLEAR_HOVER':
       if (state.pinnedNode !== null) return state;
-      return { ...state, hoverData: null };
+      return { ...state, hoverData: null, selectedSampleIdx: null };
+    case 'SELECT_SAMPLE':
+      return { ...state, selectedSampleIdx: action.idx };
+    case 'LOCK_SAMPLE':
+      return { ...state, lockedSampleIdx: action.idx, selectedSampleIdx: action.idx };
     case 'SHOW_COPIED_MESSAGE':
       return { ...state, showCopiedMessage: true };
     case 'HIDE_COPIED_MESSAGE':

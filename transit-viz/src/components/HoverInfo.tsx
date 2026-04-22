@@ -344,16 +344,12 @@ export default function HoverInfo(): React.ReactNode {
   const chartInfoRef = useRef<ChartInfo | null>(null);
   const [hidden, setHidden] = useState(false);
 
-  const { hoverData, maxTimeMin, departureTime, mode, pinnedNode, selectedSampleIdx, lockedSampleIdx } = state;
+  const { hoverData, maxTimeMin, departureTime, pinnedNode, selectedSampleIdx, lockedSampleIdx } = state;
 
-  // Show the chart whenever we're in window (sampled) mode with any hover target.
-  // Single-path windows still have a meaningful walk line / departure-time axis,
-  // so don't gate on path count.
-  const isSampled = mode === 'sampled' && hoverData !== null;
-
-  // Recompute chart info and redraw whenever relevant state changes
+  // Recompute chart info and redraw whenever relevant state changes. The chart
+  // highlights `selectedSampleIdx` (cursor) or `lockedSampleIdx` (pinned click).
   useEffect(() => {
-    if (!canvasRef.current || !hoverData || !isSampled) return;
+    if (!canvasRef.current || !hoverData) return;
     const info = computeChartInfo(
       hoverData.allPaths,
       departureTime,
@@ -362,7 +358,7 @@ export default function HoverInfo(): React.ReactNode {
     );
     chartInfoRef.current = info;
     drawChart(canvasRef.current, info, selectedSampleIdx, getChartTheme());
-  }, [hoverData, isSampled, maxTimeMin, departureTime, selectedSampleIdx]);
+  }, [hoverData, maxTimeMin, departureTime, selectedSampleIdx]);
 
   const handleMouseMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     if (lockedSampleIdx !== null || pinnedNode === null || !chartInfoRef.current) return;
@@ -407,30 +403,29 @@ export default function HoverInfo(): React.ReactNode {
   }
   const { allPaths } = hoverData;
 
-  // Which path to show details for
+  // Representative path shown in the details list.
+  // When a specific Pareto path is selected in the chart, show its detail; the
+  // first wait is stripped so the user sees the actual in-vehicle trip time
+  // from the chosen departure rather than "time since earliest viable leave".
   const displayPath = selectedSampleIdx !== null
-    ? { ...allPaths[selectedSampleIdx] }
+    ? (allPaths[selectedSampleIdx] ? { ...allPaths[selectedSampleIdx] } : null)
     : getMedianPath(allPaths);
 
-  // Remove initial wait time if it's a selected sample to show the optimal trip time
-  if (selectedSampleIdx !== null) {
-    const firstTransitIndex = displayPath?.segments.findIndex(s => s.edgeType === 1) ?? -1;
+  if (selectedSampleIdx !== null && displayPath) {
+    const firstTransitIndex = displayPath.segments.findIndex(s => s.edgeType === 1);
     if (firstTransitIndex !== -1) {
-      const firstTransit = displayPath!.segments[firstTransitIndex];
+      const firstTransit = displayPath.segments[firstTransitIndex];
       const waitTime = firstTransit.waitTime;
-      displayPath!.segments = displayPath!.segments.map((s, i) => {
-        if (i === firstTransitIndex) {
-          return { ...s, waitTime: 0 };
-        } else {
-          return s;
-        }
-      })
-      displayPath!.totalTime! -= waitTime;
-      displayPath!.departureTime += waitTime;
+      displayPath.segments = displayPath.segments.map((s, i) =>
+        i === firstTransitIndex ? { ...s, waitTime: 0 } : s,
+      );
+      if (displayPath.totalTime !== null) displayPath.totalTime -= waitTime;
+      displayPath.departureTime += waitTime;
     }
   }
 
-  // Title line
+  // Title: per-selection detail if the user clicked/hovered a specific path,
+  // otherwise the Rust-side per-node analytic summary over the whole window.
   let titleText: string;
   if (selectedSampleIdx !== null) {
     if (displayPath?.totalTime != null) {
@@ -439,12 +434,9 @@ export default function HoverInfo(): React.ReactNode {
     } else {
       titleText = 'Unreachable';
     }
-  } else if (isSampled) {
-    // Title comes straight from the Rust profile's per-node analytic summary
-    // (mean_travel_times[node], reachable_fractions[node]) — this covers the
-    // full continuous departure window, not just the Pareto-path sample.
-    const avgSec = hoverData?.avgTravelTime ?? null;
-    const frac = hoverData?.reachableFraction ?? 0;
+  } else {
+    const avgSec = hoverData.avgTravelTime;
+    const frac = hoverData.reachableFraction ?? 0;
     if (avgSec === null || frac <= 0) {
       titleText = 'Unreachable';
     } else {
@@ -452,11 +444,6 @@ export default function HoverInfo(): React.ReactNode {
       const pct = Math.round(frac * 100);
       titleText = `Avg travel time: ${avgMin} min (${pct}% reachable)`;
     }
-  } else {
-    const p = allPaths[0];
-    titleText = p?.totalTime != null
-      ? `Travel time: ${Math.round(p.totalTime / 60)} min`
-      : 'Unreachable';
   }
 
   return (
@@ -472,26 +459,10 @@ export default function HoverInfo(): React.ReactNode {
         max-sm:max-w-none max-sm:max-h-[calc(100vh-90px)] max-sm:overflow-y-auto"
     >
       <div id="hover-info-details" className="overflow-y-auto max-h-[30vh]">
-        <div className="flex items-start justify-between gap-2 mb-1.5">
-          <div className="font-semibold text-[13px] text-zinc-100 dark:text-zinc-100
-            [@media(prefers-color-scheme:light)]:text-zinc-900">
-            {titleText}
-          </div>
-          <button
-            onClick={() => setHidden(true)}
-            className="sm:hidden text-[11px] text-zinc-500 hover:text-zinc-300
-              [@media(prefers-color-scheme:light)]:hover:text-zinc-600
-              cursor-pointer shrink-0 leading-none mt-0.5"
-            title="Hide details"
-          >
-            ▾ hide
-          </button>
-        </div>
-
         {displayPath && displayPath.segments.length > 0 && (
-          <div className="border-t border-zinc-800 dark:border-zinc-800
+          <div className="border-b border-zinc-800 dark:border-zinc-800
             [@media(prefers-color-scheme:light)]:border-zinc-200
-            pt-1.5 mt-0.5">
+            pb-1.5 mb-0.5">
             {displayPath.segments.map((seg, si) => (
               <div key={si}>
                 {seg.edgeType === 0 ? (
@@ -522,26 +493,39 @@ export default function HoverInfo(): React.ReactNode {
             ))}
           </div>
         )}
+        <div className="flex items-start justify-between gap-2 mt-1.5">
+          <div className="font-semibold text-[13px] text-zinc-100 dark:text-zinc-100
+            [@media(prefers-color-scheme:light)]:text-zinc-900">
+            {titleText}
+          </div>
+          <button
+            onClick={() => setHidden(true)}
+            className="sm:hidden text-[11px] text-zinc-500 hover:text-zinc-300
+              [@media(prefers-color-scheme:light)]:hover:text-zinc-600
+              cursor-pointer shrink-0 leading-none"
+            title="Hide details"
+          >
+            ▾ hide
+          </button>
+        </div>
       </div>
 
-      {isSampled && (
-        <div
-          id="hover-info-chart"
-          className="flex-shrink-0 relative border-t border-zinc-800 dark:border-zinc-800
-            [@media(prefers-color-scheme:light)]:border-zinc-200
-            pt-2 mt-1.5
-            max-sm:[&_canvas]:[aspect-ratio:5/2]"
-        >
-          <ChartHintButton />
-          <canvas
-            ref={canvasRef}
-            style={{ width: '100%', display: 'block', cursor: 'crosshair', aspectRatio: '1/1' }}
-            onMouseMove={handleMouseMove}
-            onMouseLeave={handleMouseLeave}
-            onClick={handleClick}
-          />
-        </div>
-      )}
+      <div
+        id="hover-info-chart"
+        className="flex-shrink-0 relative border-t border-zinc-800 dark:border-zinc-800
+          [@media(prefers-color-scheme:light)]:border-zinc-200
+          pt-2 mt-1.5
+          max-sm:[&_canvas]:[aspect-ratio:5/2]"
+      >
+        <ChartHintButton />
+        <canvas
+          ref={canvasRef}
+          style={{ width: '100%', display: 'block', cursor: 'crosshair', aspectRatio: '1/1' }}
+          onMouseMove={handleMouseMove}
+          onMouseLeave={handleMouseLeave}
+          onClick={handleClick}
+        />
+      </div>
     </div>
   );
 }
