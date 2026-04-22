@@ -112,3 +112,12 @@ also as much as possible of the logic should live in the rust side to make it ea
 when backtracking we need the route/trip id of the transit leg, and early termination once found the desired transit leg. is there a way to satisfy this need without compromising performance and without duplicating too much code?
 
 i changed prep to ensure each node has at most 1 snapped stop, so we can store a dict of node_id -> stop_idx instead of a sparse jagged array. review my changes to prep and corresponding changes to router
+
+-------
+
+change shape dp to split segment at where it's closest to the stop location
+
+profile routing performance
+- get flamegraph of profile routing
+- maybe add parallelism somewhere?
+- maybe use a linked list of entries instead of an array of vectors?
