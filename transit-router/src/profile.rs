@@ -585,7 +585,11 @@ impl ProfileRouting {
                         loop {
                             let freq = &freqs[curr_idx as usize];
                             node_sequence.push(data.stop_to_node[freq.stop_index as usize]);
-                            if freq.stop_index == end_stop {
+                            if freq.next_stop_index == end_stop {
+                                // Last hop: the alighting stop only appears as
+                                // `next_stop_index`, never as a subsequent `stop_index`.
+                                node_sequence
+                                    .push(data.stop_to_node[freq.next_stop_index as usize]);
                                 break;
                             }
                             curr_idx = freq.next_freq_index;
