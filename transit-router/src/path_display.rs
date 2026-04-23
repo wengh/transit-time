@@ -8,7 +8,6 @@
 
 use crate::data::PreparedData;
 use crate::profile::{Path, PathSegment, SegmentKind};
-use pco;
 use serde::Serialize;
 
 /// Human-readable strings derived from a [`Path`].
@@ -142,19 +141,21 @@ fn leg_shape_between(
     let to_stop = *data.node_to_stop.get(&to_node)?;
     let key = (route_idx, from_stop, to_stop);
     let idx = data.leg_shape_keys.binary_search(&key).ok()?;
-    let start = data.leg_shapes.offsets[idx] as usize;
-    let end = data.leg_shapes.offsets[idx + 1] as usize;
-    let compressed = &data.leg_shapes.data[start..end];
-    if compressed.is_empty() {
+    let start = data.leg_shape_offsets[idx] as usize;
+    let end = data.leg_shape_offsets[idx + 1] as usize;
+    let lats = &data.leg_shapes_lat[start..end];
+    let lons = &data.leg_shapes_lon[start..end];
+    if lats.is_empty() {
         return None;
     }
-    let coords_u32: Vec<u32> = pco::standalone::simple_decompress(compressed).ok()?;
-    let mut out = Vec::with_capacity(coords_u32.len());
-    for chunk in coords_u32.chunks(2) {
-        if chunk.len() == 2 {
-            out.push(f32::from_bits(chunk[0]));
-            out.push(f32::from_bits(chunk[1]));
-        }
+    let min_lat = data.coord_min_lat as f32;
+    let min_lon = data.coord_min_lon as f32;
+    let lat_scale = data.coord_lat_scale as f32;
+    let lon_scale = data.coord_lon_scale as f32;
+    let mut out = Vec::with_capacity(lats.len() * 2);
+    for i in 0..lats.len() {
+        out.push(min_lat + lats[i] as f32 / lat_scale);
+        out.push(min_lon + lons[i] as f32 / lon_scale);
     }
     Some(out)
 }

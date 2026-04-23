@@ -9,8 +9,6 @@ use wasm_bindgen::prelude::*;
 
 pub use wasm_bindgen_rayon::init_thread_pool;
 
-use pco;
-
 /// Whether the rayon thread pool has been initialized (via `initThreadPool` from JS).
 /// When false, we fall back to sequential iteration.
 static RAYON_INITIALIZED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -230,24 +228,19 @@ impl TransitRouter {
             Err(_) => return Vec::new(),
         };
 
-        let start = self.data.leg_shapes.offsets[idx] as usize;
-        let end = self.data.leg_shapes.offsets[idx + 1] as usize;
-        let compressed = &self.data.leg_shapes.data[start..end];
-        if compressed.is_empty() {
-            return Vec::new();
-        }
+        let start = self.data.leg_shape_offsets[idx] as usize;
+        let end = self.data.leg_shape_offsets[idx + 1] as usize;
+        let lats = &self.data.leg_shapes_lat[start..end];
+        let lons = &self.data.leg_shapes_lon[start..end];
 
-        let coords_u32: Vec<u32> = match pco::standalone::simple_decompress(compressed) {
-            Ok(c) => c,
-            Err(_) => return Vec::new(),
-        };
-
-        let mut result = Vec::with_capacity(coords_u32.len());
-        for chunk in coords_u32.chunks(2) {
-            if chunk.len() == 2 {
-                result.push(f32::from_bits(chunk[0]) as f64);
-                result.push(f32::from_bits(chunk[1]) as f64);
-            }
+        let min_lat = self.data.coord_min_lat;
+        let min_lon = self.data.coord_min_lon;
+        let lat_scale = self.data.coord_lat_scale;
+        let lon_scale = self.data.coord_lon_scale;
+        let mut result = Vec::with_capacity(lats.len() * 2);
+        for i in 0..lats.len() {
+            result.push(min_lat + lats[i] as f64 / lat_scale);
+            result.push(min_lon + lons[i] as f64 / lon_scale);
         }
         result
     }

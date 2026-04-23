@@ -17,10 +17,10 @@ pub struct PreparedData {
     pub leg_shapes: Vec<((u32, u32, u32), Vec<(f64, f64)>)>,
 }
 
-// Binary format v7:
+// Binary format v9:
 // Header:
 //   magic: [u8; 4] = "TRNS"
-//   version: u32 = 7
+//   version: u32 = 9
 //   num_nodes: u32
 //   num_edges: u32
 //   num_stops: u32
@@ -63,9 +63,16 @@ pub struct PreparedData {
 //                next_stop_index, travel_time, next_freq_index (all u32)
 //
 // Leg shapes section (sorted by key for binary search):
-//   for each leg:
-//     route_index: u32, from_stop: u32, to_stop: u32
-//     pco_len: u32, pco_data: [u8; pco_len]  // PCO-compressed f32 coord bits
+//   Six global PCO columns — keys, per-leg point counts, and the fully
+//   concatenated lat/lon offsets. Shape points are i32 signed offsets at
+//   0.1 m resolution against the node-section origin/scale. Concatenating
+//   avoids paying PCO's per-frame overhead once per leg.
+//     PCO u32: routes       (len = num_leg_shapes)
+//     PCO u32: from_stops   (len = num_leg_shapes)
+//     PCO u32: to_stops     (len = num_leg_shapes)
+//     PCO u32: point_counts (len = num_leg_shapes)
+//     PCO i32: lats_global  (len = sum of point_counts)
+//     PCO i32: lons_global  (len = sum of point_counts)
 
 /// Spread 16-bit integer bits for Morton interleaving.
 fn spread_bits_16(mut x: u32) -> u32 {
@@ -172,7 +179,7 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
 
     // Header
     buf.extend_from_slice(b"TRNS");
-    write_u32(&mut buf, 7); // version
+    write_u32(&mut buf, 9); // version
     write_u32(&mut buf, num_nodes as u32);
     write_u32(&mut buf, data.edges.len() as u32);
     write_u32(&mut buf, data.stops.len() as u32);
@@ -423,27 +430,35 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
         }
     }
 
-    // Leg shapes: sorted by (route, from_stop, to_stop), each PCO-compressed
-    // num_leg_shapes already written in header
-    for &((route, from_stop, to_stop), ref points) in &data.leg_shapes {
-        write_u32(&mut buf, route);
-        write_u32(&mut buf, from_stop);
-        write_u32(&mut buf, to_stop);
-
-        let mut coords: Vec<u32> = Vec::with_capacity(points.len() * 2);
-        for &(lat, lon) in points {
-            coords.push((lat as f32).to_bits());
-            coords.push((lon as f32).to_bits());
+    // Leg shapes (v9): six global PCO columns. Concatenating across legs avoids
+    // paying PCO's per-frame overhead 2× per leg (was dominant for short legs).
+    // Signed i32 offsets at 0.1 m let shape points extend beyond the pedestrian
+    // node bbox; ±214 km range is ample.
+    {
+        let n = data.leg_shapes.len();
+        let mut routes: Vec<u32> = Vec::with_capacity(n);
+        let mut from_stops: Vec<u32> = Vec::with_capacity(n);
+        let mut to_stops: Vec<u32> = Vec::with_capacity(n);
+        let mut point_counts: Vec<u32> = Vec::with_capacity(n);
+        let total_points: usize = data.leg_shapes.iter().map(|(_, p)| p.len()).sum();
+        let mut lats_global: Vec<i32> = Vec::with_capacity(total_points);
+        let mut lons_global: Vec<i32> = Vec::with_capacity(total_points);
+        for &((route, from_stop, to_stop), ref points) in &data.leg_shapes {
+            routes.push(route);
+            from_stops.push(from_stop);
+            to_stops.push(to_stop);
+            point_counts.push(points.len() as u32);
+            for &(lat, lon) in points {
+                lats_global.push(((lat - min_lat) * lat_scale).round() as i32);
+                lons_global.push(((lon - min_lon) * lon_scale).round() as i32);
+            }
         }
-
-        let compressed = if coords.is_empty() {
-            Vec::new()
-        } else {
-            pco::standalone::simple_compress(&coords, &pco::ChunkConfig::default())
-                .expect("pco compress failed")
-        };
-        write_u32(&mut buf, compressed.len() as u32);
-        buf.extend_from_slice(&compressed);
+        write_pco_u32(&mut buf, &routes);
+        write_pco_u32(&mut buf, &from_stops);
+        write_pco_u32(&mut buf, &to_stops);
+        write_pco_u32(&mut buf, &point_counts);
+        write_pco_i32(&mut buf, &lats_global);
+        write_pco_i32(&mut buf, &lons_global);
     }
 
     // Compress with gzip
@@ -470,8 +485,23 @@ fn write_f64(buf: &mut Vec<u8>, v: f64) {
 }
 
 fn write_pco_u32(buf: &mut Vec<u8>, data: &[u32]) {
-    let compressed = pco::standalone::simple_compress(data, &pco::ChunkConfig::default())
-        .expect("pco compress failed");
+    let compressed = if data.is_empty() {
+        Vec::new()
+    } else {
+        pco::standalone::simple_compress(data, &pco::ChunkConfig::default())
+            .expect("pco compress failed")
+    };
+    write_u32(buf, compressed.len() as u32);
+    buf.extend_from_slice(&compressed);
+}
+
+fn write_pco_i32(buf: &mut Vec<u8>, data: &[i32]) {
+    let compressed = if data.is_empty() {
+        Vec::new()
+    } else {
+        pco::standalone::simple_compress(data, &pco::ChunkConfig::default())
+            .expect("pco compress failed")
+    };
     write_u32(buf, compressed.len() as u32);
     buf.extend_from_slice(&compressed);
 }

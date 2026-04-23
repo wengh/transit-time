@@ -206,47 +206,47 @@ cargo run --release --bin benchmark_smoke -- transit-viz/public/data/chicago.bin
 === Binary Section Sizes (decompressed) ===
 Section                          Bytes % of total
 header                            36 B     0.0%
-nodes                          1.83 MB    14.5%
-edges                          1.45 MB    11.5%
-stops                         665.7 KB     5.2%
-stop_to_node                  133.5 KB     1.0%
+nodes                          1.83 MB    15.6%
+edges                          1.45 MB    12.4%
+stops                         665.7 KB     5.6%
+stop_to_node                  133.5 KB     1.1%
 route_names                     1.5 KB     0.0%
 route_colors                     844 B     0.0%
-patterns                       7.29 MB    57.9%
-leg_shapes                     1.23 MB     9.8%
-TOTAL decompressed            12.58 MB
+patterns                       7.29 MB    62.4%
+leg_shapes                    338.1 KB     2.8%
+TOTAL decompressed            11.68 MB
 
 === In-Memory Sizes ===
 Structure                        Bytes % of total
-nodes                         12.69 MB     8.4%
-edges                         13.87 MB     9.2%
-stops                         999.5 KB     0.6%
+nodes                         12.69 MB     8.5%
+edges                         13.87 MB     9.3%
+stops                         999.5 KB     0.7%
 stop_to_node                   66.8 KB     0.0%
 node_to_stop                  336.0 KB     0.2%
 route_names                     5.6 KB     0.0%
 route_colors                     844 B     0.0%
-patterns/events               76.95 MB    51.1%
-patterns/freq                  4.56 MB     3.0%
+patterns/events               76.95 MB    51.6%
+patterns/freq                  4.56 MB     3.1%
 patterns/other                   148 B     0.0%
-adj list                      21.66 MB    14.4%
-leg_shapes                     1.70 MB     1.1%
+adj list                      21.66 MB    14.5%
+leg_shapes                     1.32 MB     0.9%
 node_grid                      5.07 MB     3.4%
-input buf                     12.58 MB     8.4%
-TOTAL in-memory              150.46 MB
+input buf                     11.68 MB     7.8%
+TOTAL in-memory              149.18 MB
 
 === Load Timings ===
 Phase                           Time % of total
-parse nodes                  12.7 ms     4.7%
-parse edges                  68.9 ms    25.7%
+parse nodes                  13.3 ms     4.5%
+parse edges                  70.6 ms    23.7%
 parse stops                   0.9 ms     0.3%
-parse stop_to_node            0.5 ms     0.2%
+parse stop_to_node            0.6 ms     0.2%
 parse route_names             0.0 ms     0.0%
 parse route_colors            0.0 ms     0.0%
-parse+index patterns        138.8 ms    51.7%
-parse leg_shapes              0.4 ms     0.2%
-build adj list               15.8 ms     5.9%
-build node_grid              30.3 ms    11.3%
-TOTAL                       268.4 ms
+parse+index patterns        161.4 ms    54.2%
+parse leg_shapes              1.5 ms     0.5%
+build adj list               18.3 ms     6.2%
+build node_grid              31.0 ms    10.4%
+TOTAL                       297.7 ms
 
 === Counts ===
 nodes                         831341
@@ -262,18 +262,18 @@ total freq entries                 0
 grid cells                      6312
 Source node: 713547
 Window: 09:00–10:00 (60 min), max_time=45 min, slack=60s
-  run 1/10: 1.185 s
-  run 2/10: 1.209 s
-  run 3/10: 1.176 s
-  run 4/10: 1.180 s
-  run 5/10: 1.205 s
-  run 6/10: 1.192 s
-  run 7/10: 1.185 s
-  run 8/10: 1.183 s
-  run 9/10: 1.186 s
-  run 10/10: 1.184 s
+  run 1/10: 1.225 s
+  run 2/10: 1.266 s
+  run 3/10: 1.252 s
+  run 4/10: 1.194 s
+  run 5/10: 1.232 s
+  run 6/10: 1.217 s
+  run 7/10: 1.221 s
+  run 8/10: 1.205 s
+  run 9/10: 1.259 s
+  run 10/10: 1.236 s
 
-Profile routing (10 runs): avg 1.188 s, min 1.176 s, max 1.209 s
+Profile routing (10 runs): avg 1.231 s, min 1.194 s, max 1.266 s
 Nodes reached: 453116 / 831341
 Min travel time: 0 min, avg: 35 min, max: 45 min
 Always reachable (fraction=1): 216589, sometimes: 236527
@@ -283,15 +283,15 @@ Always reachable (fraction=1): 216589, sometimes: 236527
 
 | City | Compressed |
 |---|---|
-| Chicago | 12M |
-| Mexico City | 2.1M |
-| Montreal | 21M |
+| Chicago | 11M |
+| Mexico City | 1.9M |
+| Montreal | 22M |
 | NYC | 20M |
-| Ottawa | 8.0M |
-| Seattle | 7.1M |
+| Ottawa | 7.6M |
+| Seattle | 7.0M |
 | SF Bay | 13M |
-| Toronto | 19M |
+| Toronto | 18M |
 | Vancouver | 11M |
 | Waterloo | 1.9M |
 
-**WASM module** (`ls -lh transit-viz/pkg/transit_router_bg.wasm`): 223 KB
+**WASM module** (`ls -lh transit-viz/pkg/transit_router_bg.wasm`): 226 KB

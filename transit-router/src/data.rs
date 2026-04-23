@@ -169,10 +169,20 @@ pub struct PreparedData {
     pub num_stops: usize,
     pub adj: JaggedArray<(u32, f32)>,
     pub node_to_stop: HashMap<u32, u32>,
-    /// Pre-sliced leg shapes: PCO-compressed sub-polylines per transit leg
-    pub leg_shapes: JaggedArray<u8>,
+    /// Per-leg point-count prefix sum (length = num_legs + 1). Slice
+    /// `leg_shapes_lat[offsets[i]..offsets[i+1]]` to get leg `i`'s lats.
+    pub leg_shape_offsets: Vec<u32>,
+    /// Concatenated i32 lat offsets for every leg, at 0.1 m against `coord_min_lat`.
+    pub leg_shapes_lat: Vec<i32>,
+    /// Concatenated i32 lon offsets, paired with `leg_shapes_lat`.
+    pub leg_shapes_lon: Vec<i32>,
     /// Sorted keys for leg_shapes: (route_index, from_stop, to_stop)
     pub leg_shape_keys: Vec<(u32, u32, u32)>,
+    /// Origin/scale for reconstructing shape (and node) coordinates from fixed-point offsets.
+    pub coord_min_lat: f64,
+    pub coord_min_lon: f64,
+    pub coord_lat_scale: f64,
+    pub coord_lon_scale: f64,
     /// Spatial grid index: (lat_cell, lon_cell) -> [node_indices]
     pub node_grid: std::collections::HashMap<(i32, i32), Vec<u32>>,
 }
@@ -194,7 +204,7 @@ pub fn load_with_stats(buf: &[u8]) -> Result<(PreparedData, LoadStats), String> 
     }
     pos += 4;
     let version = read_u32(&buf, &mut pos);
-    if version != 7 {
+    if version != 9 {
         return Err(format!("Unsupported version {}", version));
     }
     let num_nodes = read_u32(&buf, &mut pos) as usize;
@@ -456,39 +466,49 @@ pub fn load_with_stats(buf: &[u8]) -> Result<(PreparedData, LoadStats), String> 
     binary_sections.push(("patterns", pos - pos_before));
     timings.push(("parse+index patterns", t0_patterns.elapsed()));
 
-    // Leg shapes: per-leg PCO-compressed sub-polylines with sorted keys
+    // Leg shapes (v9): six global PCO columns. Decompress once at load time
+    // into flat Vecs so per-hover lookups are a zero-allocation slice.
     let t0 = Instant::now();
     let pos_before = pos;
-    let mut leg_shapes_data: Vec<u8> = Vec::new();
-    let mut leg_shapes_offsets: Vec<u32> = vec![0];
-    let mut leg_shape_keys: Vec<(u32, u32, u32)> = Vec::with_capacity(num_shapes);
-    for leg_idx in 0..num_shapes {
-        if pos + 16 > buf.len() {
-            return Err(format!("Incomplete leg shape key at index {}", leg_idx));
-        }
-        let route = read_u32(&buf, &mut pos);
-        let from_stop = read_u32(&buf, &mut pos);
-        let to_stop = read_u32(&buf, &mut pos);
-        leg_shape_keys.push((route, from_stop, to_stop));
-
-        let compressed_len = read_u32(&buf, &mut pos) as usize;
-        if pos + compressed_len > buf.len() {
-            return Err(format!(
-                "Leg shape {} compressed data out of bounds: need {} bytes at pos {}, buf len {}",
-                leg_idx,
-                compressed_len,
-                pos,
-                buf.len()
-            ));
-        }
-        leg_shapes_data.extend_from_slice(&buf[pos..pos + compressed_len]);
-        pos += compressed_len;
-        leg_shapes_offsets.push(leg_shapes_data.len() as u32);
+    let routes = read_pco_u32(&buf, &mut pos)?;
+    let from_stops = read_pco_u32(&buf, &mut pos)?;
+    let to_stops = read_pco_u32(&buf, &mut pos)?;
+    let point_counts = read_pco_u32(&buf, &mut pos)?;
+    let leg_shapes_lat: Vec<i32> = read_pco_i32(&buf, &mut pos)?;
+    let leg_shapes_lon: Vec<i32> = read_pco_i32(&buf, &mut pos)?;
+    if routes.len() != num_shapes
+        || from_stops.len() != num_shapes
+        || to_stops.len() != num_shapes
+        || point_counts.len() != num_shapes
+    {
+        return Err(format!(
+            "Leg shape column length mismatch: header says {}, got routes={} from={} to={} counts={}",
+            num_shapes,
+            routes.len(),
+            from_stops.len(),
+            to_stops.len(),
+            point_counts.len()
+        ));
     }
-    let leg_shapes = JaggedArray {
-        data: leg_shapes_data,
-        offsets: leg_shapes_offsets,
-    };
+    let mut leg_shape_offsets: Vec<u32> = Vec::with_capacity(num_shapes + 1);
+    leg_shape_offsets.push(0);
+    let mut acc: u32 = 0;
+    for &c in &point_counts {
+        acc = acc.checked_add(c).ok_or("leg shape offset overflow")?;
+        leg_shape_offsets.push(acc);
+    }
+    if leg_shapes_lat.len() != acc as usize || leg_shapes_lon.len() != acc as usize {
+        return Err(format!(
+            "Leg shape point total mismatch: counts sum {}, lats {}, lons {}",
+            acc,
+            leg_shapes_lat.len(),
+            leg_shapes_lon.len()
+        ));
+    }
+    let mut leg_shape_keys: Vec<(u32, u32, u32)> = Vec::with_capacity(num_shapes);
+    for i in 0..num_shapes {
+        leg_shape_keys.push((routes[i], from_stops[i], to_stops[i]));
+    }
     binary_sections.push(("leg_shapes", pos - pos_before));
     timings.push(("parse leg_shapes", t0.elapsed()));
 
@@ -596,9 +616,10 @@ pub fn load_with_stats(buf: &[u8]) -> Result<(PreparedData, LoadStats), String> 
         adj.offsets.capacity() * 4 + adj.data.capacity() * std::mem::size_of::<(u32, f32)>();
     memory_sections.push(("adj list", adj_mem));
 
-    // leg_shapes JaggedArray: compressed PCO data + keys
-    let leg_shapes_mem: usize = leg_shapes.data.capacity()
-        + leg_shapes.offsets.capacity() * 4
+    // leg_shapes: flat i32 lat/lon vectors + offsets prefix-sum + sorted keys
+    let leg_shapes_mem: usize = leg_shapes_lat.capacity() * 4
+        + leg_shapes_lon.capacity() * 4
+        + leg_shape_offsets.capacity() * 4
         + leg_shape_keys.capacity() * std::mem::size_of::<(u32, u32, u32)>();
     memory_sections.push(("leg_shapes", leg_shapes_mem));
 
@@ -648,8 +669,14 @@ pub fn load_with_stats(buf: &[u8]) -> Result<(PreparedData, LoadStats), String> 
         num_stops,
         adj,
         node_to_stop,
-        leg_shapes,
+        leg_shape_offsets,
+        leg_shapes_lat,
+        leg_shapes_lon,
         leg_shape_keys,
+        coord_min_lat: min_lat,
+        coord_min_lon: min_lon,
+        coord_lat_scale: lat_scale,
+        coord_lon_scale: lon_scale,
         node_grid,
     };
 
@@ -741,7 +768,21 @@ fn haversine(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f32 {
 
 fn read_pco_u32(buf: &[u8], pos: &mut usize) -> Result<Vec<u32>, String> {
     let pco_len = read_u32(buf, pos) as usize;
+    if pco_len == 0 {
+        return Ok(Vec::new());
+    }
     let result: Vec<u32> = pco::standalone::simple_decompress(&buf[*pos..*pos + pco_len])
+        .map_err(|e| format!("pco decompress failed: {}", e))?;
+    *pos += pco_len;
+    Ok(result)
+}
+
+fn read_pco_i32(buf: &[u8], pos: &mut usize) -> Result<Vec<i32>, String> {
+    let pco_len = read_u32(buf, pos) as usize;
+    if pco_len == 0 {
+        return Ok(Vec::new());
+    }
+    let result: Vec<i32> = pco::standalone::simple_decompress(&buf[*pos..*pos + pco_len])
         .map_err(|e| format!("pco decompress failed: {}", e))?;
     *pos += pco_len;
     Ok(result)
