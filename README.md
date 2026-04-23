@@ -5,6 +5,8 @@ A browser-based tool that shows how far you can travel from any point on a map u
 Live demo: https://transit-time.pages.dev/
 
 Note: this project is mostly vibe coded.
+- `transit-router/src/profile.rs` is mostly manually written. All AI changes in this file are thoroughly reviewed.
+- Other parts of the codebase are mostly written by AI. Only the high level design and architecture are driven by human.
 
 ## Using the tool
 
