@@ -9,8 +9,24 @@
 
 use std::{cmp::Reverse, collections::BinaryHeap, ops::ControlFlow};
 
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Instant;
+
 use crate::data::PreparedData;
 use serde::Serialize;
+
+/// Zero-cost no-op Instant for wasm32 where std::time::Instant panics.
+#[cfg(target_arch = "wasm32")]
+struct Instant;
+#[cfg(target_arch = "wasm32")]
+impl Instant {
+    fn now() -> Self {
+        Instant
+    }
+    fn elapsed(&self) -> std::time::Duration {
+        std::time::Duration::ZERO
+    }
+}
 
 // ============================================================================
 // Input / output types
@@ -222,10 +238,10 @@ impl ProfileRouter for ProfileRouting {
             "Time values must fit in u16 deltas"
         );
 
-        let t_total = std::time::Instant::now();
+        let t_total = Instant::now();
 
         let n = data.num_nodes;
-        let t_setup = std::time::Instant::now();
+        let t_setup = Instant::now();
         let index = Index::new(data, query);
         let context = ProfileQueryContext {
             data,
@@ -238,7 +254,7 @@ impl ProfileRouter for ProfileRouting {
         };
         let setup_ms = t_setup.elapsed().as_secs_f64() * 1e3;
 
-        let t_phase1 = std::time::Instant::now();
+        let t_phase1 = Instant::now();
 
         // ── Phase 1: walk Dijkstra from source ───────────────────────────────
         // - Populate all walk-only entries (home_departure_delta = INITIAL_WALK),
@@ -332,7 +348,7 @@ impl ProfileRouter for ProfileRouting {
 
         let phase1_ms = t_phase1.elapsed().as_secs_f64() * 1e3;
         let initial_transit_count = initial_transit_entries.len();
-        let t_phase2 = std::time::Instant::now();
+        let t_phase2 = Instant::now();
 
         // ── Phase 2: main profile routing pass ───────────────────────────────
 
@@ -432,7 +448,7 @@ impl ProfileRouter for ProfileRouting {
         }
 
         let phase2_ms = t_phase2.elapsed().as_secs_f64() * 1e3;
-        let t_phase3 = std::time::Instant::now();
+        let t_phase3 = Instant::now();
 
         // ── Phase 3: compute isochrone stats ───────────────────────────────
         let mut isochrone = Isochrone {
