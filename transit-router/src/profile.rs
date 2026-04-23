@@ -195,11 +195,20 @@ struct DestinationStats {
     reachable_fraction: u16,
 }
 
+struct Index {
+    /// Inverted index: per global stop_idx, the active patterns that actually
+    /// serve that stop (have ≥1 scheduled event or ≥1 frequency entry there).
+    /// Replaces the per-pop `O(active_patterns)` scan in `expand_transit_legs`
+    /// with `O(patterns_serving_this_stop)`. Populated once per query in `new`.
+    patterns_at_stop: Vec<Vec<u32>>,
+}
+
 /// Opaque routing state. Internal representation is not part of the public
 /// interface — swap freely as long as [`ProfileRouter`] is satisfied.
 pub struct ProfileRouting {
     frontier: Frontier,
     isochrone: Isochrone,
+    patterns: Index,
 }
 
 impl ProfileRouter for ProfileRouting {
@@ -213,12 +222,23 @@ impl ProfileRouter for ProfileRouting {
             "Time values must fit in u16 deltas"
         );
 
+        let t_total = std::time::Instant::now();
+
         let n = data.num_nodes;
-        let context = ProfileQueryContext::new(data, query);
+        let t_setup = std::time::Instant::now();
+        let index = Index::new(data, query);
+        let context = ProfileQueryContext {
+            data,
+            query,
+            index: &index,
+        };
 
         let mut frontier = Frontier {
             nodes: (0..n).map(|_| NodeEntries::default()).collect(),
         };
+        let setup_ms = t_setup.elapsed().as_secs_f64() * 1e3;
+
+        let t_phase1 = std::time::Instant::now();
 
         // ── Phase 1: walk Dijkstra from source ───────────────────────────────
         // - Populate all walk-only entries (home_departure_delta = INITIAL_WALK),
@@ -310,6 +330,10 @@ impl ProfileRouter for ProfileRouting {
         // Sort by descending home_departure (= transit_departure − walk_time)
         initial_transit_entries.sort_by_key(|x| Reverse(x.entry.home_departure_delta));
 
+        let phase1_ms = t_phase1.elapsed().as_secs_f64() * 1e3;
+        let initial_transit_count = initial_transit_entries.len();
+        let t_phase2 = std::time::Instant::now();
+
         // ── Phase 2: main profile routing pass ───────────────────────────────
 
         // Iterate over initial transit entries in descending home departure order to guarantee that existing entries are never dominated.
@@ -387,7 +411,7 @@ impl ProfileRouter for ProfileRouting {
                         node: node_id,
                         min_departure: min_departure_time,
                         max_departure: max_departure_time,
-                        expand_headways: true,
+                        expand_headways: false,
                         max_arrival: None,
                     },
                     |leg| {
@@ -407,6 +431,9 @@ impl ProfileRouter for ProfileRouting {
             }
         }
 
+        let phase2_ms = t_phase2.elapsed().as_secs_f64() * 1e3;
+        let t_phase3 = std::time::Instant::now();
+
         // ── Phase 3: compute isochrone stats ───────────────────────────────
         let mut isochrone = Isochrone {
             mean_travel_time: vec![0; n],
@@ -423,9 +450,18 @@ impl ProfileRouter for ProfileRouting {
             *mean_travel_time = stats.mean_travel_time;
             *reachable_fraction = stats.reachable_fraction;
         }
+
+        let phase3_ms = t_phase3.elapsed().as_secs_f64() * 1e3;
+        let total_ms = t_total.elapsed().as_secs_f64() * 1e3;
+        eprintln!(
+            "[profile] setup={:.1}ms phase1(walk)={:.1}ms phase2(transit)={:.1}ms phase3(stats)={:.1}ms total={:.1}ms initial_transit_entries={}",
+            setup_ms, phase1_ms, phase2_ms, phase3_ms, total_ms, initial_transit_count,
+        );
+
         Self {
             frontier,
             isochrone,
+            patterns: index,
         }
     }
 
@@ -434,23 +470,33 @@ impl ProfileRouter for ProfileRouting {
     }
 
     fn optimal_paths(&self, data: &PreparedData, destination: u32) -> Vec<Path> {
+        let context = ProfileQueryContext {
+            data,
+            query: &self.isochrone.query,
+            index: &self.patterns,
+        };
         self.frontier.nodes[destination as usize]
             .entries
             .iter()
-            .map(|entry| self.reconstruct_path(data, destination, *entry))
+            .map(|entry| self.reconstruct_path(data, &context, destination, *entry))
             .collect()
     }
 }
 
 impl ProfileRouting {
-    fn reconstruct_path(&self, data: &PreparedData, destination: u32, entry: Entry) -> Path {
+    fn reconstruct_path(
+        &self,
+        data: &PreparedData,
+        context: &ProfileQueryContext,
+        destination: u32,
+        entry: Entry,
+    ) -> Path {
         let home_departure_delta = if entry.home_departure_delta == INITIAL_WALK {
             0 // For walk-only entries, just use window_start as home departure since it doesn't matter
         } else {
             entry.home_departure_delta
         };
 
-        let context = ProfileQueryContext::new(data, &self.isochrone.query);
         let delta_to_time = |delta: u16| delta as u32 + self.isochrone.query.window_start;
 
         let mut segments: Vec<PathSegment> = Vec::new();
@@ -529,7 +575,7 @@ impl ProfileRouting {
                         node: prev_node,
                         min_departure,
                         max_departure,
-                        expand_headways: true,
+                        expand_headways: false,
                         max_arrival: Some(max_departure),
                     },
                     |leg| {
@@ -696,19 +742,29 @@ struct ExpandTransitLegQuery {
 struct ProfileQueryContext<'a> {
     data: &'a PreparedData,
     query: &'a ProfileQuery,
-    active_patterns: Vec<usize>,
+    index: &'a Index,
+}
+
+impl Index {
+    fn new(data: &PreparedData, query: &ProfileQuery) -> Self {
+        let active_patterns = crate::router::patterns_for_date(data, query.date);
+        let num_stops = data.stops.len();
+        let mut patterns_at_stop: Vec<Vec<u32>> = vec![Vec::new(); num_stops];
+        for &pat_idx in &active_patterns {
+            let pat = &data.patterns[pat_idx];
+            let evt_off = &pat.stop_index.events_by_stop.offsets;
+            let freq_off = &pat.stop_index.freq_by_stop.offsets;
+            for s in 0..num_stops {
+                if evt_off[s + 1] > evt_off[s] || freq_off[s + 1] > freq_off[s] {
+                    patterns_at_stop[s].push(pat_idx as u32);
+                }
+            }
+        }
+        Self { patterns_at_stop }
+    }
 }
 
 impl<'a> ProfileQueryContext<'a> {
-    fn new(data: &'a PreparedData, query: &'a ProfileQuery) -> Self {
-        let active_patterns = crate::router::patterns_for_date(data, query.date);
-        Self {
-            data,
-            query,
-            active_patterns,
-        }
-    }
-
     fn get_stop_name(&self, node_id: u32) -> &'a str {
         let stop_idx = self.data.node_to_stop[&node_id];
         self.data.stops[stop_idx as usize].name.as_str()
@@ -812,8 +868,8 @@ impl<'a> ProfileQueryContext<'a> {
         };
         let max_arrival = max_arrival.unwrap_or(self.query.window_end + self.query.max_time);
 
-        for &pat_idx in &self.active_patterns {
-            let pat = &self.data.patterns[pat_idx];
+        for &pat_idx in &self.index.patterns_at_stop[stop_idx as usize] {
+            let pat = &self.data.patterns[pat_idx as usize];
 
             // ── Scheduled ────────────────────────────────────────────────────
             let stop_events = &pat.stop_index.events_by_stop[stop_idx];

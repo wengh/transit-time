@@ -1,4 +1,4 @@
-.PHONY: dev wasm clean data-all
+.PHONY: dev wasm clean data-all flamegraph
 
 # Source files for change detection
 ROUTER_SRC := $(shell find transit-router/src -name '*.rs')
@@ -19,6 +19,10 @@ data-all:
 # Full dev setup: build everything then start dev server
 dev: $(WASM_OUT) data-all
 	cd transit-viz && npm install --silent && npm run dev -- --port 5173
+
+# CPU flamegraph of profile routing (override via env: OUT, CITY, LAT, LON, RUNS, etc.)
+flamegraph:
+	./scripts/flamegraph.sh
 
 clean:
 	cargo clean
