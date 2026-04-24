@@ -49,6 +49,7 @@ fn main() {
     load_stats.print();
 
     let src = router::snap_to_node(&prepared, src_lat, src_lon).expect("snap source");
+    println!();
     println!("Source node: {src}");
     println!(
         "Window: {:02}:{:02}–{:02}:{:02} ({} min), max_time={} min, slack={}s",

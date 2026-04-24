@@ -135,10 +135,8 @@ pub trait ProfileRouter: Sized {
 // Implementation
 // ============================================================================
 
-const ORIGIN_PREDECESSOR: u32 = u32::MAX;
-
-const INITIAL_WALK: u16 = u16::MAX;
-const MAX_DELTA: u16 = INITIAL_WALK - 1;
+const LAST_ENTRY: u32 = u32::MAX;
+const MAX_DELTA: u16 = u16::MAX;
 
 /// A single entry for a node, representing a Pareto-optimal
 /// (home_departure, arrival) pair.
@@ -150,28 +148,105 @@ const MAX_DELTA: u16 = INITIAL_WALK - 1;
 #[derive(Debug, Copy, Clone)]
 struct Entry {
     /// Predecessor node id
-    /// - ORIGIN_PREDECESSOR if this is the source node
     prev: u32,
 
     /// Time leaving the source node (seconds since start of profile window)
-    /// - INITIAL_WALK if all predecessors are walks
     home_departure_delta: u16,
 
     /// Arrival time (seconds since start of profile window)
-    /// - Total travel time if is initial walk
     arrival_delta: u16,
 }
 
-#[derive(Debug, Default)]
-struct NodeEntries {
-    /// Sorted by descending arrival time and descending home departure time,
-    /// except the first entry which is a walk-only entry iff it's reachable by walk from the source within max_time.
-    entries: Vec<Entry>,
+#[derive(Debug, Copy, Clone)]
+struct ArenaEntry {
+    entry: Entry,
+
+    /// Index of next entry for the same node
+    /// - LAST_ENTRY if no more sibling entries
+    ///
+    /// The chain of entries is sorted by ascending arrival time
+    /// and home departure time.
+    sibling_entry_idx: u32,
+}
+
+#[derive(Debug)]
+struct NodeFrontier {
+    // First entry of the node
+    // - LAST_ENTRY if no entry for this node
+    head_entry_idx: u32,
+
+    // Time it takes to walk from source to this node, or `None` if not walk-reachable within `max_time`.
+    walk_only_time: Option<u16>,
 }
 
 #[derive(Debug)]
 struct Frontier {
-    nodes: Vec<NodeEntries>,
+    // Arena for entry linked lists
+    arena: Vec<ArenaEntry>,
+    nodes: Vec<NodeFrontier>,
+}
+
+impl Frontier {
+    fn push(&mut self, node_id: u32, entry: Entry) {
+        let node_frontier = &mut self.nodes[node_id as usize];
+        let new_entry_idx = self.arena.len() as u32;
+        self.arena.push(ArenaEntry {
+            entry,
+            sibling_entry_idx: node_frontier.head_entry_idx,
+        });
+        node_frontier.head_entry_idx = new_entry_idx;
+    }
+
+    fn at(&self, entry_idx: u32) -> Option<&Entry> {
+        if entry_idx == LAST_ENTRY {
+            None
+        } else {
+            Some(&self.arena[entry_idx as usize].entry)
+        }
+    }
+
+    fn at_mut(&mut self, entry_idx: u32) -> Option<&mut Entry> {
+        if entry_idx == LAST_ENTRY {
+            None
+        } else {
+            Some(&mut self.arena[entry_idx as usize].entry)
+        }
+    }
+
+    fn head(&self, node_id: u32) -> Option<&Entry> {
+        let node_frontier = &self.nodes[node_id as usize];
+        self.at(node_frontier.head_entry_idx)
+    }
+
+    fn head_next(&self, node_id: u32) -> Option<&Entry> {
+        let node_frontier = &self.nodes[node_id as usize];
+        if node_frontier.head_entry_idx == LAST_ENTRY {
+            None
+        } else {
+            let sibling_idx = self.arena[node_frontier.head_entry_idx as usize].sibling_entry_idx;
+            self.at(sibling_idx)
+        }
+    }
+
+    fn head_mut(&mut self, node_id: u32) -> Option<&mut Entry> {
+        let node_frontier = &self.nodes[node_id as usize];
+        self.at_mut(node_frontier.head_entry_idx)
+    }
+
+    fn iter(&self, node_id: u32) -> impl Iterator<Item = &Entry> {
+        std::iter::from_fn({
+            let mut next_idx = self.nodes[node_id as usize].head_entry_idx;
+            move || {
+                if next_idx == LAST_ENTRY {
+                    None
+                } else {
+                    let arena_entry = &self.arena[next_idx as usize];
+                    next_idx = arena_entry.sibling_entry_idx;
+                    Some(&arena_entry.entry)
+                }
+            }
+        })
+    }
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -250,7 +325,13 @@ impl ProfileRouter for ProfileRouting {
         };
 
         let mut frontier = Frontier {
-            nodes: (0..n).map(|_| NodeEntries::default()).collect(),
+            nodes: (0..n)
+                .map(|_| NodeFrontier {
+                    head_entry_idx: LAST_ENTRY,
+                    walk_only_time: None,
+                })
+                .collect(),
+            arena: Vec::new(),
         };
         let setup_ms = t_setup.elapsed().as_secs_f64() * 1e3;
 
@@ -271,21 +352,15 @@ impl ProfileRouter for ProfileRouting {
             arrival_delta: 0,
             node_id: query.source_node,
         }));
-        frontier.nodes[query.source_node as usize]
-            .entries
-            .push(Entry {
-                prev: ORIGIN_PREDECESSOR,
-                home_departure_delta: INITIAL_WALK,
-                arrival_delta: 0,
-            });
+        frontier.nodes[query.source_node as usize].walk_only_time = Some(0);
 
         while let Some(Reverse(QueueEntry {
-            arrival_delta,
+            arrival_delta: walk_time,
             node_id,
         })) = queue.pop()
         {
             // Skip stale queue entry
-            if arrival_delta > frontier.nodes[node_id as usize].entries[0].arrival_delta {
+            if walk_time > frontier.nodes[node_id as usize].walk_only_time.unwrap() {
                 continue;
             }
 
@@ -293,7 +368,7 @@ impl ProfileRouter for ProfileRouting {
             let _ = context.expand_transit_legs(
                 ExpandTransitLegQuery {
                     node: node_id,
-                    min_departure: query.window_start + arrival_delta as u32,
+                    min_departure: query.window_start + walk_time as u32,
                     max_departure: query.window_end + query.max_time,
                     expand_headways: true,
                     max_arrival: None,
@@ -304,8 +379,7 @@ impl ProfileRouter for ProfileRouting {
                         entry: Entry {
                             prev: node_id,
                             // Clamp home departure to be within the query window
-                            home_departure_delta: window_length
-                                .min(leg.board_delta - arrival_delta),
+                            home_departure_delta: window_length.min(leg.board_delta - walk_time),
                             arrival_delta: leg.arrival_delta,
                         },
                     });
@@ -314,30 +388,22 @@ impl ProfileRouter for ProfileRouting {
             );
 
             for &(neighbor, distance) in &data.adj[node_id] {
-                let new_arrival_delta = arrival_delta.saturating_add(get_walk_time(distance));
+                let new_walk_time = walk_time.saturating_add(get_walk_time(distance));
 
-                if new_arrival_delta as u32 > query.max_time {
+                if new_walk_time as u32 > query.max_time {
                     continue;
                 }
 
-                let new_entry = Entry {
-                    prev: node_id,
-                    home_departure_delta: INITIAL_WALK,
-                    arrival_delta: new_arrival_delta,
-                };
-
-                let neighbor_entries = &mut frontier.nodes[neighbor as usize].entries;
-                if let Some(best) = neighbor_entries.first_mut() {
-                    if new_arrival_delta >= best.arrival_delta {
-                        continue;
-                    }
-                    *best = new_entry;
-                } else {
-                    neighbor_entries.push(new_entry);
+                if let Some(existing_walk_time) = frontier.nodes[neighbor as usize].walk_only_time
+                    && new_walk_time >= existing_walk_time
+                {
+                    continue;
                 }
 
+                frontier.nodes[neighbor as usize].walk_only_time = Some(new_walk_time);
+
                 queue.push(Reverse(QueueEntry {
-                    arrival_delta: new_arrival_delta,
+                    arrival_delta: new_walk_time,
                     node_id: neighbor,
                 }));
             }
@@ -376,7 +442,7 @@ impl ProfileRouter for ProfileRouting {
                 node_id,
             })) = queue.pop()
             {
-                let entry = frontier.nodes[node_id as usize].entries.last_mut().unwrap();
+                let entry = frontier.head(node_id).unwrap();
 
                 // Skip stale queue entry
                 if arrival_delta != entry.arrival_delta {
@@ -400,28 +466,40 @@ impl ProfileRouter for ProfileRouting {
                     relax(&mut frontier, &mut queue, neighbor, new_entry);
                 }
 
+                // Skip unnecessary work if not a transit stop
+                if !data.node_to_stop.contains_key(&node_id) {
+                    continue;
+                }
+
                 // Relax transit legs
                 let min_departure_time =
                     query.window_start + arrival_delta as u32 + query.transfer_slack;
                 let mut max_departure_time = query.window_end + query.max_time;
-                if let Some(prev_entry) =
-                    frontier.nodes[node_id as usize].entries.iter().nth_back(1)
+
+                let next_min_departure_time = if let Some(next_entry) = frontier.head_next(node_id)
                 {
-                    let prev_min_departure_time = query.window_start
-                        + get_true_arrival_delta(home_departure_delta, prev_entry) as u32
-                        + query.transfer_slack;
                     // This might cause repeated relaxation for the same transit leg
                     // For example maybe we already finalized a transit ride A -> B -> C boarding on A arriving to B at time 100
                     // but then we find a new walk route to B with arrival time 90, allowing us to board the same vehicle for the B -> C ride
                     // but the arrival at C will be dominated by the existing entry from A -> B -> C since the new walk route has earlier departure
                     // so this will be a bit of wasted effort but harmless.
-                    max_departure_time = prev_min_departure_time
+                    Some(
+                        query.window_start + next_entry.arrival_delta as u32 + query.transfer_slack,
+                    )
+                } else if let Some(walk_time) = frontier.nodes[node_id as usize].walk_only_time {
+                    Some(query.window_start + home_departure_delta as u32 + walk_time as u32)
+                } else {
+                    None
+                };
+                if let Some(next_min_departure_time) = next_min_departure_time {
+                    max_departure_time = next_min_departure_time
                         .saturating_sub(1)
                         .min(max_departure_time);
                 }
                 if min_departure_time > max_departure_time {
                     continue;
                 }
+
                 let _ = context.expand_transit_legs(
                     ExpandTransitLegQuery {
                         node: node_id,
@@ -456,13 +534,11 @@ impl ProfileRouter for ProfileRouting {
             reachable_fraction: vec![0; n],
             query: query.clone(),
         };
-        for ((node_entries, mean_travel_time), reachable_fraction) in frontier
-            .nodes
-            .iter()
+        for ((node_id, mean_travel_time), reachable_fraction) in (0..n as u32)
             .zip(&mut isochrone.mean_travel_time)
             .zip(&mut isochrone.reachable_fraction)
         {
-            let stats = context.compute_destination_stats(&node_entries.entries);
+            let stats = context.compute_destination_stats(&frontier, node_id);
             *mean_travel_time = stats.mean_travel_time;
             *reachable_fraction = stats.reachable_fraction;
         }
@@ -491,10 +567,14 @@ impl ProfileRouter for ProfileRouting {
             query: &self.isochrone.query,
             index: &self.patterns,
         };
-        self.frontier.nodes[destination as usize]
-            .entries
-            .iter()
-            .map(|entry| self.reconstruct_path(data, &context, destination, *entry))
+        self.frontier
+            .iter(destination)
+            .map(|entry| self.reconstruct_path(&context, destination, Some(*entry)))
+            .chain(
+                self.frontier.nodes[destination as usize]
+                    .walk_only_time
+                    .map(|_| self.reconstruct_path(&context, destination, None)),
+            )
             .collect()
     }
 }
@@ -502,18 +582,26 @@ impl ProfileRouter for ProfileRouting {
 impl ProfileRouting {
     fn reconstruct_path(
         &self,
-        data: &PreparedData,
         context: &ProfileQueryContext,
         destination: u32,
-        entry: Entry,
+        entry: Option<Entry>, // None for getting walk path
     ) -> Path {
-        let home_departure_delta = if entry.home_departure_delta == INITIAL_WALK {
+        let home_departure_delta = if entry.is_none() {
             0 // For walk-only entries, just use window_start as home departure since it doesn't matter
         } else {
-            entry.home_departure_delta
+            entry.unwrap().home_departure_delta
         };
 
+        // Helper functions
         let delta_to_time = |delta: u16| delta as u32 + self.isochrone.query.window_start;
+        let get_true_arrival_delta = |node: u32, entry: &Option<Entry>| {
+            if let Some(entry) = entry {
+                entry.arrival_delta
+            } else {
+                // Walk-only entry, arrival delta is just departure delta + walk time
+                home_departure_delta + self.frontier.nodes[node as usize].walk_only_time.unwrap()
+            }
+        };
 
         let mut segments: Vec<PathSegment> = Vec::new();
 
@@ -521,27 +609,43 @@ impl ProfileRouting {
         let mut curr_node = destination;
         let mut curr = entry;
         while curr_node != source {
-            let prev_node = curr.prev;
+            let prev_node = if let Some(curr) = curr {
+                curr.prev
+            } else {
+                // Walk-only entry, find predecessor from neighbours
+                let curr_walk_time = self.frontier.nodes[curr_node as usize]
+                    .walk_only_time
+                    .unwrap();
+                context.data.adj[curr_node]
+                    .iter()
+                    .find(|&&(neighbor, distance)| {
+                        let Some(walk_time) = self.frontier.nodes[neighbor as usize].walk_only_time else {
+                            return false;
+                        };
+                        walk_time.saturating_add(get_walk_time(distance)) == curr_walk_time
+                    })
+                    .map(|&(neighbor, _)| neighbor)
+                    .unwrap_or_else(|| panic!("No walk predecessor found for node {} in walk-only path reconstruction", curr_node))
+            };
 
             // Find predecessor entry
-            let prev_entries = &self.frontier.nodes[prev_node as usize].entries;
-            assert!(!prev_entries.is_empty());
-            let prev_entry_idx = prev_entries
-                .binary_search_by_key(&Reverse(curr.home_departure_delta), |e| {
-                    Reverse(e.home_departure_delta)
-                })
-                // If not found, it means we reached this from initial walk, so switch to the initial walk entry at index 0
-                .unwrap_or(0);
-            let prev = prev_entries[prev_entry_idx];
-            assert!(
-                prev.home_departure_delta == INITIAL_WALK
-                    || prev.home_departure_delta == entry.home_departure_delta
-            );
+            let prev = if let Some(curr) = curr {
+                // Find the predecessor entry with the same home_departure_delta
+                self.frontier
+                    .iter(prev_node)
+                    .find(|e| e.home_departure_delta == curr.home_departure_delta)
+                    .map(|e| Some(*e))
+                    .unwrap_or(None) // Predecessor is walk-only
+            } else {
+                // Walk-only
+                None
+            };
 
             // Determine whether this entry is walk or transit
-            let prev_arrival_delta = get_true_arrival_delta(home_departure_delta, &prev);
-            let is_walk = curr.home_departure_delta == INITIAL_WALK || {
-                let edge_weight = data.adj[prev_node]
+            let prev_arrival_delta = get_true_arrival_delta(prev_node, &prev);
+
+            let is_walk = if let Some(curr) = curr {
+                let edge_weight = context.data.adj[prev_node]
                     .iter()
                     .find(|&&(neighbor, _)| neighbor == curr_node)
                     .map(|&(_, w)| w);
@@ -551,6 +655,8 @@ impl ProfileRouting {
                     }
                     None => false,
                 }
+            } else {
+                true
             };
 
             if is_walk {
@@ -561,7 +667,7 @@ impl ProfileRouting {
                     segment.start_time = delta_to_time(prev_arrival_delta);
                     segment.node_sequence.push(curr_node);
                 } else {
-                    let curr_arrival_time = get_true_arrival_delta(home_departure_delta, &curr);
+                    let curr_arrival_time = get_true_arrival_delta(curr_node, &curr);
                     segments.push(PathSegment {
                         kind: SegmentKind::Walk,
                         start_time: delta_to_time(prev_arrival_delta),
@@ -576,10 +682,11 @@ impl ProfileRouting {
                 }
             } else {
                 // Is transit
+                let curr = curr.unwrap();
                 // Find the transit leg taken
                 // Require transfer slack unless this is from initial walk
                 let min_departure = delta_to_time(prev_arrival_delta)
-                    + if prev.home_departure_delta == INITIAL_WALK {
+                    + if prev.is_none() {
                         0
                     } else {
                         self.isochrone.query.transfer_slack
@@ -610,15 +717,15 @@ impl ProfileRouting {
                         context.get_stop_name(curr_node),
                         min_departure,
                         max_departure,
-                        prev_entries,
+                        self.frontier.iter(prev_node).collect::<Vec<_>>(),
                         curr,
                     )
                 });
 
                 // Find the route and the stops
-                let pat = &data.patterns[leg.pattern_idx as usize];
+                let pat = &context.data.patterns[leg.pattern_idx as usize];
                 let mut node_sequence = Vec::new();
-                let end_stop = data.node_to_stop[&curr_node];
+                let end_stop = context.data.node_to_stop[&curr_node];
                 let route_index = match leg.transit_ref {
                     TransitRef::Scheduled { event_idx } => {
                         let events = &pat.stop_index.events_by_stop.data;
@@ -627,7 +734,8 @@ impl ProfileRouting {
                         let route_index = loop {
                             let event = &events[curr_event_idx as usize];
                             if !reached_end_stop {
-                                node_sequence.push(data.stop_to_node[event.stop_index as usize]);
+                                node_sequence
+                                    .push(context.data.stop_to_node[event.stop_index as usize]);
                             }
                             if event.stop_index == end_stop {
                                 reached_end_stop = true;
@@ -646,12 +754,12 @@ impl ProfileRouting {
                         let mut curr_idx = freq_idx;
                         loop {
                             let freq = &freqs[curr_idx as usize];
-                            node_sequence.push(data.stop_to_node[freq.stop_index as usize]);
+                            node_sequence.push(context.data.stop_to_node[freq.stop_index as usize]);
                             if freq.next_stop_index == end_stop {
                                 // Last hop: the alighting stop only appears as
                                 // `next_stop_index`, never as a subsequent `stop_index`.
                                 node_sequence
-                                    .push(data.stop_to_node[freq.next_stop_index as usize]);
+                                    .push(context.data.stop_to_node[freq.next_stop_index as usize]);
                                 break;
                             }
                             curr_idx = freq.next_freq_index;
@@ -659,7 +767,7 @@ impl ProfileRouting {
                         freqs[freq_idx as usize].route_index
                     }
                 };
-                let route_name = data.route_names[route_index as usize].clone();
+                let route_name = context.data.route_names[route_index as usize].clone();
                 segments.push(PathSegment {
                     kind: SegmentKind::Transit,
                     start_time: delta_to_time(leg.board_delta),
@@ -685,10 +793,11 @@ impl ProfileRouting {
             }
         }
 
+        let arrival_delta = get_true_arrival_delta(destination, &entry);
         Path {
             home_departure: delta_to_time(home_departure_delta),
-            arrival_time: delta_to_time(entry.arrival_delta),
-            total_time: entry.arrival_delta as u32 - home_departure_delta as u32,
+            arrival_time: delta_to_time(arrival_delta),
+            total_time: arrival_delta as u32 - home_departure_delta as u32,
             segments,
         }
     }
@@ -705,15 +814,13 @@ fn relax(
     node_id: u32,
     new_entry: Entry,
 ) {
-    let neighbor_entries = &mut frontier.nodes[node_id as usize].entries;
-    if let Some(first) = neighbor_entries.first()
-        && first.home_departure_delta == INITIAL_WALK
-        && is_new_entry_dominated(&new_entry, first)
+    if let Some(walk_time) = frontier.nodes[node_id as usize].walk_only_time
+        && new_entry.arrival_delta - new_entry.home_departure_delta >= walk_time
     {
         return;
     }
-    if let Some(best) = neighbor_entries.last_mut() {
-        if is_new_entry_dominated(&new_entry, best) {
+    if let Some(best) = frontier.head_mut(node_id) {
+        if new_entry.arrival_delta >= best.arrival_delta {
             return;
         }
         if best.home_departure_delta == new_entry.home_departure_delta {
@@ -721,30 +828,16 @@ fn relax(
             *best = new_entry;
         } else {
             // `best` was an entry with a later home departure time, so add a new frontier entry
-            neighbor_entries.push(new_entry);
+            frontier.push(node_id, new_entry);
         }
     } else {
-        neighbor_entries.push(new_entry);
+        frontier.push(node_id, new_entry);
     }
 
     queue.push(Reverse(QueueEntry {
         arrival_delta: new_entry.arrival_delta,
         node_id,
     }));
-}
-
-/// Get arrival delta for an entry with special handling for initial transit legs (which use arrival_delta field to store the total travel time since it has flexible home departure time)
-fn get_true_arrival_delta(home_departure_delta: u16, entry: &Entry) -> u16 {
-    entry.arrival_delta
-        + if entry.home_departure_delta == INITIAL_WALK {
-            home_departure_delta
-        } else {
-            0
-        }
-}
-
-fn is_new_entry_dominated(new: &Entry, existing: &Entry) -> bool {
-    new.arrival_delta >= get_true_arrival_delta(new.home_departure_delta, existing)
 }
 
 struct ExpandTransitLegQuery {
@@ -786,23 +879,27 @@ impl<'a> ProfileQueryContext<'a> {
         self.data.stops[stop_idx as usize].name.as_str()
     }
 
-    fn compute_destination_stats(&self, mut entries: &[Entry]) -> DestinationStats {
-        if entries.is_empty() {
-            return DestinationStats {
-                mean_travel_time: 0,
-                reachable_fraction: 0,
-            };
+    fn compute_destination_stats(&self, frontier: &Frontier, node_id: u32) -> DestinationStats {
+        let node_frontier = &frontier.nodes[node_id as usize];
+        let walk_time = node_frontier.walk_only_time;
+
+        if node_frontier.head_entry_idx == LAST_ENTRY {
+            if let Some(walk_time) = walk_time {
+                return DestinationStats {
+                    mean_travel_time: walk_time,
+                    reachable_fraction: u16::MAX,
+                };
+            } else {
+                return DestinationStats {
+                    mean_travel_time: 0,
+                    reachable_fraction: 0,
+                };
+            }
         }
 
-        let mut time_limit = self.query.max_time + 1; // exclusive limit
-        let walk_entry = match entries {
-            [walk, rest @ ..] if walk.home_departure_delta == INITIAL_WALK => {
-                entries = rest;
-                time_limit = walk.arrival_delta as u32;
-                Some(*walk)
-            }
-            _ => None,
-        };
+        let time_limit = walk_time
+            .map(|t| t as u32)
+            .unwrap_or(self.query.max_time + 1); // exclusive limit
 
         // How many integer-second home_departure values fit in the window.
         let window_length = self.query.window_end - self.query.window_start + 1;
@@ -820,7 +917,7 @@ impl<'a> ProfileQueryContext<'a> {
         let mut prev_departure: i32 = -1;
 
         // Iterate in ascending arrival & departure order
-        for entry in entries.iter().rev() {
+        for entry in frontier.iter(node_id) {
             let arrival = entry.arrival_delta as u32;
             let departure = entry.home_departure_delta as u32;
             let travel = arrival - departure;
@@ -842,9 +939,9 @@ impl<'a> ProfileQueryContext<'a> {
             prev_departure = departure as i32;
         }
 
-        if let Some(walk) = walk_entry {
+        if let Some(walk) = walk_time {
             // Walk fills every t not claimed by a transit entry above.
-            numerator += walk.arrival_delta as u64 * (window_length - denominator) as u64;
+            numerator += walk as u64 * (window_length - denominator) as u64;
             denominator = window_length;
         }
 
