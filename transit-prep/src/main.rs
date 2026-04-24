@@ -1274,6 +1274,30 @@ pub fn run_prep(
     // Step 3b: Prune nodes unreachable from any transit stop
     let stop_to_node = graph::prune_unreachable_nodes(&mut osm_graph, stop_to_node);
 
+    // Step 3c: Drop stop_times rows for stops that failed to snap/prune.
+    // Patterns built from the remaining rows will naturally skip these stops;
+    // through travel times stay correct because GTFS stores per-stop arrival/
+    // departure, so a trip A → B* → C with B* dropped becomes A → C with the
+    // unchanged (arrival_C − departure_A) gap. This enforces the runtime
+    // invariant that every stop referenced by a pattern has a node mapping
+    // (see stop_to_node check in transit-router::profile::node_for_stop).
+    {
+        let mapped_stops: std::collections::HashSet<u32> =
+            stop_to_node.iter().map(|&(s, _)| s).collect();
+        let before = gtfs_data.stop_times.len();
+        gtfs_data
+            .stop_times
+            .retain(|st| mapped_stops.contains(&st.stop_index));
+        let dropped = before - gtfs_data.stop_times.len();
+        if dropped > 0 {
+            eprintln!(
+                "Dropped {} stop_times rows referencing {} unmapped stops",
+                dropped,
+                gtfs_data.stops.len() - mapped_stops.len(),
+            );
+        }
+    }
+
     // Step 4: Build service patterns and event arrays
     // Sort stop_times by (trip_index, stop_sequence) so build_service_patterns
     // can use binary-search slices instead of a HashMap, avoiding 2× peak memory.
