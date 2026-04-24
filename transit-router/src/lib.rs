@@ -6,6 +6,7 @@ pub mod router;
 use data::PreparedData;
 use profile::ProfileRouter as _;
 use rayon::iter::IntoParallelIterator;
+use rayon::prelude::*;
 use wasm_bindgen::prelude::*;
 
 pub use wasm_bindgen_rayon::init_thread_pool;
