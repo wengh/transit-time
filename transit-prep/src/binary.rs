@@ -278,7 +278,7 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
         let mut flat_events: Vec<FlatEvent> = Vec::with_capacity(pattern.events.len());
         for (dep_time, event) in &pattern.events {
             flat_events.push(FlatEvent {
-                time_offset: dep_time.saturating_sub(pattern.min_time),
+                time_offset: *dep_time,
                 stop_index: event.stop_index,
                 route_index: event.route_index,
                 trip_index: event.trip_index,
