@@ -136,7 +136,21 @@ pub trait ProfileRouter: Sized {
 // ============================================================================
 
 const LAST_ENTRY: u32 = u32::MAX;
+const INVALID_PREV: u32 = u32::MAX;
 const MAX_DELTA: u16 = u16::MAX;
+
+/// Sentinel `ArenaEntry` for an empty inline head.
+/// `prev = INVALID_PREV` signals "no head".
+/// The sibling pointer is `LAST_ENTRY` so that walking the chain
+/// of an empty head is a no-op (used by `iter` paths that don't pre-check).
+const EMPTY_ARENA_ENTRY: ArenaEntry = ArenaEntry {
+    entry: Entry {
+        prev: INVALID_PREV,
+        home_departure_delta: 0,
+        arrival_delta: 0,
+    },
+    sibling_entry_idx: LAST_ENTRY,
+};
 
 /// A single entry for a node, representing a Pareto-optimal
 /// (home_departure, arrival) pair.
@@ -169,83 +183,105 @@ struct ArenaEntry {
     sibling_entry_idx: u32,
 }
 
+/// Per-node frontier state. The head Pareto entry is stored inline as a full
+/// `ArenaEntry` (entry + sibling pointer), uniform with the entries it points
+/// to in the arena. "No head" is encoded by the sentinel `prev == INVALID_PREV`
+/// (guaranteed unused by the `MAX_DELTA` assert in `compute`), not
+/// by an `Option` discriminant — that's what gets us to 16 bytes.
+///
+/// Layout: `ArenaEntry` (12B = Entry 8B + u32) + `Option<u16>` (4B) =
+/// 16 bytes, align 4. Verified by the const assert below.
 #[derive(Debug)]
 struct NodeFrontier {
-    // First entry of the node
-    // - LAST_ENTRY if no entry for this node
-    head_entry_idx: u32,
+    /// Most-recent (smallest-arrival) Pareto entry plus its sibling pointer
+    /// into the arena tail. Empty iff `head.entry.arrival_delta == INVALID_DELTA`.
+    head: ArenaEntry,
 
-    // Time it takes to walk from source to this node, or `None` if not walk-reachable within `max_time`.
+    /// Time it takes to walk from source to this node, or `None` if not
+    /// walk-reachable within `max_time`.
     walk_only_time: Option<u16>,
 }
 
+impl NodeFrontier {
+    fn has_head(&self) -> bool {
+        self.head.entry.prev != INVALID_PREV
+    }
+}
+
+const _: () = assert!(std::mem::size_of::<NodeFrontier>() == 16);
+
 #[derive(Debug)]
 struct Frontier {
-    // Arena for entry linked lists
+    // Arena for entry linked-list tails. The head of each chain lives
+    // inline on its `NodeFrontier`; the arena holds only the 2nd-and-later
+    // entries.
     arena: Vec<ArenaEntry>,
     nodes: Vec<NodeFrontier>,
 }
 
 impl Frontier {
+    /// Insert `entry` as the new head of `node_id`'s chain. Any existing
+    /// head is evicted into the arena and becomes the new sibling.
     fn push(&mut self, node_id: u32, entry: Entry) {
-        let node_frontier = &mut self.nodes[node_id as usize];
-        let new_entry_idx = self.arena.len() as u32;
-        self.arena.push(ArenaEntry {
+        let nf = &mut self.nodes[node_id as usize];
+        let sibling = if nf.has_head() {
+            // Evict old head into arena; new head's sibling points there.
+            let new_arena_idx = self.arena.len() as u32;
+            self.arena.push(nf.head);
+            new_arena_idx
+        } else {
+            LAST_ENTRY
+        };
+        nf.head = ArenaEntry {
             entry,
-            sibling_entry_idx: node_frontier.head_entry_idx,
-        });
-        node_frontier.head_entry_idx = new_entry_idx;
-    }
-
-    fn at(&self, entry_idx: u32) -> Option<&Entry> {
-        if entry_idx == LAST_ENTRY {
-            None
-        } else {
-            Some(&self.arena[entry_idx as usize].entry)
-        }
-    }
-
-    fn at_mut(&mut self, entry_idx: u32) -> Option<&mut Entry> {
-        if entry_idx == LAST_ENTRY {
-            None
-        } else {
-            Some(&mut self.arena[entry_idx as usize].entry)
-        }
+            sibling_entry_idx: sibling,
+        };
     }
 
     fn head(&self, node_id: u32) -> Option<&Entry> {
-        let node_frontier = &self.nodes[node_id as usize];
-        self.at(node_frontier.head_entry_idx)
+        let nf = &self.nodes[node_id as usize];
+        if nf.has_head() {
+            Some(&nf.head.entry)
+        } else {
+            None
+        }
     }
 
     fn head_next(&self, node_id: u32) -> Option<&Entry> {
-        let node_frontier = &self.nodes[node_id as usize];
-        if node_frontier.head_entry_idx == LAST_ENTRY {
-            None
+        let nf = &self.nodes[node_id as usize];
+        if nf.head.sibling_entry_idx != LAST_ENTRY {
+            Some(&self.arena[nf.head.sibling_entry_idx as usize].entry)
         } else {
-            let sibling_idx = self.arena[node_frontier.head_entry_idx as usize].sibling_entry_idx;
-            self.at(sibling_idx)
+            None
         }
     }
 
     fn head_mut(&mut self, node_id: u32) -> Option<&mut Entry> {
-        let node_frontier = &self.nodes[node_id as usize];
-        self.at_mut(node_frontier.head_entry_idx)
+        let nf = &mut self.nodes[node_id as usize];
+        if nf.has_head() {
+            Some(&mut nf.head.entry)
+        } else {
+            None
+        }
     }
 
     fn iter(&self, node_id: u32) -> impl Iterator<Item = &Entry> {
-        std::iter::from_fn({
-            let mut next_idx = self.nodes[node_id as usize].head_entry_idx;
-            move || {
-                if next_idx == LAST_ENTRY {
-                    None
-                } else {
-                    let arena_entry = &self.arena[next_idx as usize];
-                    next_idx = arena_entry.sibling_entry_idx;
-                    Some(&arena_entry.entry)
-                }
+        let nf = &self.nodes[node_id as usize];
+        let (head, mut next_idx) = if nf.has_head() {
+            (Some(&nf.head.entry), nf.head.sibling_entry_idx)
+        } else {
+            (None, LAST_ENTRY)
+        };
+        let arena = &self.arena;
+        head.into_iter().chain(std::iter::from_fn(move || {
+            if next_idx == LAST_ENTRY {
+                None
+            } else {
+                let arena_entry = &arena[next_idx as usize];
+                next_idx = arena_entry.sibling_entry_idx;
+                Some(&arena_entry.entry)
             }
-        })
+        }))
     }
 }
 
@@ -309,7 +345,7 @@ impl ProfileRouter for ProfileRouting {
             "Time window must have non-negative duration"
         );
         assert!(
-            query.window_end - query.window_start + query.max_time < MAX_DELTA as u32,
+            query.window_end - query.window_start + query.max_time <= MAX_DELTA as u32,
             "Time values must fit in u16 deltas"
         );
 
@@ -327,7 +363,7 @@ impl ProfileRouter for ProfileRouting {
         let mut frontier = Frontier {
             nodes: (0..n)
                 .map(|_| NodeFrontier {
-                    head_entry_idx: LAST_ENTRY,
+                    head: EMPTY_ARENA_ENTRY,
                     walk_only_time: None,
                 })
                 .collect(),
@@ -883,7 +919,7 @@ impl<'a> ProfileQueryContext<'a> {
         let node_frontier = &frontier.nodes[node_id as usize];
         let walk_time = node_frontier.walk_only_time;
 
-        if node_frontier.head_entry_idx == LAST_ENTRY {
+        if !node_frontier.has_head() {
             if let Some(walk_time) = walk_time {
                 return DestinationStats {
                     mean_travel_time: walk_time,
