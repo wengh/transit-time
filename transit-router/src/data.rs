@@ -1,4 +1,4 @@
-use std::{collections::HashMap, time::Duration};
+use std::time::Duration;
 extern crate console_error_panic_hook;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -168,7 +168,7 @@ pub struct PreparedData {
     pub num_edges: usize,
     pub num_stops: usize,
     pub adj: JaggedArray<(u32, f32)>,
-    pub node_to_stop: HashMap<u32, u32>,
+    pub node_to_stop: Vec<u32>, // node_index -> stop_index or u32::MAX if no stop
     /// Per-leg point-count prefix sum (length = num_legs + 1). Slice
     /// `leg_shapes_lat[offsets[i]..offsets[i+1]]` to get leg `i`'s lats.
     pub leg_shape_offsets: Vec<u32>,
@@ -301,13 +301,17 @@ pub fn load_with_stats(buf: &[u8]) -> Result<(PreparedData, LoadStats), String> 
     // Stop-to-node mapping
     let t0 = Instant::now();
     let pos_before = pos;
-    let mut node_to_stop = HashMap::with_capacity(num_stop_to_node);
+    let mut node_to_stop = vec![u32::MAX; num_nodes];
     let mut stop_to_node = vec![u32::MAX; num_stops];
     for _ in 0..num_stop_to_node {
         let stop_idx = read_u32(&buf, &mut pos);
         let node_idx = read_u32(&buf, &mut pos);
-        let prev = node_to_stop.insert(node_idx, stop_idx);
-        debug_assert!(prev.is_none(), "Node {node_idx} already mapped to {prev:?}");
+        let prev = node_to_stop[node_idx as usize];
+        debug_assert!(
+            prev == u32::MAX,
+            "Node {node_idx} already mapped to {prev:?}"
+        );
+        node_to_stop[node_idx as usize] = stop_idx;
         stop_to_node[stop_idx as usize] = node_idx;
     }
     binary_sections.push(("stop_to_node", pos - pos_before));
@@ -578,7 +582,7 @@ pub fn load_with_stats(buf: &[u8]) -> Result<(PreparedData, LoadStats), String> 
     memory_sections.push(("stop_to_node", stop_to_node.capacity() * 4));
 
     // node_to_stop
-    memory_sections.push(("node_to_stop", node_to_stop.capacity() * (4 + 8))); // key + hashmap overhead
+    memory_sections.push(("node_to_stop", node_to_stop.capacity() * 4));
 
     // route_names
     let rn_mem: usize = route_names

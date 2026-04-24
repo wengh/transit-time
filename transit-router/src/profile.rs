@@ -503,7 +503,7 @@ impl ProfileRouter for ProfileRouting {
                 }
 
                 // Skip unnecessary work if not a transit stop
-                if !data.node_to_stop.contains_key(&node_id) {
+                if data.node_to_stop[node_id as usize] == u32::MAX {
                     continue;
                 }
 
@@ -761,7 +761,7 @@ impl ProfileRouting {
                 // Find the route and the stops
                 let pat = &context.data.patterns[leg.pattern_idx as usize];
                 let mut node_sequence = Vec::new();
-                let end_stop = context.data.node_to_stop[&curr_node];
+                let end_stop = context.data.node_to_stop[curr_node as usize];
                 let route_index = match leg.transit_ref {
                     TransitRef::Scheduled { event_idx } => {
                         let events = &pat.stop_index.events_by_stop.data;
@@ -911,7 +911,7 @@ impl Index {
 
 impl<'a> ProfileQueryContext<'a> {
     fn get_stop_name(&self, node_id: u32) -> &'a str {
-        let stop_idx = self.data.node_to_stop[&node_id];
+        let stop_idx = self.data.node_to_stop[node_id as usize];
         self.data.stops[stop_idx as usize].name.as_str()
     }
 
@@ -1011,10 +1011,10 @@ impl<'a> ProfileQueryContext<'a> {
             max_arrival,
         } = query;
 
-        let stop_idx = match self.data.node_to_stop.get(&node) {
-            Some(&idx) => idx,
-            None => return ControlFlow::Continue(()),
-        };
+        let stop_idx = self.data.node_to_stop[node as usize];
+        if stop_idx == u32::MAX {
+            return ControlFlow::Continue(());
+        }
         let max_arrival = max_arrival.unwrap_or(self.query.window_end + self.query.max_time);
 
         for &pat_idx in &self.index.patterns_at_stop[stop_idx as usize] {

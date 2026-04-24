@@ -147,7 +147,8 @@ impl TransitRouter {
     }
 
     pub fn node_stop_name(&self, node_idx: u32) -> String {
-        if let Some(&stop_idx) = self.data.node_to_stop.get(&node_idx) {
+        let stop_idx = self.data.node_to_stop[node_idx as usize];
+        if stop_idx != u32::MAX {
             return self.data.stops[stop_idx as usize].name.clone();
         }
         String::new()
@@ -213,14 +214,14 @@ impl TransitRouter {
     /// Get the shape polyline for a single leg between two consecutive stops (by node index).
     /// Returns flat array [lat, lon, lat, lon, ...] of the pre-sliced sub-polyline, or empty.
     pub fn route_shape_between(&self, route_idx: u32, from_node: u32, to_node: u32) -> Vec<f64> {
-        let from_stop = match self.data.node_to_stop.get(&from_node) {
-            Some(&s) => s,
-            None => return Vec::new(),
-        };
-        let to_stop = match self.data.node_to_stop.get(&to_node) {
-            Some(&s) => s,
-            None => return Vec::new(),
-        };
+        let from_stop = self.data.node_to_stop[from_node as usize];
+        if from_stop == u32::MAX {
+            return Vec::new();
+        }
+        let to_stop = self.data.node_to_stop[to_node as usize];
+        if to_stop == u32::MAX {
+            return Vec::new();
+        }
 
         let key = (route_idx, from_stop, to_stop);
         let idx = match self.data.leg_shape_keys.binary_search(&key) {
