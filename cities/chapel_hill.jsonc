@@ -1,5 +1,6 @@
 {
     "id": "chapel_hill",
+    "enabled": false, // very minor city
     "feed_ids": [
         "f-dnru-chapel~hill~transit~nc~us"
     ],

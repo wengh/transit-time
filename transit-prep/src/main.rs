@@ -97,6 +97,7 @@ struct CityConfig {
     bbbike_name: Option<String>,
     osm_url: Option<String>,
     allow_stale: Option<bool>,
+    enabled: Option<bool>,
 }
 
 /// Days since Unix epoch (no external deps).
@@ -599,6 +600,11 @@ fn cmd_check(city_file: &Path, cache_dir: &Path) -> Result<bool> {
     let city: CityConfig = parse_to_serde_value(&city_json, &Default::default())
         .with_context(|| format!("Failed to parse city file: {:?}", city_file))?;
 
+    if city.enabled == Some(false) {
+        eprintln!("City '{}' is disabled, skipping check", city.id);
+        return Ok(false);
+    }
+
     let api_key = transitland::get_api_key().ok();
 
     for feed_id in &city.feed_ids {
@@ -684,6 +690,11 @@ fn cmd_pipeline(
             std::fs::read_to_string(&path).with_context(|| format!("Failed to read {:?}", path))?;
         let config: CityConfig = parse_to_serde_value(&city_json, &Default::default())
             .with_context(|| format!("Failed to parse {:?}", path))?;
+
+        if config.enabled == Some(false) {
+            eprintln!("Skipping {} (disabled)", config.id);
+            continue;
+        }
 
         for fid in &config.feed_ids {
             validate_feed_id(fid, api_key.as_deref())?;
@@ -981,6 +992,9 @@ fn cmd_prep(city_file: &Path, output: &Path, cache_dir: &Path) -> Result<()> {
         .with_context(|| format!("Failed to read city file: {:?}", city_file))?;
     let city: CityConfig = parse_to_serde_value(&city_json, &Default::default())
         .with_context(|| format!("Failed to parse city file: {:?}", city_file))?;
+    if city.enabled == Some(false) {
+        anyhow::bail!("City '{}' is disabled", city.id);
+    }
 
     anyhow::ensure!(
         !city.feed_ids.is_empty(),

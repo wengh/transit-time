@@ -24,6 +24,5 @@ export default defineConfig({
   preview: {
     headers: THREADING_HEADERS,
   },
-  // SPA fallback: serve index.html for city routes like /chicago, /chapel_hill
   appType: 'spa',
 });

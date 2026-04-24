@@ -1,5 +1,6 @@
 {
     "id": "london",
+    "enabled": false, // missing shapes
     "bbbike_name": "London",
     "feed_ids": [
         "f-transport~for~london", // TfL (Underground, DLR, Overground, Trams, Elizabeth line, Buses)

@@ -1,5 +1,6 @@
 {
     "id": "tokyo",
+    "enabled": false, // the feed list is not very good
     "osm_url": "https://download.geofabrik.de/asia/japan/kanto-latest.osm.pbf",
     "feed_ids": [
         "https://blues3.transitpdf.com/files/uran/improved-gtfs-tokyo-railways.zip", // Consolidated feed for Tokyo railways https://busmaps.com/en/japan/MKuran/tokyo-railways
