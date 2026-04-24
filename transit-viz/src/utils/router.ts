@@ -114,11 +114,19 @@ export function freeProfile(): Promise<void> {
   return call({ type: 'freeProfile' });
 }
 
+// Cancel flag for the in-flight query. Main thread sets [0]=1 to request
+// cancellation; the worker's progress callback reads it via Atomics.load.
+let activeCancelBuf: Int32Array | null = null;
+
 export async function runQuery(
   params: RunQueryParams,
   onProgress?: (done: number, total: number) => void,
 ): Promise<QueryResult> {
-  return call({ type: 'runQuery', params }, { onProgress });
+  // Signal cancellation to any in-flight query.
+  if (activeCancelBuf) Atomics.store(activeCancelBuf, 0, 1);
+  const sab = new SharedArrayBuffer(4);
+  activeCancelBuf = new Int32Array(sab);
+  return call({ type: 'runQuery', params, cancelBuf: sab }, { onProgress });
 }
 
 export async function getProfileHoverData(node: number): Promise<HoverPath[]> {

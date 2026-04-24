@@ -11,7 +11,7 @@ const PROFILE_FRACTION_SCALE = 0xffff;
 export type WorkerRequest =
   | { id: number; type: 'initWasm' }
   | { id: number; type: 'loadRouter'; cityFile: string }
-  | { id: number; type: 'runQuery'; params: RunQueryWorkerParams }
+  | { id: number; type: 'runQuery'; params: RunQueryWorkerParams; cancelBuf: SharedArrayBuffer }
   | { id: number; type: 'getHoverData'; node: number }
   | { id: number; type: 'snapToNode'; lat: number; lon: number }
   | { id: number; type: 'numPatternsForDate'; date: number }
@@ -82,6 +82,8 @@ async function handleLoadRouter(id: number, cityFile: string) {
   };
 }
 
+let cancelFlag: Int32Array | null = null;
+
 function handleRunQuery(id: number, params: RunQueryWorkerParams) {
   if (!router) throw new Error('Router not loaded');
   freeCurrentProfile();
@@ -99,8 +101,14 @@ function handleRunQuery(id: number, params: RunQueryWorkerParams) {
     params.maxTime,
     (done: number, total: number) => {
       postMessage({ id, type: 'progress', done, total } satisfies WorkerResponse);
+      return cancelFlag ? Atomics.load(cancelFlag, 0) !== 0 : false;
     },
   );
+
+  if (cancelFlag && Atomics.load(cancelFlag, 0) !== 0) {
+    freeCurrentProfile();
+    throw new Error('cancelled');
+  }
 
   const meanTravel = profile.mean_travel_times();
   const fractions = profile.reachable_fractions();
@@ -198,6 +206,7 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
         value = await handleLoadRouter(id, e.data.cityFile);
         break;
       case 'runQuery':
+        cancelFlag = new Int32Array(e.data.cancelBuf);
         value = handleRunQuery(id, e.data.params);
         break;
       case 'getHoverData':

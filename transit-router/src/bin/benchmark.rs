@@ -24,5 +24,10 @@ fn main() {
         max_time: 3600,
     };
 
-    let _result = ProfileRouting::compute(&prepared, &query, |_, _| {});
+    let _result =
+        ProfileRouting::compute(
+            &prepared,
+            &query,
+            |_, _| std::ops::ControlFlow::Continue(()),
+        );
 }

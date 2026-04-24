@@ -198,8 +198,16 @@ impl TransitRouter {
         WasmProfileRouting {
             inner: profile::ProfileRouting::compute(&self.data, &query, |done, total| {
                 if let Some(ref f) = cb {
-                    let _ = f.call2(&JsValue::NULL, &JsValue::from(done), &JsValue::from(total));
+                    // JS callback returns truthy to request cancellation.
+                    let cancel = f
+                        .call2(&JsValue::NULL, &JsValue::from(done), &JsValue::from(total))
+                        .map(|v| v.is_truthy())
+                        .unwrap_or(false);
+                    if cancel {
+                        return std::ops::ControlFlow::Break(());
+                    }
                 }
+                std::ops::ControlFlow::Continue(())
             }),
         }
     }

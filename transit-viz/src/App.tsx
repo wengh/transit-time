@@ -133,6 +133,7 @@ function AppInner() {
       });
       dispatch({ type: 'UNPIN_DESTINATION' });
     }).catch((e) => {
+      if (String(e).includes('cancelled')) return; // query was superseded
       console.error(e);
       dispatch({ type: 'QUERY_ERROR' });
     });

@@ -124,7 +124,12 @@ pub enum SegmentKind {
 pub trait ProfileRouter: Sized {
     /// Run profile routing from `query.source_node` over the departure window.
     /// `progress` is called with `(entries_done, total_entries)` during phase 2.
-    fn compute(data: &PreparedData, query: &ProfileQuery, progress: impl FnMut(usize, usize)) -> Self;
+    /// Return `ControlFlow::Break(())` to cancel the computation early.
+    fn compute(
+        data: &PreparedData,
+        query: &ProfileQuery,
+        progress: impl FnMut(usize, usize) -> ControlFlow<()>,
+    ) -> Self;
 
     /// Per-node isochrone for map rendering.
     fn isochrone(&self) -> &Isochrone;
@@ -339,7 +344,7 @@ impl ProfileRouter for ProfileRouting {
     fn compute(
         data: &PreparedData,
         query: &ProfileQuery,
-        mut progress: impl FnMut(usize, usize),
+        mut progress: impl FnMut(usize, usize) -> ControlFlow<()>,
     ) -> Self {
         assert!(
             query.window_start <= query.window_end,
@@ -552,7 +557,9 @@ impl ProfileRouter for ProfileRouting {
                 );
             }
             entries_done += chunk.len();
-            progress(entries_done, total_entries);
+            if progress(entries_done, total_entries).is_break() {
+                break;
+            }
         }
 
         let phase2_ms = t_phase2.elapsed().as_secs_f64() * 1e3;
