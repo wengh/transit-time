@@ -127,3 +127,7 @@ profile routing performance
 -------
 
 allow configurable departure window by changing the departure time slider to be 2 ended where dragging an endpoint changes the endpoint and dragging the middle changes both endpoints (keeping the same duration). limit the duration to 16 hours so it fits well in u16.
+
+-------
+
+use rayon (already installed) to parallelize router phase 3 and path reconstruction

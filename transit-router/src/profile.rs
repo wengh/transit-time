@@ -566,19 +566,14 @@ impl ProfileRouter for ProfileRouting {
         let t_phase3 = Instant::now();
 
         // ── Phase 3: compute isochrone stats ───────────────────────────────
-        let mut isochrone = Isochrone {
-            mean_travel_time: vec![0; n],
-            reachable_fraction: vec![0; n],
-            query: query.clone(),
+        let stats = crate::maybe_par_collect(0..n, |node_id| {
+            context.compute_destination_stats(&frontier, node_id as u32)
+        });
+        let isochrone = Isochrone {
+            mean_travel_time: stats.iter().map(|s| s.mean_travel_time).collect(),
+            reachable_fraction: stats.iter().map(|s| s.reachable_fraction).collect(),
+            query: *query,
         };
-        for ((node_id, mean_travel_time), reachable_fraction) in (0..n as u32)
-            .zip(&mut isochrone.mean_travel_time)
-            .zip(&mut isochrone.reachable_fraction)
-        {
-            let stats = context.compute_destination_stats(&frontier, node_id);
-            *mean_travel_time = stats.mean_travel_time;
-            *reachable_fraction = stats.reachable_fraction;
-        }
 
         let phase3_ms = t_phase3.elapsed().as_secs_f64() * 1e3;
         let total_ms = t_total.elapsed().as_secs_f64() * 1e3;
@@ -604,15 +599,19 @@ impl ProfileRouter for ProfileRouting {
             query: &self.isochrone.query,
             index: &self.patterns,
         };
-        self.frontier
+        let entries: Vec<Option<Entry>> = self
+            .frontier
             .iter(destination)
-            .map(|entry| self.reconstruct_path(&context, destination, Some(*entry)))
+            .map(|entry| Some(*entry))
             .chain(
                 self.frontier.nodes[destination as usize]
                     .walk_only_time
-                    .map(|_| self.reconstruct_path(&context, destination, None)),
+                    .map(|_| None),
             )
-            .collect()
+            .collect();
+        crate::maybe_par_collect(entries, |entry| {
+            self.reconstruct_path(&context, destination, entry)
+        })
     }
 }
 

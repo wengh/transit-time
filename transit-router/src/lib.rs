@@ -5,6 +5,7 @@ pub mod router;
 
 use data::PreparedData;
 use profile::ProfileRouter as _;
+use rayon::iter::IntoParallelIterator;
 use wasm_bindgen::prelude::*;
 
 pub use wasm_bindgen_rayon::init_thread_pool;
@@ -19,9 +20,29 @@ pub fn mark_rayon_ready() {
     RAYON_INITIALIZED.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
-#[allow(dead_code)]
 fn rayon_available() -> bool {
-    RAYON_INITIALIZED.load(std::sync::atomic::Ordering::Relaxed)
+    #[cfg(target_arch = "wasm32")]
+    {
+        RAYON_INITIALIZED.load(std::sync::atomic::Ordering::Relaxed)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        true
+    }
+}
+
+/// Map `f` over `iter`, using rayon if available.
+pub fn maybe_par_collect<I, R, F>(iter: I, f: F) -> Vec<R>
+where
+    I: IntoParallelIterator + IntoIterator<Item = <I as IntoParallelIterator>::Item>,
+    R: Send,
+    F: Fn(<I as IntoParallelIterator>::Item) -> R + Sync + Send,
+{
+    if crate::rayon_available() {
+        iter.into_par_iter().map(&f).collect()
+    } else {
+        iter.into_iter().map(f).collect()
+    }
 }
 
 // === WASM wrappers ===
