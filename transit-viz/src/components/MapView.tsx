@@ -120,7 +120,15 @@ export default function MapView(): React.ReactNode {
         for (const seg of segments) {
           if (seg.coords.length < 2) continue;
           let color: string, dashArray: string | null, weight: number;
+          let coords = seg.coords;
           if (seg.edgeType === 0) {
+            // Normalize walk segment direction so overlapping walks on the same
+            // edge share an identical dash pattern instead of merging into a
+            // solid line.
+            const first = coords[0], last = coords[coords.length - 1];
+            if (first[0] > last[0] || (first[0] === last[0] && first[1] > last[1])) {
+              coords = [...coords].reverse();
+            }
             color = '#888';
             dashArray = '6, 8';
             weight = 3;
@@ -144,7 +152,7 @@ export default function MapView(): React.ReactNode {
             dashArray = null;
             weight = 4;
           }
-          const line = L.polyline(seg.coords, { color, weight, opacity: 1, ...(dashArray ? { dashArray } : {}), interactive: false, pane: 'transitLines' }).addTo(map);
+          const line = L.polyline(coords, { color, weight, opacity: 1, ...(dashArray ? { dashArray } : {}), interactive: false, pane: 'transitLines' }).addTo(map);
           routePolylinesRef.current.push(line);
           // Add circle at end of transit segments to mark transfers
           if (seg.edgeType === 1) {
