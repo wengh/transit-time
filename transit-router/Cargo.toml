@@ -17,6 +17,7 @@ web-sys = { version = "0.3", features = ["console"] }
 rayon = "1.10"
 wasm-bindgen-rayon = "1.2"
 console_error_panic_hook = "0.1.7"
+radix-heap = "0.4.2"
 
 [dev-dependencies]
 transit-prep = { path = "../transit-prep" }

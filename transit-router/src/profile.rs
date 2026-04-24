@@ -7,7 +7,9 @@
 //! implements it. Callers hold `impl ProfileRouter` or the concrete type;
 //! internal representation is free to change.
 
-use std::{cmp::Reverse, collections::BinaryHeap, ops::ControlFlow};
+use std::{cmp::Reverse, ops::ControlFlow};
+
+use radix_heap::RadixHeapMap;
 
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
@@ -310,12 +312,6 @@ struct PendingEntry {
     entry: Entry,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct QueueEntry {
-    arrival_delta: u16,
-    node_id: u32,
-}
-
 #[derive(Debug, Copy, Clone)]
 struct DestinationStats {
     mean_travel_time: u16,
@@ -383,18 +379,12 @@ impl ProfileRouter for ProfileRouting {
 
         let mut initial_transit_entries: Vec<PendingEntry> = Vec::new();
 
-        let mut queue: BinaryHeap<Reverse<QueueEntry>> = BinaryHeap::new();
-        queue.push(Reverse(QueueEntry {
-            arrival_delta: 0,
-            node_id: query.source_node,
-        }));
+        // Our workload has monotonic pop so we can use a radix heap instead of a binary heap for better performance.
+        let mut queue: RadixHeapMap<Reverse<u16>, u32> = RadixHeapMap::new();
+        queue.push(Reverse(0u16), query.source_node);
         frontier.nodes[query.source_node as usize].walk_only_time = Some(0);
 
-        while let Some(Reverse(QueueEntry {
-            arrival_delta: walk_time,
-            node_id,
-        })) = queue.pop()
-        {
+        while let Some((Reverse(walk_time), node_id)) = queue.pop() {
             // Skip stale queue entry
             if walk_time > frontier.nodes[node_id as usize].walk_only_time.unwrap() {
                 continue;
@@ -438,10 +428,7 @@ impl ProfileRouter for ProfileRouting {
 
                 frontier.nodes[neighbor as usize].walk_only_time = Some(new_walk_time);
 
-                queue.push(Reverse(QueueEntry {
-                    arrival_delta: new_walk_time,
-                    node_id: neighbor,
-                }));
+                queue.push(Reverse(new_walk_time), neighbor);
             }
         }
 
@@ -459,7 +446,7 @@ impl ProfileRouter for ProfileRouting {
         for chunk in initial_transit_entries
             .chunk_by(|a, b| a.entry.home_departure_delta == b.entry.home_departure_delta)
         {
-            assert!(queue.is_empty());
+            queue.clear();
 
             let home_departure_delta = chunk[0].entry.home_departure_delta;
 
@@ -473,11 +460,7 @@ impl ProfileRouter for ProfileRouting {
                 );
             }
 
-            while let Some(Reverse(QueueEntry {
-                arrival_delta,
-                node_id,
-            })) = queue.pop()
-            {
+            while let Some((Reverse(arrival_delta), node_id)) = queue.pop() {
                 let entry = frontier.head(node_id).unwrap();
 
                 // Skip stale queue entry
@@ -839,7 +822,7 @@ impl ProfileRouting {
 
 fn relax(
     frontier: &mut Frontier,
-    queue: &mut BinaryHeap<Reverse<QueueEntry>>,
+    queue: &mut RadixHeapMap<Reverse<u16>, u32>,
     node_id: u32,
     new_entry: Entry,
 ) {
@@ -863,10 +846,7 @@ fn relax(
         frontier.push(node_id, new_entry);
     }
 
-    queue.push(Reverse(QueueEntry {
-        arrival_delta: new_entry.arrival_delta,
-        node_id,
-    }));
+    queue.push(Reverse(new_entry.arrival_delta), node_id);
 }
 
 struct ExpandTransitLegQuery {

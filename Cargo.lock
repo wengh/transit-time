@@ -1443,6 +1443,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
+name = "radix-heap"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "59ffec9df464013295b499298811e6a3de31bf8128092135826517db12dee601"
+
+[[package]]
 name = "rand_core"
 version = "0.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2081,6 +2087,7 @@ dependencies = [
  "flate2",
  "js-sys",
  "pco",
+ "radix-heap",
  "rayon",
  "serde",
  "serde_json",
