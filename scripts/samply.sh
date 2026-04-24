@@ -13,6 +13,7 @@ set -euo pipefail
 #   NO_OPEN=1 ./scripts/samply.sh           # record only, don't launch browser
 #   RATE=4000 ./scripts/samply.sh           # higher sampling rate
 #   CITY=transit-viz/public/data/nyc.bin LAT=40.75 LON=-73.99 RUNS=5 ./scripts/samply.sh
+#   CITY=transit-viz/public/data/paris.bin LAT=48.862305 LON=2.344500 ./scripts/samply.sh
 
 OUT="${OUT:-profile.json.gz}"
 CITY="${CITY:-transit-viz/public/data/chicago.bin}"

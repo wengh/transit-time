@@ -1,4 +1,4 @@
-use crate::graph::{haversine, OsmEdge, OsmNode};
+use crate::graph::{OsmEdge, OsmNode};
 use crate::gtfs::{Color, ServicePattern, Stop};
 use anyhow::Result;
 use std::io::Write;
@@ -17,10 +17,10 @@ pub struct PreparedData {
     pub leg_shapes: Vec<((u32, u32, u32), Vec<(f64, f64)>)>,
 }
 
-// Binary format v9:
+// Binary format v10:
 // Header:
 //   magic: [u8; 4] = "TRNS"
-//   version: u32 = 9
+//   version: u32 = 10
 //   num_nodes: u32
 //   num_edges: u32
 //   num_stops: u32
@@ -38,7 +38,7 @@ pub struct PreparedData {
 // Edges section (canonical u>v, sorted by (u, u-v)):
 //   pco_len: u32, pco_data: [u8]  // PCO u32: u values
 //   pco_len: u32, pco_data: [u8]  // PCO u32: delta = u-v
-//   pco_len: u32, pco_data: [u8]  // PCO f32: distance_meters - haversine(u,v) excess
+//   pco_len: u32, pco_data: [u8]  // PCO u32: walk_time seconds (1.4 m/s, min 1)
 //
 // Stops section: [Stop; num_stops]
 //   lat: f64, lon: f64, name_len: u32, name: [u8; name_len]
@@ -144,9 +144,9 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
     }
 
     // Relabel edges: use new node indices, canonicalize u > v.
-    // Third element is distance excess over straight-line (f32 bits stored as u32 for sorting key).
-    // Use original f64 node coords for haversine so the delta is as small as possible.
-    let mut canon_edges: Vec<(u32, u32, f32)> = data
+    // Walk time is precomputed once here (1.4 m/s walking speed, min 1 second).
+    const WALKING_SPEED_MPS: f32 = 1.4;
+    let mut canon_edges: Vec<(u32, u32, u16)> = data
         .edges
         .iter()
         .map(|e| {
@@ -157,13 +157,8 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
             } else {
                 (new_v, new_u)
             };
-            let straight = haversine(
-                data.nodes[e.u as usize].lat,
-                data.nodes[e.u as usize].lon,
-                data.nodes[e.v as usize].lat,
-                data.nodes[e.v as usize].lon,
-            ) as f32;
-            (cu, cu - cv, e.distance_meters - straight)
+            let walk_time = ((e.distance_meters / WALKING_SPEED_MPS).round() as u16).max(1);
+            (cu, cu - cv, walk_time)
         })
         .collect();
     canon_edges.sort_unstable_by_key(|&(u, delta, _)| (u, delta));
@@ -179,7 +174,7 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
 
     // Header
     buf.extend_from_slice(b"TRNS");
-    write_u32(&mut buf, 9); // version
+    write_u32(&mut buf, 10); // version
     write_u32(&mut buf, num_nodes as u32);
     write_u32(&mut buf, data.edges.len() as u32);
     write_u32(&mut buf, data.stops.len() as u32);
@@ -206,15 +201,15 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
         write_pco_u32(&mut buf, &lon_u32);
     }
 
-    // Edges (v5): u, delta (=u-v), dist_excess (=distance_meters - haversine(u,v))
+    // Edges: u, delta (=u-v), walk_time (seconds at 1.4 m/s, min 1)
     // Sorted by (u, delta), canonical with u > v
     {
         let us: Vec<u32> = canon_edges.iter().map(|&(u, _, _)| u).collect();
         let deltas: Vec<u32> = canon_edges.iter().map(|&(_, d, _)| d).collect();
-        let excesses: Vec<f32> = canon_edges.iter().map(|&(_, _, x)| x).collect();
+        let walk_times: Vec<u32> = canon_edges.iter().map(|&(_, _, w)| w as u32).collect();
         write_pco_u32(&mut buf, &us);
         write_pco_u32(&mut buf, &deltas);
-        write_pco_f32(&mut buf, &excesses);
+        write_pco_u32(&mut buf, &walk_times);
     }
 
     // Stops
@@ -502,13 +497,6 @@ fn write_pco_i32(buf: &mut Vec<u8>, data: &[i32]) {
         pco::standalone::simple_compress(data, &pco::ChunkConfig::default())
             .expect("pco compress failed")
     };
-    write_u32(buf, compressed.len() as u32);
-    buf.extend_from_slice(&compressed);
-}
-
-fn write_pco_f32(buf: &mut Vec<u8>, data: &[f32]) {
-    let compressed = pco::standalone::simple_compress(data, &pco::ChunkConfig::default())
-        .expect("pco compress failed");
     write_u32(buf, compressed.len() as u32);
     buf.extend_from_slice(&compressed);
 }

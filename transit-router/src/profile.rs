@@ -423,8 +423,8 @@ impl ProfileRouter for ProfileRouting {
                 },
             );
 
-            for &(neighbor, distance) in &data.adj[node_id] {
-                let new_walk_time = walk_time.saturating_add(get_walk_time(distance));
+            for &(neighbor, edge_walk_time) in &data.adj[node_id] {
+                let new_walk_time = walk_time.saturating_add(edge_walk_time);
 
                 if new_walk_time as u32 > query.max_time {
                     continue;
@@ -486,8 +486,8 @@ impl ProfileRouter for ProfileRouting {
                 }
 
                 // Relax walk edges
-                for &(neighbor, distance) in &data.adj[node_id] {
-                    let new_arrival_delta = arrival_delta.saturating_add(get_walk_time(distance));
+                for &(neighbor, edge_walk_time) in &data.adj[node_id] {
+                    let new_arrival_delta = arrival_delta.saturating_add(edge_walk_time);
 
                     if (new_arrival_delta - home_departure_delta) as u32 > query.max_time {
                         continue;
@@ -654,11 +654,11 @@ impl ProfileRouting {
                     .unwrap();
                 context.data.adj[curr_node]
                     .iter()
-                    .find(|&&(neighbor, distance)| {
+                    .find(|&&(neighbor, edge_walk_time)| {
                         let Some(walk_time) = self.frontier.nodes[neighbor as usize].walk_only_time else {
                             return false;
                         };
-                        walk_time.saturating_add(get_walk_time(distance)) == curr_walk_time
+                        walk_time.saturating_add(edge_walk_time) == curr_walk_time
                     })
                     .map(|&(neighbor, _)| neighbor)
                     .unwrap_or_else(|| panic!("No walk predecessor found for node {} in walk-only path reconstruction", curr_node))
@@ -686,9 +686,7 @@ impl ProfileRouting {
                     .find(|&&(neighbor, _)| neighbor == curr_node)
                     .map(|&(_, w)| w);
                 match edge_weight {
-                    Some(w) => {
-                        prev_arrival_delta.saturating_add(get_walk_time(w)) == curr.arrival_delta
-                    }
+                    Some(w) => prev_arrival_delta.saturating_add(w) == curr.arrival_delta,
                     None => false,
                 }
             } else {
@@ -837,11 +835,6 @@ impl ProfileRouting {
             segments,
         }
     }
-}
-
-fn get_walk_time(distance: f32) -> u16 {
-    const WALKING_SPEED_MPS: f32 = 1.4;
-    ((distance / WALKING_SPEED_MPS).round() as u16).max(1)
 }
 
 fn relax(
