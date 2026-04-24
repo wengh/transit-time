@@ -172,7 +172,13 @@ function drawChart(
   // Grid
   ctx.strokeStyle = theme.grid;
   ctx.lineWidth = 1;
-  for (let min = 0; min <= 60; min += 15) {
+  const windowDurMin = (windowEnd - windowStart) / 60;
+  // Pick x-axis tick step: aim for 4-7 ticks
+  let xStepMin = 15;
+  for (const s of [5, 10, 15, 30, 60, 120, 180, 240]) {
+    if (windowDurMin / s <= 8) { xStepMin = s; break; }
+  }
+  for (let min = 0; min <= windowDurMin; min += xStepMin) {
     const x = xToC(windowStart + min * 60);
     ctx.beginPath(); ctx.moveTo(x, pT); ctx.lineTo(x, pT + plotH); ctx.stroke();
   }
@@ -191,14 +197,24 @@ function drawChart(
   ctx.lineTo(pL + plotW, pT + plotH);
   ctx.stroke();
 
-  // X-axis labels (minute offsets from window start)
+  // X-axis labels
   ctx.fillStyle = theme.label;
   ctx.font = `${Math.max(9, Math.round(size / 28))}px sans-serif`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'alphabetic';
-  for (let min = 0; min <= 60; min += 15) {
+  for (let min = 0; min <= windowDurMin; min += xStepMin) {
     const x = xToC(windowStart + min * 60);
-    ctx.fillText(`+${min}`, x, H - 4);
+    // Show absolute time (HH:MM) for windows > 2h, offset otherwise
+    let label: string;
+    if (windowDurMin > 120) {
+      const totalSec = windowStart + min * 60;
+      const h = Math.floor(totalSec / 3600) % 24;
+      const m = Math.floor((totalSec % 3600) / 60);
+      label = `${h}:${String(m).padStart(2, '0')}`;
+    } else {
+      label = `+${min}`;
+    }
+    ctx.fillText(label, x, H - 4);
   }
 
   // Y-axis labels (minutes)
@@ -344,7 +360,7 @@ export default function HoverInfo(): React.ReactNode {
   const chartInfoRef = useRef<ChartInfo | null>(null);
   const [hidden, setHidden] = useState(false);
 
-  const { hoverData, maxTimeMin, departureTime, pinnedNode, selectedSampleIdx, lockedSampleIdx } = state;
+  const { hoverData, maxTimeMin, pinnedNode, selectedSampleIdx, lockedSampleIdx } = state;
 
   // Recompute chart info and redraw whenever relevant state changes. The chart
   // highlights `selectedSampleIdx` (cursor) or `lockedSampleIdx` (pinned click).
@@ -352,13 +368,13 @@ export default function HoverInfo(): React.ReactNode {
     if (!canvasRef.current || !hoverData) return;
     const info = computeChartInfo(
       hoverData.allPaths,
-      departureTime,
-      departureTime + 3600,
+      state.windowStart,
+      state.windowEnd,
       maxTimeMin * 60,
     );
     chartInfoRef.current = info;
     drawChart(canvasRef.current, info, selectedSampleIdx, getChartTheme());
-  }, [hoverData, maxTimeMin, departureTime, selectedSampleIdx]);
+  }, [hoverData, maxTimeMin, state.windowStart, state.windowEnd, selectedSampleIdx]);
 
   const handleMouseMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     if (lockedSampleIdx !== null || pinnedNode === null || !chartInfoRef.current) return;
@@ -429,7 +445,7 @@ export default function HoverInfo(): React.ReactNode {
   let titleText: string;
   if (selectedSampleIdx !== null) {
     if (displayPath?.totalTime != null) {
-      const deptOffMin = Math.round((displayPath.departureTime - departureTime) / 60);
+      const deptOffMin = Math.round((displayPath.departureTime - state.windowStart) / 60);
       titleText = `Travel time: ${Math.round(displayPath.totalTime / 60)} min  (+${deptOffMin} min departure)`;
     } else {
       titleText = 'Unreachable';

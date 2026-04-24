@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useCallback } from 'react';
 import { useAppState } from '../state/AppContext';
 import { formatTime, formatSlack, dateToYYYYMMDD } from '../utils/format';
 import { freeProfile, numPatternsForDate } from '../utils/router';
@@ -51,6 +51,107 @@ function RangeSlider({ id, min, max, step, defaultValue, formatDisplay, onCommit
   );
 }
 
+// ── Dual-ended range slider ────────────────────────────────────────────────
+
+const STEP = 300; // 5 minutes
+
+interface DualRangeSliderProps {
+  windowStart: number;
+  windowEnd: number;
+  maxDuration: number;
+  onChange: (start: number, end: number) => void;
+  onCommit: (start: number, end: number) => void;
+}
+
+function DualRangeSlider({ windowStart, windowEnd, maxDuration, onChange, onCommit }: DualRangeSliderProps) {
+  const trackRef = useRef<HTMLDivElement>(null);
+  const dragRef = useRef<{ kind: 'start' | 'end' | 'middle'; originX: number; origStart: number; origEnd: number } | null>(null);
+  const liveRef = useRef({ start: windowStart, end: windowEnd });
+  liveRef.current = { start: windowStart, end: windowEnd };
+
+  const pct = (v: number) => (v / 86400) * 100;
+
+  const snap = (v: number) => Math.round(v / STEP) * STEP;
+  const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+
+  const xToSec = useCallback((clientX: number) => {
+    const rect = trackRef.current!.getBoundingClientRect();
+    return clamp(snap(((clientX - rect.left) / rect.width) * 86400), 0, 86400);
+  }, []);
+
+  const handlePointerDown = useCallback((kind: 'start' | 'end' | 'middle', e: React.PointerEvent) => {
+    e.preventDefault();
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+    dragRef.current = { kind, originX: e.clientX, origStart: liveRef.current.start, origEnd: liveRef.current.end };
+  }, []);
+
+  const handlePointerMove = useCallback((e: React.PointerEvent) => {
+    const d = dragRef.current;
+    if (!d) return;
+    const { kind, origStart, origEnd } = d;
+    const sec = xToSec(e.clientX);
+    let s = liveRef.current.start, en = liveRef.current.end;
+
+    if (kind === 'start') {
+      s = clamp(sec, 0, en - STEP);
+      if (en - s > maxDuration) s = en - maxDuration;
+    } else if (kind === 'end') {
+      en = clamp(sec, s + STEP, 86400);
+      if (en - s > maxDuration) en = s + maxDuration;
+    } else {
+      const dur = origEnd - origStart;
+      const rect = trackRef.current!.getBoundingClientRect();
+      const dx = e.clientX - d.originX;
+      const dSec = snap((dx / rect.width) * 86400);
+      s = clamp(origStart + dSec, 0, 86400 - dur);
+      en = s + dur;
+    }
+    s = snap(s); en = snap(en);
+    onChange(s, en);
+  }, [xToSec, maxDuration, onChange]);
+
+  const handlePointerUp = useCallback((e: React.PointerEvent) => {
+    if (!dragRef.current) return;
+    dragRef.current = null;
+    (e.target as HTMLElement).releasePointerCapture(e.pointerId);
+    onCommit(liveRef.current.start, liveRef.current.end);
+  }, [onCommit]);
+
+  const leftPct = pct(windowStart);
+  const widthPct = pct(windowEnd - windowStart);
+
+  return (
+    <div
+      ref={trackRef}
+      className="relative w-full h-5 mb-1 select-none touch-none cursor-grab active:cursor-grabbing"
+      onPointerDown={(e) => handlePointerDown('middle', e)}
+      onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerUp}
+    >
+      {/* Track background */}
+      <div className="absolute top-[9px] left-0 right-0 h-[3px] rounded bg-zinc-600 dark:bg-zinc-600
+        [@media(prefers-color-scheme:light)]:bg-zinc-300 pointer-events-none" />
+      {/* Active range */}
+      <div
+        className="absolute top-[9px] h-[3px] rounded bg-blue-500 pointer-events-none"
+        style={{ left: `${leftPct}%`, width: `${widthPct}%` }}
+      />
+      {/* Start thumb */}
+      <div
+        className="absolute top-[5px] w-[12px] h-[12px] rounded-full bg-white border-2 border-blue-500 cursor-ew-resize -translate-x-1/2 z-10"
+        style={{ left: `${leftPct}%` }}
+        onPointerDown={(e) => { e.stopPropagation(); handlePointerDown('start', e); }}
+      />
+      {/* End thumb */}
+      <div
+        className="absolute top-[5px] w-[12px] h-[12px] rounded-full bg-white border-2 border-blue-500 cursor-ew-resize -translate-x-1/2 z-10"
+        style={{ left: `${leftPct + widthPct}%` }}
+        onPointerDown={(e) => { e.stopPropagation(); handlePointerDown('end', e); }}
+      />
+    </div>
+  );
+}
+
 interface ControlsProps {
   onRunQuery: (overrides?: Record<string, any>) => void;
   onCopy: () => void;
@@ -58,9 +159,25 @@ interface ControlsProps {
 
 export default function Controls({ onRunQuery, onCopy }: ControlsProps): React.ReactNode {
   const { state, dispatch } = useAppState();
-  const { loadingState, mapStyle, departureTime, date, maxTimeMin, transferSlack, computeStatus, computeProgress, computeTimeMs, patternCount, nodeCount, stopCount, sourceNode, showCopiedMessage } = state;
+  const { loadingState, mapStyle, windowStart, windowEnd, date, maxTimeMin, transferSlack, computeStatus, computeProgress, computeTimeMs, patternCount, nodeCount, stopCount, sourceNode, showCopiedMessage } = state;
 
   const [collapsed, setCollapsed] = useState(() => window.innerWidth < 600);
+  // Live (dragging) window values — committed on pointer up
+  const [liveStart, setLiveStart] = useState(windowStart);
+  const [liveEnd, setLiveEnd] = useState(windowEnd);
+  // Sync live values when committed state changes (e.g. URL restore)
+  const prevStart = useRef(windowStart);
+  const prevEnd = useRef(windowEnd);
+  if (prevStart.current !== windowStart || prevEnd.current !== windowEnd) {
+    prevStart.current = windowStart;
+    prevEnd.current = windowEnd;
+    setLiveStart(windowStart);
+    setLiveEnd(windowEnd);
+  }
+
+  // Max window duration: 65535 - maxTime must hold for the Rust u16 delta assert.
+  // Cap at 15h (54000s) for UX, but shrink if maxTime is very large.
+  const maxDuration = Math.min(54000, 65535 - maxTimeMin * 60);
 
   if (loadingState !== 'ready') return null;
 
@@ -163,20 +280,18 @@ export default function Controls({ onRunQuery, onCopy }: ControlsProps): React.R
           className={dateClass} />
       </div>
 
-      {/* Departure Time */}
+      {/* Departure Window */}
       <div className="mb-0">
         <label className="block text-[13px] text-zinc-500 dark:text-zinc-400">
-          Departure Time:{' '}
-          <RangeSlider
-            id="time-slider"
-            min={0}
-            max={86400}
-            step={300}
-            defaultValue={departureTime}
-            formatDisplay={(v) => formatTime(v)}
-            onCommit={(val) => {
-              dispatch({ type: 'SET_DEPARTURE_TIME', value: val });
-              onRunQuery({ departureTime: val });
+          Departure Window: <span>{formatTime(liveStart)} – {formatTime(liveEnd)}</span>
+          <DualRangeSlider
+            windowStart={liveStart}
+            windowEnd={liveEnd}
+            maxDuration={maxDuration}
+            onChange={(s, e) => { setLiveStart(s); setLiveEnd(e); }}
+            onCommit={(s, e) => {
+              dispatch({ type: 'SET_WINDOW', windowStart: s, windowEnd: e });
+              onRunQuery({ windowStart: s, windowEnd: e });
             }}
           />
         </label>

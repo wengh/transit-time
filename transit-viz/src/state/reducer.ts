@@ -10,7 +10,8 @@ export interface AppState {
 
   // Controls
   mapStyle: string;
-  departureTime: number;
+  windowStart: number;
+  windowEnd: number;
   date: string;
   maxTimeMin: number;
   transferSlack: number;
@@ -65,7 +66,7 @@ export type Action =
   | { type: 'CHANGE_CITY' }
   | { type: 'SET_SOURCE'; node: number; latLng: [number, number] }
   | { type: 'SET_MAP_STYLE'; style: string }
-  | { type: 'SET_DEPARTURE_TIME'; value: number }
+  | { type: 'SET_WINDOW'; windowStart: number; windowEnd: number }
   | { type: 'SET_DATE'; value: string }
   | { type: 'SET_MAX_TIME'; value: number }
   | { type: 'SET_SLACK'; value: number }
@@ -91,7 +92,8 @@ export const initialState: AppState = {
 
   // Controls
   mapStyle: DEFAULT_MAP_STYLE,
-  departureTime: 11 * 3600, // 11:00 AM
+  windowStart: 11 * 3600, // 11:00 AM
+  windowEnd: 12 * 3600,   // 12:00 PM (1-hour default)
   date: new Date().toISOString().slice(0, 10),
   maxTimeMin: 45,
   transferSlack: 60,
@@ -169,8 +171,8 @@ export function reducer(state: AppState, action: Action): AppState {
       return { ...state, sourceNode: action.node, sourceLatLng: action.latLng, pinnedNode: null, pinnedLatLng: null, hoverData: null };
     case 'SET_MAP_STYLE':
       return { ...state, mapStyle: action.style };
-    case 'SET_DEPARTURE_TIME':
-      return { ...state, departureTime: action.value };
+    case 'SET_WINDOW':
+      return { ...state, windowStart: action.windowStart, windowEnd: action.windowEnd };
     case 'SET_DATE':
       return { ...state, date: action.value };
     case 'SET_MAX_TIME':

@@ -32,7 +32,10 @@ function AppInner() {
           // Restore controls
           if (hash.style) dispatch({ type: 'SET_MAP_STYLE', style: hash.style });
           if (hash.date) dispatch({ type: 'SET_DATE', value: hash.date });
-          if (hash.time !== undefined) dispatch({ type: 'SET_DEPARTURE_TIME', value: hash.time });
+          if (hash.time !== undefined) {
+            const dur = hash.dur ?? 3600;
+            dispatch({ type: 'SET_WINDOW', windowStart: hash.time, windowEnd: hash.time + dur });
+          }
           if (hash.maxtime !== undefined) dispatch({ type: 'SET_MAX_TIME', value: hash.maxtime });
           if (hash.slack !== undefined) dispatch({ type: 'SET_SLACK', value: hash.slack });
           // Restore source (triggers query)
@@ -98,13 +101,14 @@ function AppInner() {
       trip: state.lockedSampleIdx ?? undefined,
       style: state.mapStyle,
       date: state.date,
-      time: state.departureTime,
+      time: state.windowStart,
+      dur: state.windowEnd - state.windowStart,
       maxtime: state.maxTimeMin,
       slack: state.transferSlack,
       zoom: current.zoom,
       center: current.center,
     });
-  }, [state.sourceLatLng, state.pinnedLatLng, state.lockedSampleIdx, state.mapStyle, state.date, state.departureTime, state.maxTimeMin, state.transferSlack]);
+  }, [state.sourceLatLng, state.pinnedLatLng, state.lockedSampleIdx, state.mapStyle, state.date, state.windowStart, state.windowEnd, state.maxTimeMin, state.transferSlack]);
 
   // Run query when source or params change
   const handleRunQuery = useCallback((overrides: Record<string, any> = {}) => {
@@ -113,7 +117,8 @@ function AppInner() {
 
     const params: RunQueryParams = {
       sourceNode: s.sourceNode,
-      departureTime: overrides.departureTime ?? s.departureTime,
+      windowStart: overrides.windowStart ?? s.windowStart,
+      windowEnd: overrides.windowEnd ?? s.windowEnd,
       date: overrides.date ?? s.date,
       transferSlack: overrides.transferSlack ?? s.transferSlack,
       maxTime: (overrides.maxTimeMin ?? s.maxTimeMin) * 60,
@@ -163,7 +168,12 @@ function AppInner() {
 
     lines.push('');
     lines.push(`Date: ${s.date}`);
-    lines.push(`Departure: ${new Date(s.departureTime * 1000).toISOString().substring(11, 16)}`);
+    const fmtT = (sec: number) => {
+      const h = Math.floor(sec / 3600);
+      const m = Math.floor((sec % 3600) / 60);
+      return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+    };
+    lines.push(`Departure window: ${fmtT(s.windowStart)} – ${fmtT(s.windowEnd)}`);
     lines.push(`Max time: ${s.maxTimeMin} min`);
     lines.push(`Transfer slack: ${s.transferSlack}s`);
 

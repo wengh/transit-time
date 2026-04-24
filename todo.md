@@ -123,3 +123,7 @@ profile routing performance
 - get flamegraph of profile routing
 - maybe add parallelism somewhere?
 - maybe use a linked list of entries instead of an array of vectors?
+
+-------
+
+allow configurable departure window by changing the departure time slider to be 2 ended where dragging an endpoint changes the endpoint and dragging the middle changes both endpoints (keeping the same duration). limit the duration to 16 hours so it fits well in u16.

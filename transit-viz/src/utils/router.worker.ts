@@ -19,7 +19,8 @@ export type WorkerRequest =
 
 export interface RunQueryWorkerParams {
   sourceNode: number;
-  departureTime: number;
+  windowStart: number;
+  windowEnd: number;
   date: string;
   transferSlack: number;
   maxTime: number;
@@ -90,12 +91,11 @@ function handleRunQuery(id: number, params: RunQueryWorkerParams) {
 
   const numNodes = router.num_nodes();
   const dateInt = parseInt(params.date.replace(/-/g, ''));
-  const windowEnd = params.departureTime + 3600;
 
   profile = router.compute_profile(
     params.sourceNode,
-    params.departureTime,
-    windowEnd,
+    params.windowStart,
+    params.windowEnd,
     dateInt,
     params.transferSlack,
     params.maxTime,
@@ -122,7 +122,7 @@ function handleRunQuery(id: number, params: RunQueryWorkerParams) {
     travelTimes,
     sampleCounts,
     totalSamples: PROFILE_FRACTION_SCALE,
-    departureTime: params.departureTime,
+    departureTime: params.windowStart,
   };
 }
 
