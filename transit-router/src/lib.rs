@@ -98,6 +98,10 @@ impl TransitRouter {
         self.data.num_stops as u32
     }
 
+    pub fn num_routes(&self) -> u32 {
+        self.data.route_names.len() as u32
+    }
+
     pub fn node_lat(&self, idx: u32) -> f64 {
         self.data.nodes[idx as usize].lat
     }

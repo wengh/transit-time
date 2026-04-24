@@ -69,9 +69,9 @@ async function handleLoadRouter(id: number, cityFile: string) {
   const allCoords = router.all_node_coords();
   const nodeCoords = new Float32Array(allCoords);
   // Collect route colors once
-  const numPatterns = router.num_patterns();
+  const numRoutes = router.num_routes();
   const routeColors: string[] = [];
-  for (let i = 0; i < numPatterns; i++) {
+  for (let i = 0; i < numRoutes; i++) {
     routeColors.push(router.route_color(i));
   }
   return {
