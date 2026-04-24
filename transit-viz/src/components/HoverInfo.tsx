@@ -256,8 +256,10 @@ function drawChart(
     if (segStartX > tipX) continue;
 
     const isSelected = selectedIdx === pathIdx;
+    const DENSE_SLOPE_THRESHOLD = 4;  // When slope exceeds this, switch to thinner line and hide tip dot
+    const dense = (windowEnd - windowStart) / yMax > DENSE_SLOPE_THRESHOLD;
     ctx.strokeStyle = color;
-    ctx.lineWidth = isSelected ? 3.5 : 2;
+    ctx.lineWidth = isSelected ? 3.5 : dense ? 1.5 : 2;
 
     // Diagonal from (segStartX, segStartY) down to tip — no horizontal cap
     ctx.beginPath();
@@ -265,11 +267,13 @@ function drawChart(
     ctx.lineTo(xToC(tipX), yToC(tipY));
     ctx.stroke();
 
-    // Dot at tip
-    ctx.fillStyle = color;
-    ctx.beginPath();
-    ctx.arc(xToC(tipX), yToC(tipY), isSelected ? 4.5 : 3, 0, Math.PI * 2);
-    ctx.fill();
+    // Dot at tip (hidden in dense mode)
+    if (!dense || isSelected) {
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.arc(xToC(tipX), yToC(tipY), isSelected ? 4.5 : 3, 0, Math.PI * 2);
+      ctx.fill();
+    }
   }
 
   // Selection highlight ring around the tip dot
@@ -445,8 +449,11 @@ export default function HoverInfo(): React.ReactNode {
   let titleText: string;
   if (selectedSampleIdx !== null) {
     if (displayPath?.totalTime != null) {
-      const deptOffMin = Math.round((displayPath.departureTime - state.windowStart) / 60);
-      titleText = `Travel time: ${Math.round(displayPath.totalTime / 60)} min  (+${deptOffMin} min departure)`;
+      const dep = displayPath.departureTime;
+      const h = Math.floor(dep / 3600) % 24;
+      const m = Math.floor((dep % 3600) / 60);
+      const depStr = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+      titleText = `Travel time: ${Math.round(displayPath.totalTime / 60)} min  (depart ${depStr})`;
     } else {
       titleText = 'Unreachable';
     }
