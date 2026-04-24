@@ -22,7 +22,7 @@ dev: $(WASM_OUT) data-all
 
 # CPU flamegraph of profile routing (override via env: OUT, CITY, LAT, LON, RUNS, etc.)
 flamegraph:
-	./scripts/flamegraph.sh
+	./scripts/samply.sh
 
 clean:
 	cargo clean

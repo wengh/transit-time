@@ -9,3 +9,4 @@
 .env
 perf.data*
 flamegraph.svg
+profile.json.gz
