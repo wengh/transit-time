@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef } from 'react';
 import L from 'leaflet';
 import { useAppState } from '../state/AppContext';
 import { initWebGL, renderIsochrone } from '../utils/webgl';
-import { getProfileHoverData, type HoverPath } from '../utils/router';
+import { getProfileHoverData, snapToNode, type HoverPath } from '../utils/router';
 import { ROUTE_COLORS } from '../utils/colors';
 import { getHashParams, setHashParams } from '../utils/urlHash';
 import { getSortedTravelTimes } from '../utils/hoverInfo';
@@ -95,12 +95,6 @@ export default function MapView(): React.ReactNode {
     const map = mapRef.current as L.Map;
     if (!map) return;
 
-    function snapToNode(lat: number, lon: number): number | null {
-      const router = stateRef.current.router;
-      if (!router) return null;
-      return router.snap_to_node(lat, lon) ?? null;
-    }
-
     function getNodeLatLng(node: number): [number, number] | null {
       const coords = stateRef.current.nodeCoords;
       if (!coords) return null;
@@ -139,8 +133,8 @@ export default function MapView(): React.ReactNode {
               // Empty string means the route has no GTFS colour — fall back to
               // the palette.
               const s = stateRef.current;
-              let routeColor = s.router && seg.routeIdx < 0xffffffff
-                ? s.router.route_color(seg.routeIdx)
+              let routeColor = seg.routeIdx < 0xffffffff
+                ? (s.routeColors[seg.routeIdx] || '')
                 : '';
               if (!routeColor) {
                 routeColor = ROUTE_COLORS[colorIdx % ROUTE_COLORS.length];
@@ -178,9 +172,9 @@ export default function MapView(): React.ReactNode {
 
     drawRouteLayersRef.current = drawRouteSegments;
 
-    function showDestination(node: number, pin: boolean) {
+    async function showDestination(node: number, pin: boolean) {
       const s = stateRef.current;
-      if (!s.router || !s.travelTimes || !s.profile) return;
+      if (!s.travelTimes) return;
       const tt = s.travelTimes[node];
       if (isNaN(tt) || tt < 0) {
         clearRouteOverlay();
@@ -192,7 +186,7 @@ export default function MapView(): React.ReactNode {
         return;
       }
 
-      const allPaths = getProfileHoverData(s.router, s.profile, node);
+      const allPaths = await getProfileHoverData(node);
       const travelTimes = getSortedTravelTimes(allPaths);
 
       drawRouteSegments(allPaths.filter((p) => p.segments.length > 0));
@@ -228,10 +222,10 @@ export default function MapView(): React.ReactNode {
       }
     }
 
-    function setSource(lat: number, lng: number) {
+    async function setSource(lat: number, lng: number) {
       const s = stateRef.current;
-      if (!s.router) return;
-      const node = snapToNode(lat, lng);
+      if (s.loadingState !== 'ready') return;
+      const node = await snapToNode(lat, lng);
       if (node === null) return;
       const latLng = getNodeLatLng(node);
       if (!latLng) return;
@@ -252,16 +246,16 @@ export default function MapView(): React.ReactNode {
     // Desktop: double-click sets source
     let lastPinTime = 0;
     function onDblClick(e: L.LeafletMouseEvent) {
-      if (!stateRef.current.router) return;
+      if (stateRef.current.loadingState !== 'ready') return;
       // Prevent on mobile (handled by long press)
       if (isTouchDevice) return;
       setSource(e.latlng.lat, e.latlng.lng);
     }
 
     // Single click: pin/unpin destination
-    function onClick(e: L.LeafletMouseEvent) {
+    async function onClick(e: L.LeafletMouseEvent) {
       const s = stateRef.current;
-      if (!s.router || s.sourceNode === null) return;
+      if (s.loadingState !== 'ready' || s.sourceNode === null) return;
 
       // Ignore if this was part of a long press
       if (longPressStartRef.current) {
@@ -279,7 +273,7 @@ export default function MapView(): React.ReactNode {
       }
 
       // Otherwise (or on mobile regardless of pin state): pin the clicked position.
-      const node = snapToNode(e.latlng.lat, e.latlng.lng);
+      const node = await snapToNode(e.latlng.lat, e.latlng.lng);
       if (node !== null) {
         lastPinTime = Date.now();
         showDestination(node, true);
@@ -287,11 +281,11 @@ export default function MapView(): React.ReactNode {
     }
 
     // Hover: show route (desktop, no pinned dest)
-    function onMouseMove(e: L.LeafletMouseEvent) {
+    async function onMouseMove(e: L.LeafletMouseEvent) {
       const s = stateRef.current;
-      if (!s.router || !s.travelTimes || !s.profile || s.pinnedNode !== null) return;
+      if (!s.travelTimes || s.pinnedNode !== null) return;
 
-      const node = snapToNode(e.latlng.lat, e.latlng.lng);
+      const node = await snapToNode(e.latlng.lat, e.latlng.lng);
       if (node === lastHoveredNodeRef.current || node === null) return;
       lastHoveredNodeRef.current = node;
       showDestination(node, false);
@@ -311,7 +305,7 @@ export default function MapView(): React.ReactNode {
       const touch = e.touches[0];
       longPressStartRef.current = Date.now();
       longPressTimerRef.current = setTimeout(() => {
-        if (!stateRef.current.router) return;
+        if (stateRef.current.loadingState !== 'ready') return;
         const latLng = map.containerPointToLatLng(new L.Point(touch.clientX, touch.clientY));
         setSource(latLng.lat, latLng.lng);
         longPressStartRef.current = null;

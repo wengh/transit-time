@@ -173,6 +173,9 @@ impl TransitRouter {
     /// Run profile routing over `[window_start, window_end]`. Returns an opaque
     /// handle containing the isochrone (for map rendering) and internal Pareto
     /// frontier state (for subsequent `optimal_paths` queries).
+    ///
+    /// `progress_cb` (optional): called with `(chunks_done, total_chunks)` during
+    /// the transit phase so the caller can report progress to the UI.
     pub fn compute_profile(
         &self,
         source_node: u32,
@@ -181,6 +184,7 @@ impl TransitRouter {
         date: u32,
         transfer_slack: u32,
         max_time: u32,
+        progress_cb: Option<js_sys::Function>,
     ) -> WasmProfileRouting {
         let query = profile::ProfileQuery {
             source_node,
@@ -190,8 +194,13 @@ impl TransitRouter {
             transfer_slack,
             max_time,
         };
+        let cb = progress_cb;
         WasmProfileRouting {
-            inner: profile::ProfileRouting::compute(&self.data, &query),
+            inner: profile::ProfileRouting::compute(&self.data, &query, |done, total| {
+                if let Some(ref f) = cb {
+                    let _ = f.call2(&JsValue::NULL, &JsValue::from(done), &JsValue::from(total));
+                }
+            }),
         }
     }
 

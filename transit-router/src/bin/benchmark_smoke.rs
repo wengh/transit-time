@@ -75,7 +75,7 @@ fn main() {
     let mut routing_opt = None;
     for i in 0..repeats {
         let t0 = Instant::now();
-        let routing = profile::ProfileRouting::compute(&prepared, &query);
+        let routing = profile::ProfileRouting::compute(&prepared, &query, |_, _| {});
         let dt = t0.elapsed();
         timings.push(dt);
         println!("  run {}/{}: {:.3} s", i + 1, repeats, dt.as_secs_f64());

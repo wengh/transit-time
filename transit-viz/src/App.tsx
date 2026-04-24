@@ -8,7 +8,7 @@ import Legend from './components/Legend';
 import HoverInfo from './components/HoverInfo';
 import { loadCity } from './utils/cityLoader';
 import { getCityFromUrl } from './cities';
-import { runQuery, getProfileHoverData } from './utils/router';
+import { runQuery, getProfileHoverData, snapToNode } from './utils/router';
 import { getMedianPath, flattenDisplayLines, getSortedTravelTimes } from './utils/hoverInfo';
 import type { RunQueryParams } from './utils/router';
 import { getHashParams, setHashParams } from './utils/urlHash';
@@ -28,7 +28,7 @@ function AppInner() {
       (async () => {
         const hash = getHashParams();
         try {
-          const { router, nodeCoords } = await loadCity(city, dispatch, true);
+          const { nodeCoords } = await loadCity(city, dispatch, true);
           // Restore controls
           if (hash.style) dispatch({ type: 'SET_MAP_STYLE', style: hash.style });
           if (hash.date) dispatch({ type: 'SET_DATE', value: hash.date });
@@ -38,8 +38,8 @@ function AppInner() {
           // Restore source (triggers query)
           if (hash.src) {
             const [lat, lng] = hash.src;
-            const node = router.snap_to_node(lat, lng);
-            if (node !== undefined) {
+            const node = await snapToNode(lat, lng);
+            if (node !== null) {
               const latLng: [number, number] = [nodeCoords[node * 2], nodeCoords[node * 2 + 1]];
               dispatch({ type: 'SET_SOURCE', node, latLng });
               if (hash.dst) pendingDestRef.current = { latlng: hash.dst, trip: hash.trip ?? null };
@@ -57,32 +57,35 @@ function AppInner() {
   // Restore pinned destination (and locked trip) after query completes
   useEffect(() => {
     if (state.computeStatus !== 'done' || !pendingDestRef.current) return;
-    const { router, profile, nodeCoords } = state;
-    if (!router || !profile || !nodeCoords) return;
+    const { nodeCoords } = state;
+    if (!nodeCoords) return;
     const { latlng, trip } = pendingDestRef.current;
     pendingDestRef.current = null;
-    const [lat, lng] = latlng;
-    const node = router.snap_to_node(lat, lng);
-    if (node === undefined) return;
-    const latLng: [number, number] = [nodeCoords[node * 2], nodeCoords[node * 2 + 1]];
-    const allPaths = getProfileHoverData(router, profile, node);
-    const travelTimes = getSortedTravelTimes(allPaths);
-    // Mirror MapView.showDestination: pull the analytic summary out of the
-    // Rust-side per-node arrays rather than re-aggregating from `allPaths`.
-    const tt = state.travelTimes ? state.travelTimes[node] : NaN;
-    const avgTravelTime = isFinite(tt) ? tt : null;
-    const reachableFraction = state.sampleCounts && state.totalSamples > 0
-      ? state.sampleCounts[node] / state.totalSamples
-      : null;
-    dispatch({
-      type: 'PIN_DESTINATION',
-      node,
-      latLng,
-      hoverData: { allPaths, travelTimes, avgTravelTime, reachableFraction },
-    });
-    if (trip !== null && trip < allPaths.length) {
-      dispatch({ type: 'LOCK_SAMPLE', idx: trip });
-    }
+    (async () => {
+      const [lat, lng] = latlng;
+      const node = await snapToNode(lat, lng);
+      if (node === null) return;
+      const latLng: [number, number] = [nodeCoords[node * 2], nodeCoords[node * 2 + 1]];
+      const allPaths = await getProfileHoverData(node);
+      const travelTimes = getSortedTravelTimes(allPaths);
+      // Mirror MapView.showDestination: pull the analytic summary out of the
+      // Rust-side per-node arrays rather than re-aggregating from `allPaths`.
+      const s = stateRef.current;
+      const tt = s.travelTimes ? s.travelTimes[node] : NaN;
+      const avgTravelTime = isFinite(tt) ? tt : null;
+      const reachableFraction = s.sampleCounts && s.totalSamples > 0
+        ? s.sampleCounts[node] / s.totalSamples
+        : null;
+      dispatch({
+        type: 'PIN_DESTINATION',
+        node,
+        latLng,
+        hoverData: { allPaths, travelTimes, avgTravelTime, reachableFraction },
+      });
+      if (trip !== null && trip < allPaths.length) {
+        dispatch({ type: 'LOCK_SAMPLE', idx: trip });
+      }
+    })();
   }, [state.computeStatus, dispatch]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Sync state to URL hash (only when source is selected)
@@ -106,7 +109,7 @@ function AppInner() {
   // Run query when source or params change
   const handleRunQuery = useCallback((overrides: Record<string, any> = {}) => {
     const s = stateRef.current;
-    if (!s.router || s.sourceNode === null) return;
+    if (s.loadingState !== 'ready' || s.sourceNode === null) return;
 
     const params: RunQueryParams = {
       sourceNode: s.sourceNode,
@@ -114,33 +117,30 @@ function AppInner() {
       date: overrides.date ?? s.date,
       transferSlack: overrides.transferSlack ?? s.transferSlack,
       maxTime: (overrides.maxTimeMin ?? s.maxTimeMin) * 60,
-      prevProfile: s.profile || undefined,
     };
 
     dispatch({ type: 'COMPUTING' });
-    setTimeout(() => {
-      const start = performance.now();
-      try {
-        const result = runQuery(s.router!, params);
-        dispatch({
-          type: 'QUERY_DONE',
-          travelTimes: result.travelTimes,
-          profile: result.profile,
-          sampleCounts: result.sampleCounts,
-          totalSamples: result.totalSamples,
-          timeMs: performance.now() - start,
-        });
-        dispatch({ type: 'UNPIN_DESTINATION' });
-      } catch (e) {
-        console.error(e);
-        dispatch({ type: 'QUERY_ERROR' });
-      }
-    }, 10);
+    const start = performance.now();
+    runQuery(params, (done, total) => {
+      dispatch({ type: 'COMPUTE_PROGRESS', done, total });
+    }).then((result) => {
+      dispatch({
+        type: 'QUERY_DONE',
+        travelTimes: result.travelTimes,
+        sampleCounts: result.sampleCounts,
+        totalSamples: result.totalSamples,
+        timeMs: performance.now() - start,
+      });
+      dispatch({ type: 'UNPIN_DESTINATION' });
+    }).catch((e) => {
+      console.error(e);
+      dispatch({ type: 'QUERY_ERROR' });
+    });
   }, [dispatch]);
 
   // Re-run query when source changes
   useEffect(() => {
-    if (state.sourceNode !== null && state.router) {
+    if (state.sourceNode !== null && state.loadingState === 'ready') {
       handleRunQuery();
     }
   }, [state.sourceNode, handleRunQuery]);
@@ -148,7 +148,7 @@ function AppInner() {
   // Copy info to clipboard
   const copyInfo = useCallback(() => {
     const s = stateRef.current;
-    if (!s.router || s.sourceNode === null || !s.nodeCoords) return false;
+    if (s.sourceNode === null || !s.nodeCoords) return false;
 
     const srcLat = s.nodeCoords[s.sourceNode * 2].toFixed(6);
     const srcLon = s.nodeCoords[s.sourceNode * 2 + 1].toFixed(6);

@@ -1,4 +1,4 @@
-import type { Router, Profile, HoverPath } from '../utils/router';
+import type { HoverPath } from '../utils/router';
 import type { City } from '../cities';
 import { DEFAULT_MAP_STYLE } from '../utils/mapStyles';
 
@@ -15,18 +15,18 @@ export interface AppState {
   maxTimeMin: number;
   transferSlack: number;
 
-  // Router state
-  router: Router | null;
+  // Router state (WASM lives in worker; main thread caches coords + colors)
   nodeCoords: Float32Array | null;
+  routeColors: string[];
   sourceNode: number | null;
   sourceLatLng: [number, number] | null;
 
   // Query results
   travelTimes: Float32Array | null;
-  profile: Profile | null;
   sampleCounts: Uint32Array | null;
   totalSamples: number;
   computeStatus: 'idle' | 'computing' | 'done' | 'error';
+  computeProgress: { done: number; total: number } | null;
   computeTimeMs: number;
   patternCount: number;
   nodeCount: number;
@@ -60,7 +60,7 @@ export type Action =
   | { type: 'START_LOADING'; city: City }
   | { type: 'LOADING_PROGRESS'; progress: number }
   | { type: 'START_INITIALIZING' }
-  | { type: 'CITY_LOADED'; router: Router; nodeCoords: Float32Array; nodeCount: number; stopCount: number }
+  | { type: 'CITY_LOADED'; nodeCoords: Float32Array; nodeCount: number; stopCount: number; routeColors: string[] }
   | { type: 'LOAD_ERROR' }
   | { type: 'CHANGE_CITY' }
   | { type: 'SET_SOURCE'; node: number; latLng: [number, number] }
@@ -71,7 +71,8 @@ export type Action =
   | { type: 'SET_SLACK'; value: number }
   | { type: 'SET_PATTERN_COUNT'; count: number }
   | { type: 'COMPUTING' }
-  | { type: 'QUERY_DONE'; travelTimes: Float32Array; profile: Profile; sampleCounts: Uint32Array; totalSamples: number; timeMs: number }
+  | { type: 'COMPUTE_PROGRESS'; done: number; total: number }
+  | { type: 'QUERY_DONE'; travelTimes: Float32Array; sampleCounts: Uint32Array; totalSamples: number; timeMs: number }
   | { type: 'QUERY_ERROR' }
   | { type: 'PIN_DESTINATION'; node: number; latLng: [number, number]; hoverData: HoverData }
   | { type: 'UNPIN_DESTINATION' }
@@ -96,17 +97,17 @@ export const initialState: AppState = {
   transferSlack: 60,
 
   // Router state
-  router: null,
   nodeCoords: null,
+  routeColors: [],
   sourceNode: null,
   sourceLatLng: null,
 
   // Query results
   travelTimes: null,
-  profile: null,
   sampleCounts: null,
   totalSamples: 1,
   computeStatus: 'idle',
+  computeProgress: null,
   computeTimeMs: 0,
   patternCount: 0,
   nodeCount: 0,
@@ -135,18 +136,18 @@ export function reducer(state: AppState, action: Action): AppState {
       return {
         ...state,
         loadingState: 'ready',
-        router: action.router,
         nodeCoords: action.nodeCoords,
+        routeColors: action.routeColors,
         nodeCount: action.nodeCount,
         stopCount: action.stopCount,
         sourceNode: null,
         sourceLatLng: null,
         travelTimes: null,
-        profile: null,
         pinnedNode: null,
         pinnedLatLng: null,
         hoverData: null,
         computeStatus: 'idle',
+        computeProgress: null,
       };
     case 'LOAD_ERROR':
       return { ...state, loadingState: 'idle', currentCity: null };
@@ -155,10 +156,9 @@ export function reducer(state: AppState, action: Action): AppState {
         ...state,
         loadingState: 'idle',
         currentCity: null,
-        router: null,
         nodeCoords: null,
+        routeColors: [],
         travelTimes: null,
-        profile: null,
         sourceNode: null,
         sourceLatLng: null,
         pinnedNode: null,
@@ -180,11 +180,13 @@ export function reducer(state: AppState, action: Action): AppState {
     case 'SET_PATTERN_COUNT':
       return { ...state, patternCount: action.count };
     case 'COMPUTING':
-      return { ...state, computeStatus: 'computing' };
+      return { ...state, computeStatus: 'computing', computeProgress: null };
+    case 'COMPUTE_PROGRESS':
+      return { ...state, computeProgress: { done: action.done, total: action.total } };
     case 'QUERY_DONE':
-      return { ...state, travelTimes: action.travelTimes, profile: action.profile, sampleCounts: action.sampleCounts, totalSamples: action.totalSamples, computeStatus: 'done', computeTimeMs: action.timeMs };
+      return { ...state, travelTimes: action.travelTimes, sampleCounts: action.sampleCounts, totalSamples: action.totalSamples, computeStatus: 'done', computeTimeMs: action.timeMs, computeProgress: null };
     case 'QUERY_ERROR':
-      return { ...state, computeStatus: 'error' };
+      return { ...state, computeStatus: 'error', computeProgress: null };
     case 'PIN_DESTINATION':
       return { ...state, pinnedNode: action.node, pinnedLatLng: action.latLng, hoverData: action.hoverData };
     case 'UNPIN_DESTINATION':

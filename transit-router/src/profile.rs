@@ -123,7 +123,8 @@ pub enum SegmentKind {
 /// without touching callers in `lib.rs` or tests.
 pub trait ProfileRouter: Sized {
     /// Run profile routing from `query.source_node` over the departure window.
-    fn compute(data: &PreparedData, query: &ProfileQuery) -> Self;
+    /// `progress` is called with `(entries_done, total_entries)` during phase 2.
+    fn compute(data: &PreparedData, query: &ProfileQuery, progress: impl FnMut(usize, usize)) -> Self;
 
     /// Per-node isochrone for map rendering.
     fn isochrone(&self) -> &Isochrone;
@@ -335,7 +336,11 @@ pub struct ProfileRouting {
 }
 
 impl ProfileRouter for ProfileRouting {
-    fn compute(data: &PreparedData, query: &ProfileQuery) -> Self {
+    fn compute(
+        data: &PreparedData,
+        query: &ProfileQuery,
+        mut progress: impl FnMut(usize, usize),
+    ) -> Self {
         assert!(
             query.window_start <= query.window_end,
             "Time window must have non-negative duration"
@@ -441,6 +446,10 @@ impl ProfileRouter for ProfileRouting {
 
         // ── Phase 2: main profile routing pass ───────────────────────────────
 
+        // Count total chunks for progress reporting
+        let total_entries = initial_transit_entries.len();
+        let mut entries_done = 0;
+
         // Iterate over initial transit entries in descending home departure order to guarantee that existing entries are never dominated.
         // Process all entries with the same home departure together as multi source Dijkstra search
         for chunk in initial_transit_entries
@@ -542,6 +551,8 @@ impl ProfileRouter for ProfileRouting {
                     },
                 );
             }
+            entries_done += chunk.len();
+            progress(entries_done, total_entries);
         }
 
         let phase2_ms = t_phase2.elapsed().as_secs_f64() * 1e3;

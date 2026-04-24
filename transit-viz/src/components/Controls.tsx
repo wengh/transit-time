@@ -1,7 +1,7 @@
 import React, { useState, useRef } from 'react';
 import { useAppState } from '../state/AppContext';
 import { formatTime, formatSlack, dateToYYYYMMDD } from '../utils/format';
-import { freeProfile } from '../utils/router';
+import { freeProfile, numPatternsForDate } from '../utils/router';
 import { MAP_STYLES } from '../utils/mapStyles';
 import { LegendContent } from './Legend';
 
@@ -58,7 +58,7 @@ interface ControlsProps {
 
 export default function Controls({ onRunQuery, onCopy }: ControlsProps): React.ReactNode {
   const { state, dispatch } = useAppState();
-  const { loadingState, mapStyle, departureTime, date, maxTimeMin, transferSlack, computeStatus, computeTimeMs, patternCount, nodeCount, stopCount, sourceNode, showCopiedMessage } = state;
+  const { loadingState, mapStyle, departureTime, date, maxTimeMin, transferSlack, computeStatus, computeProgress, computeTimeMs, patternCount, nodeCount, stopCount, sourceNode, showCopiedMessage } = state;
 
   const [collapsed, setCollapsed] = useState(() => window.innerWidth < 600);
 
@@ -67,7 +67,9 @@ export default function Controls({ onRunQuery, onCopy }: ControlsProps): React.R
   const statusText = showCopiedMessage
     ? 'Copied!'
     : computeStatus === 'computing'
-      ? 'Computing...'
+      ? computeProgress
+        ? `Computing... ${Math.round((computeProgress.done / computeProgress.total) * 100)}%`
+        : 'Computing...'
       : computeStatus === 'done'
         ? `Done. Spent ${Math.round(computeTimeMs)} ms.`
         : computeStatus === 'error'
@@ -88,15 +90,14 @@ export default function Controls({ onRunQuery, onCopy }: ControlsProps): React.R
 
   function handleDateChange(e: React.ChangeEvent<HTMLInputElement>) {
     dispatch({ type: 'SET_DATE', value: e.target.value });
-    if (state.router) {
-      const count = state.router.num_patterns_for_date(dateToYYYYMMDD(e.target.value));
+    numPatternsForDate(dateToYYYYMMDD(e.target.value)).then((count) => {
       dispatch({ type: 'SET_PATTERN_COUNT', count });
-    }
+    });
     onRunQuery({ date: e.target.value });
   }
 
   function handleChangeCity() {
-    freeProfile(state.profile);
+    freeProfile();
     dispatch({ type: 'CHANGE_CITY' });
     history.replaceState(null, '', import.meta.env.BASE_URL);
   }

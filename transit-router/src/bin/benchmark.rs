@@ -24,5 +24,5 @@ fn main() {
         max_time: 3600,
     };
 
-    let _result = ProfileRouting::compute(&prepared, &query);
+    let _result = ProfileRouting::compute(&prepared, &query, |_, _| {});
 }
