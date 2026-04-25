@@ -1,4 +1,4 @@
-.PHONY: dev wasm clean data-all flamegraph
+.PHONY: dev wasm clean data-all flamegraph sizes
 
 # Source files for change detection
 ROUTER_SRC := $(shell find transit-router/src -name '*.rs')
@@ -23,6 +23,9 @@ dev: $(WASM_OUT) data-all
 # CPU flamegraph of profile routing (override via env: OUT, CITY, LAT, LON, RUNS, etc.)
 flamegraph:
 	./scripts/samply.sh
+
+sizes:
+	./scripts/sizes.py
 
 clean:
 	cargo clean
