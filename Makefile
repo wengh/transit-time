@@ -1,4 +1,4 @@
-.PHONY: dev wasm clean data-all flamegraph sizes
+.PHONY: dev wasm clean data-all data data-some flamegraph sizes
 
 # Source files for change detection
 ROUTER_SRC := $(shell find transit-router/src -name '*.rs')
@@ -16,8 +16,33 @@ data-all:
 		--output-dir transit-viz/public/data/ \
 		--cache-dir cache
 
-# Full dev setup: build everything then start dev server
-dev: $(WASM_OUT) data-all
+# Build data for one city, e.g. `make data CITY=montreal`
+data:
+	@test -n "$(CITY)" || (echo "Usage: make data CITY=montreal" && exit 1)
+	cargo run --release -p transit-prep --bin transit-prep -- prep \
+		--city-file cities/$(CITY).jsonc \
+		--output transit-viz/public/data/$(CITY).bin \
+		--cache-dir cache
+
+# Build data for a selected set of cities, e.g. `make data-some CITIES='montreal boston'`
+data-some:
+	@test -n "$(CITIES)" || (echo "Usage: make data-some CITIES='montreal boston'" && exit 1)
+	for city in $(CITIES); do \
+		cargo run --release -p transit-prep --bin transit-prep -- prep \
+			--city-file cities/$$city.jsonc \
+			--output transit-viz/public/data/$$city.bin \
+			--cache-dir cache || exit 1; \
+	done
+
+# Dev setup: build CITY=..., CITIES='...', or everything by default
+dev: $(WASM_OUT)
+	@if [ -n "$(CITY)" ]; then \
+		$(MAKE) data CITY="$(CITY)"; \
+	elif [ -n "$(CITIES)" ]; then \
+		$(MAKE) data-some CITIES="$(CITIES)"; \
+	else \
+		$(MAKE) data-all; \
+	fi
 	cd transit-viz && npm install --silent && npm run dev -- --port 5173
 
 # CPU flamegraph of profile routing (override via env: OUT, CITY, LAT, LON, RUNS, etc.)
