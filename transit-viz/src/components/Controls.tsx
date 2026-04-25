@@ -155,10 +155,13 @@ function DualRangeSlider({ windowStart, windowEnd, maxDuration, onChange, onComm
 interface ControlsProps {
   onRunQuery: (overrides?: Record<string, any>) => void;
   onCopy: () => void;
+  isFront: boolean;
+  onActivate: () => void;
 }
 
-export default function Controls({ onRunQuery, onCopy }: ControlsProps): React.ReactNode {
+export default function Controls({ onRunQuery, onCopy, isFront, onActivate }: ControlsProps): React.ReactNode {
   const { state, dispatch } = useAppState();
+  const justActivatedRef = useRef(false);
   const { loadingState, mapStyle, windowStart, windowEnd, date, maxTimeMin, transferSlack, computeStatus, computeProgress, computeTimeMs, patternCount, nodeCount, stopCount, sourceNode, showCopiedMessage } = state;
 
   const [collapsed, setCollapsed] = useState(() => window.innerWidth < 600);
@@ -233,9 +236,24 @@ export default function Controls({ onRunQuery, onCopy }: ControlsProps): React.R
   return (
     <div
       id="controls"
+      onPointerDownCapture={(e) => {
+        if (!isFront) {
+          justActivatedRef.current = true;
+          onActivate();
+          e.stopPropagation();
+          e.preventDefault();
+        }
+      }}
+      onClickCapture={(e) => {
+        if (justActivatedRef.current) {
+          justActivatedRef.current = false;
+          e.stopPropagation();
+          e.preventDefault();
+        }
+      }}
       className={[
         // positioning
-        'absolute z-[1000]',
+        `absolute ${isFront ? 'z-[1001]' : 'z-[1000]'}`,
         // desktop: top-right panel
         'top-2.5 right-2.5',
         // sizing

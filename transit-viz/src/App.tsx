@@ -1,4 +1,4 @@
-import { useEffect, useCallback, useRef } from 'react';
+import { useEffect, useCallback, useRef, useState } from 'react';
 import { AppProvider, useAppState } from './state/AppContext';
 import CitySelect from './components/CitySelect';
 import LoadingOverlay from './components/LoadingOverlay';
@@ -18,6 +18,8 @@ function AppInner() {
   const { state, dispatch } = useAppState();
   const stateRef = useRef(state);
   stateRef.current = state;
+
+  const [frontPanel, setFrontPanel] = useState<'controls' | 'hoverInfo'>('hoverInfo');
 
   const pendingDestRef = useRef<{ latlng: [number, number]; trip: number | null } | null>(null);
 
@@ -228,9 +230,14 @@ function AppInner() {
         onCopy={() => {
           if (stateRef.current) copyInfo();
         }}
+        isFront={frontPanel === 'controls'}
+        onActivate={() => setFrontPanel('controls')}
       />
       <Legend />
-      <HoverInfo />
+      <HoverInfo
+        isFront={frontPanel === 'hoverInfo'}
+        onActivate={() => setFrontPanel('hoverInfo')}
+      />
     </>
   );
 }

@@ -358,11 +358,17 @@ function ChartHintButton(): React.ReactNode {
 
 // ─── component ────────────────────────────────────────────────────────────────
 
-export default function HoverInfo(): React.ReactNode {
+interface HoverInfoProps {
+  isFront: boolean;
+  onActivate: () => void;
+}
+
+export default function HoverInfo({ isFront, onActivate }: HoverInfoProps): React.ReactNode {
   const { state, dispatch } = useAppState();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const chartInfoRef = useRef<ChartInfo | null>(null);
   const [hidden, setHidden] = useState(false);
+  const justActivatedRef = useRef(false);
 
   const { hoverData, maxTimeMin, pinnedNode, selectedSampleIdx, lockedSampleIdx } = state;
 
@@ -406,7 +412,21 @@ export default function HoverInfo(): React.ReactNode {
       <button
         id="hover-info"
         onClick={() => setHidden(false)}
-        className="absolute bottom-5 right-2.5 z-[1000]
+        onPointerDown={(e) => {
+          if (!isFront) {
+            justActivatedRef.current = true;
+            onActivate();
+            e.preventDefault();
+          }
+        }}
+        onClickCapture={(e) => {
+          if (justActivatedRef.current) {
+            justActivatedRef.current = false;
+            e.stopPropagation();
+            e.preventDefault();
+          }
+        }}
+        className={`absolute bottom-5 right-2.5 ${isFront ? 'z-[1001]' : 'z-[1000]'}
           bg-zinc-900 dark:bg-zinc-900
           [@media(prefers-color-scheme:light)]:bg-white
           px-3 py-1.5 rounded-lg shadow-[0_2px_12px_rgba(0,0,0,0.5)]
@@ -415,7 +435,7 @@ export default function HoverInfo(): React.ReactNode {
           hover:text-zinc-200 dark:hover:text-zinc-200
           [@media(prefers-color-scheme:light)]:hover:text-zinc-700
           max-sm:bottom-auto max-sm:top-2.5 max-sm:left-auto max-sm:right-2.5
-          cursor-pointer"
+          cursor-pointer`}
       >
         Details ▴
       </button>
@@ -472,14 +492,29 @@ export default function HoverInfo(): React.ReactNode {
   return (
     <div
       id="hover-info"
-      className="absolute bottom-5 right-2.5 z-[1000]
+      onPointerDownCapture={(e) => {
+        if (!isFront) {
+          justActivatedRef.current = true;
+          onActivate();
+          e.stopPropagation();
+          e.preventDefault();
+        }
+      }}
+      onClickCapture={(e) => {
+        if (justActivatedRef.current) {
+          justActivatedRef.current = false;
+          e.stopPropagation();
+          e.preventDefault();
+        }
+      }}
+      className={`absolute bottom-5 right-2.5 ${isFront ? 'z-[1001]' : 'z-[1000]'}
         bg-zinc-900 dark:bg-zinc-900
         [@media(prefers-color-scheme:light)]:bg-white
         p-3 rounded-lg shadow-[0_2px_12px_rgba(0,0,0,0.5)]
         min-w-[220px] max-w-[320px]
         flex flex-col
         max-sm:bottom-auto max-sm:top-2.5 max-sm:left-2.5 max-sm:right-2.5
-        max-sm:max-w-none max-sm:max-h-[calc(100vh-90px)] max-sm:overflow-y-auto"
+        max-sm:max-w-none max-sm:max-h-[calc(100vh-90px)] max-sm:overflow-y-auto`}
     >
       <div id="hover-info-details" className="overflow-y-auto max-h-[30vh]">
         {displayPath && displayPath.segments.length > 0 && (
