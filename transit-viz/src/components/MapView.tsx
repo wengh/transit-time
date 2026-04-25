@@ -8,7 +8,11 @@ import { getHashParams, setHashParams } from '../utils/urlHash';
 import { getSortedTravelTimes } from '../utils/hoverInfo';
 import { resolveMapStyle, DEFAULT_MAP_STYLE } from '../utils/mapStyles';
 
-const isTouchDevice = typeof window !== 'undefined' && ('ontouchstart' in window || navigator.maxTouchPoints > 0);
+const isTouchDevice = typeof window !== 'undefined' && (
+  navigator.userAgentData?.mobile ??
+  (/Android.*Mobile|iPhone|iPod/i.test(navigator.userAgent) ||
+    window.matchMedia('(pointer: coarse) and (hover: none)').matches)
+);
 
 export default function MapView(): React.ReactNode {
   const { state, dispatch } = useAppState();
