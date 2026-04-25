@@ -80,6 +80,7 @@ pub struct JaggedArray<T> {
 impl<T> std::ops::Index<u32> for JaggedArray<T> {
     type Output = [T];
 
+    #[inline(always)]
     fn index(&self, index: u32) -> &Self::Output {
         let start = self.offsets[index as usize] as usize;
         let end = self.offsets[index as usize + 1] as usize;

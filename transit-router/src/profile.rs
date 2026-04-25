@@ -211,6 +211,7 @@ struct NodeFrontier {
 }
 
 impl NodeFrontier {
+    #[inline(always)]
     fn has_head(&self) -> bool {
         self.head.entry.prev != INVALID_PREV
     }
@@ -230,6 +231,7 @@ struct Frontier {
 impl Frontier {
     /// Insert `entry` as the new head of `node_id`'s chain. Any existing
     /// head is evicted into the arena and becomes the new sibling.
+    #[inline(always)]
     fn push(&mut self, node_id: u32, entry: Entry) {
         let nf = &mut self.nodes[node_id as usize];
         let sibling = if nf.has_head() {
@@ -246,6 +248,7 @@ impl Frontier {
         };
     }
 
+    #[inline(always)]
     fn head(&self, node_id: u32) -> Option<&Entry> {
         let nf = &self.nodes[node_id as usize];
         if nf.has_head() {
@@ -255,6 +258,7 @@ impl Frontier {
         }
     }
 
+    #[inline(always)]
     fn head_next(&self, node_id: u32) -> Option<&Entry> {
         let nf = &self.nodes[node_id as usize];
         if nf.head.sibling_entry_idx != LAST_ENTRY {
@@ -264,6 +268,7 @@ impl Frontier {
         }
     }
 
+    #[inline(always)]
     fn head_mut(&mut self, node_id: u32) -> Option<&mut Entry> {
         let nf = &mut self.nodes[node_id as usize];
         if nf.has_head() {
@@ -839,6 +844,7 @@ impl ProfileRouting {
     }
 }
 
+#[inline(always)]
 fn relax(
     frontier: &mut Frontier,
     queue: &mut RadixHeapMap<Reverse<u16>, u32>,
