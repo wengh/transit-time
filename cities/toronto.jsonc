@@ -23,6 +23,5 @@
         "subway",
         "rail",
         "bus"
-    ],
-    "allow_stale": false
+    ]
 }

@@ -90,6 +90,7 @@ pub struct GtfsData {
     /// (YYYYMMDD). None if feed_info.txt or its feed_end_date column is absent.
     /// Only meaningful pre-merge; after merging feeds it reflects whichever
     /// feed was the merge base and should not be relied on.
+    pub feed_start_date: Option<u32>,
     pub feed_end_date: Option<u32>,
 }
 
@@ -608,28 +609,28 @@ pub fn parse_gtfs(path: &Path, bbox: (f64, f64, f64, f64)) -> Result<GtfsData> {
 
     // Parse feed_info.txt — optional file, optional column. Read feed_end_date
     // by header-index lookup so a missing column doesn't error.
+    let mut feed_start_date: Option<u32> = None;
     let mut feed_end_date: Option<u32> = None;
     if let Some(fi_csv) = read_file_from_zip(&mut archive, "feed_info.txt")? {
-        let mut rdr = csv::ReaderBuilder::new()
-            .flexible(true)
-            .trim(csv::Trim::All)
-            .from_reader(fi_csv.as_bytes());
-        if let Ok(headers) = rdr.headers() {
-            let col = headers.iter().position(|h| h == "feed_end_date");
-            if let Some(col) = col {
-                for result in rdr.records() {
-                    if let Ok(rec) = result {
-                        if let Some(v) = rec.get(col) {
-                            if let Ok(d) = v.parse::<u32>() {
-                                if d != 0 {
-                                    feed_end_date = Some(d);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        let get = |col_name: &str| {
+            let mut rdr = csv::ReaderBuilder::new()
+                .flexible(true)
+                .trim(csv::Trim::All)
+                .from_reader(fi_csv.as_bytes());
+            let Some(headers) = rdr.headers().ok() else {
+                return None;
+            };
+            let col = headers.iter().position(|h| h == col_name);
+            let Some(col) = col else {
+                return None;
+            };
+            rdr.records()
+                .filter_map(|r| r.ok())
+                .filter_map(|rec| rec.get(col).map(|v| v.trim().parse::<u32>().ok()).flatten())
+                .next()
+        };
+        feed_start_date = get("feed_start_date");
+        feed_end_date = get("feed_end_date");
     }
 
     // Parse frequencies
@@ -700,6 +701,7 @@ pub fn parse_gtfs(path: &Path, bbox: (f64, f64, f64, f64)) -> Result<GtfsData> {
         services: services.into_values().collect(),
         frequencies,
         shapes,
+        feed_start_date,
         feed_end_date,
     })
 }
