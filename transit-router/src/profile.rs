@@ -949,7 +949,7 @@ impl<'a> ProfileQueryContext<'a> {
         //
         // prev_departure starts at -1 (exclusive lower bound) so the first
         // segment correctly includes t = 0.
-        let mut numerator: u64 = 0;
+        let mut numerator: u32 = 0;
         let mut denominator: u32 = 0;
         let mut prev_departure: i32 = -1;
 
@@ -970,23 +970,23 @@ impl<'a> ProfileQueryContext<'a> {
             denominator += reachable;
             // Sum of travel(t) over the reachable t's:
             //   reachable * travel_min + (0 + 1 + … + reachable − 1)
-            numerator += reachable as u64 * travel as u64;
-            numerator += (reachable as u64) * (reachable as u64 - 1) / 2;
+            numerator += reachable * travel;
+            numerator += reachable * (reachable - 1) / 2;
 
             prev_departure = departure as i32;
         }
 
         if let Some(walk) = walk_time {
             // Walk fills every t not claimed by a transit entry above.
-            numerator += walk as u64 * (window_length - denominator) as u64;
+            numerator += walk as u32 * (window_length - denominator);
             denominator = window_length;
         }
 
         // Quantize fraction over u16::MAX. `denominator <= window_length` by
         // construction, so the ratio fits in u16 without saturation.
-        let fraction_q = (denominator as u64 * u16::MAX as u64 / window_length as u64) as u16;
+        let fraction_q = (denominator * u16::MAX as u32 / window_length) as u16;
         let mean = if denominator > 0 {
-            (numerator / denominator as u64) as u16
+            (numerator / denominator) as u16
         } else {
             0
         };
