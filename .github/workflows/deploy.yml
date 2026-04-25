@@ -3,6 +3,9 @@ name: Deploy to Cloudflare Pages
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - 'LICENSE'
   schedule:
     # Rebuild weekly on Sunday at 03:00 UTC to pick up fresh GTFS feeds
     - cron: '0 3 * * 0'
