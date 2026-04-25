@@ -160,15 +160,16 @@ pub struct PatternData {
 pub struct PreparedData {
     pub nodes: Vec<NodeData>,
     pub stops: Vec<StopData>,
-    pub stop_to_node: Vec<u32>, // stop_index -> node_index
     pub route_names: Vec<String>,
     pub route_colors: Vec<Option<Color>>,
     pub patterns: Vec<PatternData>,
     pub num_nodes: usize,
     pub num_edges: usize,
+    /// Binary-format invariant (v11): the first `num_stops` nodes are the
+    /// transit-stop-bearing nodes, and `stop_idx == node_idx` for every stop.
+    /// So `stop_to_node(s) = s` and `node_to_stop(n) = (n < num_stops).then_some(n)`.
     pub num_stops: usize,
     pub adj: JaggedArray<(u32, u16)>,
-    pub node_to_stop: Vec<u32>, // node_index -> stop_index or u32::MAX if no stop
     /// Per-leg point-count prefix sum (length = num_legs + 1). Slice
     /// `leg_shapes_lat[offsets[i]..offsets[i+1]]` to get leg `i`'s lats.
     pub leg_shape_offsets: Vec<u32>,
@@ -185,6 +186,21 @@ pub struct PreparedData {
     pub coord_lon_scale: f64,
     /// Spatial grid index: (lat_cell, lon_cell) -> [node_indices]
     pub node_grid: std::collections::HashMap<(i32, i32), Vec<u32>>,
+}
+
+impl PreparedData {
+    /// Stop index (== node index) if `node_idx` carries a transit stop, else `None`.
+    #[inline]
+    pub fn node_to_stop(&self, node_idx: u32) -> Option<u32> {
+        ((node_idx as usize) < self.num_stops).then_some(node_idx)
+    }
+
+    /// Node index for a given stop index. Identity under the v11 layout.
+    #[inline]
+    pub fn stop_to_node(&self, stop_idx: u32) -> u32 {
+        debug_assert!((stop_idx as usize) < self.num_stops);
+        stop_idx
+    }
 }
 
 pub fn load(buf: &[u8]) -> Result<PreparedData, String> {
@@ -204,13 +220,12 @@ pub fn load_with_stats(buf: &[u8]) -> Result<(PreparedData, LoadStats), String> 
     }
     pos += 4;
     let version = read_u32(&buf, &mut pos);
-    if version != 10 {
+    if version != 11 {
         return Err(format!("Unsupported version {}", version));
     }
     let num_nodes = read_u32(&buf, &mut pos) as usize;
     let num_edges = read_u32(&buf, &mut pos) as usize;
     let num_stops = read_u32(&buf, &mut pos) as usize;
-    let num_stop_to_node = read_u32(&buf, &mut pos) as usize;
     let num_patterns = read_u32(&buf, &mut pos) as usize;
     let num_route_names = read_u32(&buf, &mut pos) as usize;
     let num_shapes = read_u32(&buf, &mut pos) as usize;
@@ -294,24 +309,8 @@ pub fn load_with_stats(buf: &[u8]) -> Result<(PreparedData, LoadStats), String> 
     binary_sections.push(("stops", pos - pos_before));
     timings.push(("parse stops", t0.elapsed()));
 
-    // Stop-to-node mapping
-    let t0 = Instant::now();
-    let pos_before = pos;
-    let mut node_to_stop = vec![u32::MAX; num_nodes];
-    let mut stop_to_node = vec![u32::MAX; num_stops];
-    for _ in 0..num_stop_to_node {
-        let stop_idx = read_u32(&buf, &mut pos);
-        let node_idx = read_u32(&buf, &mut pos);
-        let prev = node_to_stop[node_idx as usize];
-        debug_assert!(
-            prev == u32::MAX,
-            "Node {node_idx} already mapped to {prev:?}"
-        );
-        node_to_stop[node_idx as usize] = stop_idx;
-        stop_to_node[stop_idx as usize] = node_idx;
-    }
-    binary_sections.push(("stop_to_node", pos - pos_before));
-    timings.push(("parse stop_to_node", t0.elapsed()));
+    // (v11) Stop↔node mapping is implicit: stops live at node indices
+    // [0, num_stops), with stop_idx == node_idx.
 
     // Route names
     let t0 = Instant::now();
@@ -574,12 +573,6 @@ pub fn load_with_stats(buf: &[u8]) -> Result<(PreparedData, LoadStats), String> 
         .sum();
     memory_sections.push(("stops", stops_mem));
 
-    // stop_to_node
-    memory_sections.push(("stop_to_node", stop_to_node.capacity() * 4));
-
-    // node_to_stop
-    memory_sections.push(("node_to_stop", node_to_stop.capacity() * 4));
-
     // route_names
     let rn_mem: usize = route_names
         .iter()
@@ -639,7 +632,6 @@ pub fn load_with_stats(buf: &[u8]) -> Result<(PreparedData, LoadStats), String> 
         ("nodes", num_nodes),
         ("edges", num_edges),
         ("stops", num_stops),
-        ("stop_to_node", num_stop_to_node),
         ("patterns", num_patterns),
         ("route_names", num_route_names),
         ("leg_shapes", num_shapes),
@@ -660,7 +652,6 @@ pub fn load_with_stats(buf: &[u8]) -> Result<(PreparedData, LoadStats), String> 
     let data = PreparedData {
         nodes,
         stops,
-        stop_to_node,
         route_names,
         route_colors,
         patterns,
@@ -668,7 +659,6 @@ pub fn load_with_stats(buf: &[u8]) -> Result<(PreparedData, LoadStats), String> 
         num_edges,
         num_stops,
         adj,
-        node_to_stop,
         leg_shape_offsets,
         leg_shapes_lat,
         leg_shapes_lon,

@@ -17,19 +17,25 @@ pub struct PreparedData {
     pub leg_shapes: Vec<((u32, u32, u32), Vec<(f64, f64)>)>,
 }
 
-// Binary format v10:
+// Binary format v11:
 // Header:
 //   magic: [u8; 4] = "TRNS"
-//   version: u32 = 10
+//   version: u32 = 11
 //   num_nodes: u32
 //   num_edges: u32
 //   num_stops: u32
-//   num_stop_to_node: u32
 //   num_patterns: u32
 //   num_route_names: u32
 //   num_leg_shapes: u32
 //
-// Nodes section (SFC-sorted by Morton curve, 32-bit fixed-point 0.1 m resolution):
+// Node ordering invariant (v11): the first `num_stops` nodes are exactly the
+// transit-stop-bearing nodes, with `stop_idx == node_idx` for every stop.
+// Non-stop nodes follow, Morton-sorted. This lets us drop the explicit
+// stop_to_node mapping: `node_to_stop(n) = (n < num_stops).then_some(n)` and
+// `stop_to_node(s) = s`.
+//
+// Nodes section (Morton-sorted within each of the two blocks, 32-bit fixed-
+// point 0.1 m resolution):
 //   min_lat: f64, min_lon: f64      // bbox origin
 //   lat_scale: f64, lon_scale: f64  // units per degree (1 unit = 0.1 m)
 //   pco_len: u32, pco_data: [u8]    // PCO u32 lat offsets
@@ -40,11 +46,9 @@ pub struct PreparedData {
 //   pco_len: u32, pco_data: [u8]  // PCO u32: delta = u-v
 //   pco_len: u32, pco_data: [u8]  // PCO u32: walk_time seconds (1.4 m/s, min 1)
 //
-// Stops section: [Stop; num_stops]
+// Stops section: [Stop; num_stops], written in new_stop_idx order so that
+// stops[s] is the stop residing at node s.
 //   lat: f64, lon: f64, name_len: u32, name: [u8; name_len]
-//
-// Stop-to-node mapping (node indices are new SFC-sorted indices):
-//   [(stop_idx: u32, node_idx: u32); num_stop_to_node]
 //
 // Route names: [name_len: u32, name: [u8; name_len]; num_route_names]
 //
@@ -133,15 +137,58 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
         morton_encode(x, y)
     };
 
+    // Mark which old node indices carry a transit stop (and which old stop).
+    // Stop-bearing nodes are pulled to the front of the array so that
+    // `new_node_idx < num_stops` iff the node is a transit stop, and
+    // `stop_idx == node_idx` for those slots.
+    let num_stops = data.stops.len();
+    let mut old_node_to_old_stop: Vec<u32> = vec![u32::MAX; num_nodes];
+    for &(si, ni) in &data.stop_to_node {
+        debug_assert_eq!(
+            old_node_to_old_stop[ni as usize],
+            u32::MAX,
+            "node {ni} already mapped to a stop"
+        );
+        old_node_to_old_stop[ni as usize] = si;
+    }
+
     // new_order[new_idx] = old_idx
+    // Sort key: (stop-bucket, Morton). Bucket 0 is stop-bearing nodes, bucket 1
+    // everything else. Within a bucket, Morton gives spatial locality.
     let mut new_order: Vec<u32> = (0..num_nodes as u32).collect();
-    new_order.sort_unstable_by_key(|&i| node_morton(i as usize));
+    new_order.sort_unstable_by_key(|&i| {
+        let bucket: u32 = if old_node_to_old_stop[i as usize] != u32::MAX {
+            0
+        } else {
+            1
+        };
+        (bucket, node_morton(i as usize))
+    });
 
     // old_to_new[old_idx] = new_idx
     let mut old_to_new = vec![0u32; num_nodes];
     for (new_idx, &old_idx) in new_order.iter().enumerate() {
         old_to_new[old_idx as usize] = new_idx as u32;
     }
+
+    // old_to_new_stop[old_stop_idx] = new_stop_idx = new_node_idx
+    // (the new node index happens to be < num_stops by construction).
+    let mut old_to_new_stop: Vec<u32> = vec![u32::MAX; num_stops];
+    for &(si, old_ni) in &data.stop_to_node {
+        let new_ni = old_to_new[old_ni as usize];
+        debug_assert!(
+            (new_ni as usize) < num_stops,
+            "stop-bearing node landed at {new_ni} outside [0, {num_stops})"
+        );
+        old_to_new_stop[si as usize] = new_ni;
+    }
+    debug_assert!(
+        old_to_new_stop.iter().all(|&s| (s as usize) < num_stops),
+        "every stop must map to a slot in [0, num_stops)"
+    );
+
+    // Helper: remap a stop index reference from old to new numbering.
+    let remap_stop = |old: u32| -> u32 { old_to_new_stop[old as usize] };
 
     // Relabel edges: use new node indices, canonicalize u > v.
     // Walk time is precomputed once here (1.4 m/s walking speed, min 1 second).
@@ -163,22 +210,22 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
         .collect();
     canon_edges.sort_unstable_by_key(|&(u, delta, _)| (u, delta));
 
-    // Relabel stop_to_node: update node indices
-    let relabeled_stn: Vec<(u32, u32)> = data
-        .stop_to_node
-        .iter()
-        .map(|&(si, ni)| (si, old_to_new[ni as usize]))
-        .collect();
+    // new_stop_order[new_stop_idx] = old_stop_idx. This is the inverse of
+    // old_to_new_stop and lets us iterate stops in their new order when
+    // writing the stops section.
+    let mut new_stop_order: Vec<u32> = vec![u32::MAX; num_stops];
+    for (old_s, &new_s) in old_to_new_stop.iter().enumerate() {
+        new_stop_order[new_s as usize] = old_s as u32;
+    }
 
     let mut buf: Vec<u8> = Vec::new();
 
     // Header
     buf.extend_from_slice(b"TRNS");
-    write_u32(&mut buf, 10); // version
+    write_u32(&mut buf, 11); // version
     write_u32(&mut buf, num_nodes as u32);
     write_u32(&mut buf, data.edges.len() as u32);
     write_u32(&mut buf, data.stops.len() as u32);
-    write_u32(&mut buf, relabeled_stn.len() as u32);
     write_u32(&mut buf, data.patterns.len() as u32);
     write_u32(&mut buf, data.route_names.len() as u32);
     write_u32(&mut buf, data.leg_shapes.len() as u32);
@@ -212,19 +259,15 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
         write_pco_u32(&mut buf, &walk_times);
     }
 
-    // Stops
-    for stop in &data.stops {
+    // Stops — written in new_stop_idx order, so stops[s] is the stop that
+    // lives at node s (given the stop-first node ordering above).
+    for &old_s in &new_stop_order {
+        let stop = &data.stops[old_s as usize];
         write_f64(&mut buf, stop.lat);
         write_f64(&mut buf, stop.lon);
         let name_bytes = stop.name.as_bytes();
         write_u32(&mut buf, name_bytes.len() as u32);
         buf.extend_from_slice(name_bytes);
-    }
-
-    // Stop-to-node mapping (relabeled to new SFC indices)
-    for &(stop_idx, node_idx) in &relabeled_stn {
-        write_u32(&mut buf, stop_idx);
-        write_u32(&mut buf, node_idx);
     }
 
     // Route names
@@ -278,11 +321,11 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
         let mut flat_events: Vec<FlatEvent> = Vec::with_capacity(pattern.events.len());
         for (dep_time, event) in &pattern.events {
             flat_events.push(FlatEvent {
-                time_offset: *dep_time,
-                stop_index: event.stop_index,
+                time_offset: dep_time.saturating_sub(pattern.min_time),
+                stop_index: remap_stop(event.stop_index),
                 route_index: event.route_index,
                 trip_index: event.trip_index,
-                next_stop_index: event.next_stop_index,
+                next_stop_index: remap_stop(event.next_stop_index),
                 travel_time: event.travel_time,
             });
         }
@@ -415,11 +458,11 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
         write_u32(&mut buf, pattern.frequency_routes.len() as u32);
         for freq in &pattern.frequency_routes {
             write_u32(&mut buf, freq.route_index);
-            write_u32(&mut buf, freq.stop_index);
+            write_u32(&mut buf, remap_stop(freq.stop_index));
             write_u32(&mut buf, freq.start_time);
             write_u32(&mut buf, freq.end_time);
             write_u32(&mut buf, freq.headway_secs);
-            write_u32(&mut buf, freq.next_stop_index);
+            write_u32(&mut buf, remap_stop(freq.next_stop_index));
             write_u32(&mut buf, freq.travel_time);
             write_u32(&mut buf, freq.next_freq_index);
         }
@@ -438,7 +481,19 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
         let total_points: usize = data.leg_shapes.iter().map(|(_, p)| p.len()).sum();
         let mut lats_global: Vec<i32> = Vec::with_capacity(total_points);
         let mut lons_global: Vec<i32> = Vec::with_capacity(total_points);
-        for &((route, from_stop, to_stop), ref points) in &data.leg_shapes {
+        // Remap stop indices, then re-sort by the *new* key so the load-time
+        // binary_search on (route, from_stop, to_stop) still holds.
+        let mut remapped: Vec<((u32, u32, u32), usize)> = data
+            .leg_shapes
+            .iter()
+            .enumerate()
+            .map(|(i, &((route, from_stop, to_stop), _))| {
+                ((route, remap_stop(from_stop), remap_stop(to_stop)), i)
+            })
+            .collect();
+        remapped.sort_by_key(|&(k, _)| k);
+        for &((route, from_stop, to_stop), orig_i) in &remapped {
+            let points = &data.leg_shapes[orig_i].1;
             routes.push(route);
             from_stops.push(from_stop);
             to_stops.push(to_stop);

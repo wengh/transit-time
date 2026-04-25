@@ -499,8 +499,9 @@ impl ProfileRouter for ProfileRouting {
                     relax(&mut frontier, &mut queue, neighbor, new_entry);
                 }
 
-                // Skip unnecessary work if not a transit stop
-                if data.node_to_stop[node_id as usize] == u32::MAX {
+                // Skip unnecessary work if not a transit stop. Under v11,
+                // stops occupy indices [0, num_stops); a single compare suffices.
+                if (node_id as usize) >= data.num_stops {
                     continue;
                 }
 
@@ -759,7 +760,10 @@ impl ProfileRouting {
                 // Find the route and the stops
                 let pat = &context.data.patterns[leg.pattern_idx as usize];
                 let mut node_sequence = Vec::new();
-                let end_stop = context.data.node_to_stop[curr_node as usize];
+                let end_stop = context
+                    .data
+                    .node_to_stop(curr_node)
+                    .expect("curr_node is a stop");
                 let route_index = match leg.transit_ref {
                     TransitRef::Scheduled { event_idx } => {
                         let events = &pat.stop_index.events_by_stop.data;
@@ -768,8 +772,7 @@ impl ProfileRouting {
                         let route_index = loop {
                             let event = &events[curr_event_idx as usize];
                             if !reached_end_stop {
-                                node_sequence
-                                    .push(context.data.stop_to_node[event.stop_index as usize]);
+                                node_sequence.push(context.data.stop_to_node(event.stop_index));
                             }
                             if event.stop_index == end_stop {
                                 reached_end_stop = true;
@@ -788,12 +791,11 @@ impl ProfileRouting {
                         let mut curr_idx = freq_idx;
                         loop {
                             let freq = &freqs[curr_idx as usize];
-                            node_sequence.push(context.data.stop_to_node[freq.stop_index as usize]);
+                            node_sequence.push(context.data.stop_to_node(freq.stop_index));
                             if freq.next_stop_index == end_stop {
                                 // Last hop: the alighting stop only appears as
                                 // `next_stop_index`, never as a subsequent `stop_index`.
-                                node_sequence
-                                    .push(context.data.stop_to_node[freq.next_stop_index as usize]);
+                                node_sequence.push(context.data.stop_to_node(freq.next_stop_index));
                                 break;
                             }
                             curr_idx = freq.next_freq_index;
@@ -901,7 +903,10 @@ impl Index {
 
 impl<'a> ProfileQueryContext<'a> {
     fn get_stop_name(&self, node_id: u32) -> &'a str {
-        let stop_idx = self.data.node_to_stop[node_id as usize];
+        let stop_idx = self
+            .data
+            .node_to_stop(node_id)
+            .expect("get_stop_name called on non-stop node");
         self.data.stops[stop_idx as usize].name.as_str()
     }
 
@@ -1001,10 +1006,9 @@ impl<'a> ProfileQueryContext<'a> {
             max_arrival,
         } = query;
 
-        let stop_idx = self.data.node_to_stop[node as usize];
-        if stop_idx == u32::MAX {
+        let Some(stop_idx) = self.data.node_to_stop(node) else {
             return ControlFlow::Continue(());
-        }
+        };
         let max_arrival = max_arrival.unwrap_or(self.query.window_end + self.query.max_time);
 
         for &pat_idx in &self.index.patterns_at_stop[stop_idx as usize] {
@@ -1037,7 +1041,7 @@ impl<'a> ProfileQueryContext<'a> {
                     }
                     let next = &pat.stop_index.events_by_stop.data[cur.next_event_index as usize];
                     visit(TransitLeg {
-                        node_id: self.data.stop_to_node[next.stop_index as usize],
+                        node_id: self.data.stop_to_node(next.stop_index),
                         board_delta,
                         arrival_delta: (arrival - self.query.window_start) as u16,
                         pattern_idx: pat_idx as u16,
@@ -1090,7 +1094,7 @@ impl<'a> ProfileQueryContext<'a> {
                             break;
                         }
                         visit(TransitLeg {
-                            node_id: self.data.stop_to_node[f.next_stop_index as usize],
+                            node_id: self.data.stop_to_node(f.next_stop_index),
                             board_delta,
                             arrival_delta: (arrival - self.query.window_start) as u16,
                             pattern_idx: pat_idx as u16,
