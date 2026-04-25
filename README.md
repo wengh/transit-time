@@ -305,4 +305,4 @@ Always reachable (fraction=1): 216318, sometimes: 236442
 | Waterloo | 1.8M |
 <!-- END sizes -->
 
-**WASM module** (`ls -lh transit-viz/pkg/transit_router_bg.wasm`): 226 KB
+**WASM module** (`ls -lh transit-viz/pkg/transit_router_bg.wasm`): ~250 KB
