@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use chrono::{Datelike, NaiveDate};
 use rayon::prelude::*;
 use serde::Deserialize;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -711,15 +712,12 @@ fn day_mask_from_dates(dates: &[u32]) -> u8 {
     let mut mask = 0u8;
     for &d in dates {
         let y = (d / 10000) as i32;
-        let m = ((d % 10000) / 100) as u32;
-        let day = (d % 100) as u32;
-        // Tomohiko Sakamoto's algorithm: returns 0=Sun..6=Sat
-        let t = [0i32, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4];
-        let yy = if m < 3 { y - 1 } else { y };
-        let dow_sun0 =
-            ((yy + yy / 4 - yy / 100 + yy / 400 + t[(m - 1) as usize] + day as i32) % 7) as u8;
-        // Convert 0=Sun..6=Sat → 0=Mon..6=Sun
-        let dow = if dow_sun0 == 0 { 6 } else { dow_sun0 - 1 };
+        let m = (d / 100) % 100;
+        let day = d % 100;
+        let dow = NaiveDate::from_ymd_opt(y, m, day)
+            .expect("invalid YYYYMMDD date")
+            .weekday()
+            .num_days_from_monday();
         mask |= 1 << dow;
     }
     mask

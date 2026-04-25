@@ -5,6 +5,7 @@ mod osm;
 mod transitland;
 
 use anyhow::{Context, Result};
+use chrono::NaiveDate;
 use clap::Parser;
 use jsonc_parser::parse_to_serde_value;
 use std::collections::{HashMap, HashSet};
@@ -100,27 +101,22 @@ struct CityConfig {
     enabled: Option<bool>,
 }
 
-/// Days since Unix epoch (no external deps).
-fn unix_days_now() -> u32 {
-    (std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-        / 86400) as u32
+fn unix_epoch() -> NaiveDate {
+    NaiveDate::from_ymd_opt(1970, 1, 1).unwrap()
 }
 
-/// YYYYMMDD → days since Unix epoch (Hinnant's civil_from_days inverse).
+/// Days since Unix epoch (UTC).
+fn unix_days_now() -> u32 {
+    (chrono::Utc::now().date_naive() - unix_epoch()).num_days() as u32
+}
+
+/// YYYYMMDD → days since Unix epoch.
 fn yyyymmdd_to_days(date: u32) -> u32 {
-    let y = (date / 10000) as i64;
-    let m = (date / 100 % 100) as u32;
-    let d = (date % 100) as u32;
-    let y = if m <= 2 { y - 1 } else { y };
-    let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = (y - era * 400) as u32;
-    let m0 = if m > 2 { m - 3 } else { m + 9 };
-    let doy = (153 * m0 + 2) / 5 + d - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    (era * 146097 + doe as i64 - 719468) as u32
+    let y = (date / 10000) as i32;
+    let m = (date / 100) % 100;
+    let d = date % 100;
+    let nd = NaiveDate::from_ymd_opt(y, m, d).expect("invalid YYYYMMDD date");
+    (nd - unix_epoch()).num_days() as u32
 }
 
 /// Warn if the last service date in `data` is more than 1 day before today.
