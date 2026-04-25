@@ -150,25 +150,36 @@ fn warn_if_expired(feed_id: &str, data: &gtfs::GtfsData) {
     }
 }
 
-/// Adjust per-feed service calendars for stale feeds so the data remains
-/// useful for isochrone queries on today's date.
+/// Adjust per-feed service calendars for stale or not-yet-started feeds so the
+/// data remains useful for isochrone queries on today's date.
 ///
 /// `allow_stale` overrides:
 ///   - `Some(false)` — never adjust; honor all dates strictly.
 ///   - `Some(true)`  — force-wipe every service's date range to unbounded.
 ///
-/// Automatic mode (`None`):
+/// Automatic mode (`None`) — two symmetric adjustments:
+///
+/// **Stale (feed ending/ended):**
 ///   1. Compute `feed_max` (YYYYMMDD): prefer `feed_info.feed_end_date`, else
 ///      the max of service `end_date`s and `added_dates`. If nothing bounded
-///      exists, do nothing.
+///      exists, skip.
 ///   2. If `today_days + 14 <= feed_max_days`, the feed is still fresh — do
 ///      nothing and let the router's date filter work normally.
 ///   3. Otherwise the feed is stale or nearly stale. For each service A, check
 ///      whether another service B "replaces" A: B.start_date lands within
-///      ±14 days of A.end_date + 1, and B's end is after A's end. If A has
-///      such a successor, leave A alone (router will drop it on today's
-///      date). Otherwise wipe A's `start_date`/`end_date` to 0 so it remains
-///      queryable as a fallback schedule.
+///      ±7 days of A.end_date + 1, and B's end is after A's end. If A has
+///      such a successor, leave A alone (router will drop it on today's date).
+///      Otherwise wipe A's `start_date`/`end_date` to 0 (unbounded fallback).
+///
+/// **Too new (feed hasn't started yet):**
+///   1. Compute `feed_min` (YYYYMMDD): min of bounded service `start_date`s.
+///      If nothing bounded exists, or `feed_min <= today`, skip.
+///   2. If any service already covers today, skip (no gap to fill).
+///   3. Otherwise for each service A with a bounded future start, check whether
+///      another service B "precedes" A: B.end_date lands within ±7 days of
+///      A.start_date − 1, and B starts before A. If A has such a predecessor,
+///      leave A alone. Otherwise wipe A's `start_date` to 0 so it is
+///      queryable now.
 fn apply_stale_policy(data: &mut gtfs::GtfsData, allow_stale: Option<bool>, today_days: u32) {
     match allow_stale {
         Some(false) => return,
@@ -197,12 +208,18 @@ fn apply_stale_policy(data: &mut gtfs::GtfsData, allow_stale: Option<bool>, toda
         })
         .map(yyyymmdd_to_days);
 
-    let Some(feed_max_days) = feed_max_days else {
-        return;
-    };
+    // `feed_min` from bounded start_dates only (added_dates are one-off exceptions).
+    let feed_min_days = data
+        .services
+        .iter()
+        .filter(|s| s.start_date != 0)
+        .map(|s| yyyymmdd_to_days(s.start_date))
+        .min();
 
-    // Gate: only intervene when we're within 14 days of the feed's end.
-    if today_days + 14 <= feed_max_days {
+    let do_stale = feed_max_days.map_or(false, |m| today_days + 14 > m);
+    let do_new_preliminary = feed_min_days.map_or(false, |m| m > today_days);
+
+    if !do_stale && !do_new_preliminary {
         return;
     }
 
@@ -228,40 +245,91 @@ fn apply_stale_policy(data: &mut gtfs::GtfsData, allow_stale: Option<bool>, toda
         })
         .collect();
 
-    let superseded: Vec<bool> = service_info
-        .iter()
-        .enumerate()
-        .map(|(i, &(_, a_end))| {
-            // Already-unbounded services have nothing to extend and no
-            // meaningful "end" to compare against.
-            if a_end == u32::MAX {
-                return false;
-            }
-            let handoff = a_end as i64 + 1;
-            service_info
-                .iter()
-                .enumerate()
-                .any(|(j, &(b_start, b_end))| {
-                    if i == j {
-                        return false;
-                    }
-                    if b_start == u32::MIN {
-                        return false;
-                    }
-                    if b_end <= a_end {
-                        return false;
-                    }
-                    (b_start as i64 - handoff).abs() <= 7
-                })
-        })
-        .collect();
+    // Skip too-new extension if any service already covers today.
+    let do_new = do_new_preliminary
+        && !service_info.iter().any(|&(b_start, b_end)| {
+            (b_start == u32::MIN || b_start <= today_days)
+                && (b_end == u32::MAX || b_end >= today_days)
+        });
+
+    // Services superseded by a successor (stale path): leave these alone so
+    // the router drops them on today's date naturally.
+    let has_successor: Vec<bool> = if do_stale {
+        service_info
+            .iter()
+            .enumerate()
+            .map(|(i, &(_, a_end))| {
+                // Already-unbounded services have nothing to extend and no
+                // meaningful "end" to compare against.
+                if a_end == u32::MAX {
+                    return false;
+                }
+                let handoff = a_end as i64 + 1;
+                service_info
+                    .iter()
+                    .enumerate()
+                    .any(|(j, &(b_start, b_end))| {
+                        if i == j {
+                            return false;
+                        }
+                        if b_start == u32::MIN {
+                            return false;
+                        }
+                        if b_end <= a_end {
+                            return false;
+                        }
+                        (b_start as i64 - handoff).abs() <= 7
+                    })
+            })
+            .collect()
+    } else {
+        vec![false; data.services.len()]
+    };
+
+    // Services that have a predecessor (too-new path): leave these alone so
+    // the predecessor covers today and this service activates at its natural date.
+    let has_predecessor: Vec<bool> = if do_new {
+        service_info
+            .iter()
+            .enumerate()
+            .map(|(i, &(a_start, _))| {
+                // Unbounded-start services have no meaningful start to compare against.
+                if a_start == u32::MIN {
+                    return false;
+                }
+                let handoff = a_start as i64 - 1;
+                service_info
+                    .iter()
+                    .enumerate()
+                    .any(|(j, &(b_start, b_end))| {
+                        if i == j {
+                            return false;
+                        }
+                        if b_end == u32::MAX {
+                            return false;
+                        }
+                        if b_start >= a_start {
+                            return false;
+                        }
+                        (b_end as i64 - handoff).abs() <= 7
+                    })
+            })
+            .collect()
+    } else {
+        vec![false; data.services.len()]
+    };
 
     for (i, s) in data.services.iter_mut().enumerate() {
-        if superseded[i] {
+        let (a_start, a_end) = service_info[i];
+
+        if do_stale && a_end != u32::MAX && !has_successor[i] {
+            s.end_date = 0;
             continue;
         }
-        s.start_date = 0;
-        s.end_date = 0;
+
+        if do_new && a_start != u32::MIN && a_start > today_days && !has_predecessor[i] {
+            s.start_date = 0;
+        }
     }
 }
 
