@@ -1,4 +1,10 @@
-.PHONY: dev wasm clean data-all data data-some flamegraph sizes
+.PHONY: dev wasm clean data-all data data-some flamegraph sizes benchmark
+
+# 32-bit native target for the benchmark binary. Mirrors wasm32's pointer
+# layout so memory and timing numbers are comparable to the web build. Uses
+# musl so the resulting binary is statically linked and doesn't need a 32-bit
+# libc on the host.
+BENCH_TARGET ?= i686-unknown-linux-musl
 
 # Source files for change detection
 ROUTER_SRC := $(shell find transit-router/src -name '*.rs')
@@ -44,6 +50,16 @@ dev: $(WASM_OUT)
 		$(MAKE) data-all; \
 	fi
 	cd transit-viz && npm install --silent && npm run dev -- --port 5173
+
+# Run the profile-routing benchmark with 32-bit pointers (matches wasm32).
+# Override the target with `make benchmark BENCH_TARGET=...` (e.g. `''` for host).
+benchmark:
+	@if [ -n "$(BENCH_TARGET)" ]; then \
+		rustup target add $(BENCH_TARGET) >/dev/null; \
+		cargo run --release --target $(BENCH_TARGET) -p transit-router --bin benchmark; \
+	else \
+		cargo run --release -p transit-router --bin benchmark; \
+	fi
 
 # CPU flamegraph of profile routing (override via env: OUT, CITY, LAT, LON, RUNS, etc.)
 flamegraph:

@@ -617,13 +617,18 @@ pub fn load_with_stats(buf: &[u8]) -> Result<(PreparedData, LoadStats), String> 
         + leg_shape_keys.capacity() * std::mem::size_of::<(u32, u32, u32)>();
     memory_sections.push(("leg_shapes", leg_shapes_mem));
 
-    // node_grid HashMap
-    let ng_mem: usize = node_grid
-        .iter()
-        .map(|(_, v)| {
-            16 + 64 + v.capacity() * 4 // key + hashmap overhead + data
-        })
-        .sum();
+    // node_grid HashMap. The bucket array allocates `node_grid.capacity()` slots,
+    // each holding a key, the `Vec<u32>` header, and a hashbrown control byte;
+    // the Vec's heap data is sized separately. The Vec header (and thus the
+    // per-bucket cost) depends on the target's pointer size.
+    let bucket_size = std::mem::size_of::<(i32, i32)>()
+        + std::mem::size_of::<Vec<u32>>()
+        + 1; // hashbrown control byte
+    let ng_mem: usize = node_grid.capacity() * bucket_size
+        + node_grid
+            .values()
+            .map(|v| v.capacity() * std::mem::size_of::<u32>())
+            .sum::<usize>();
     memory_sections.push(("node_grid", ng_mem));
 
     // decompressed buf (transient)
