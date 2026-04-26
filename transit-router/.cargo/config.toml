@@ -1,0 +1,9 @@
+# Default cargo commands run inside transit-router/ to a 32-bit native target,
+# matching the wasm32 pointer layout so memory and timing numbers compare
+# apples-to-apples with the web build. Cargo only picks this up when invoked
+# from within transit-router/ (or a subdirectory); commands run from the
+# workspace root use the root config and the host default target.
+#
+# Override with `cargo <cmd> --target=<...>` or by editing this file.
+[build]
+target = "i686-unknown-linux-musl"
