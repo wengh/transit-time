@@ -873,6 +873,72 @@ fn remove_small_components(graph: &mut OsmGraph) {
     );
 }
 
+/// Iteratively remove degree-1 "leaf" nodes that are neither transit stops nor
+/// subway entrances. These are pedestrian dead-ends (driveways, footway stubs,
+/// service-road tails) that no shortest path can ever traverse meaningfully —
+/// you'd only walk in to immediately walk back out. Cascades: when a leaf is
+/// dropped, its sole neighbor may itself become a leaf and be dropped too.
+///
+/// Runs after `prune_unreachable_nodes`, so every kept node is already
+/// connected to a stop and degree-1 removal cannot disconnect the graph.
+/// Remaps `stop_to_node` like `prune_unreachable_nodes`.
+pub fn prune_leaf_nodes(
+    graph: &mut OsmGraph,
+    stop_to_node: Vec<(u32, u32)>,
+) -> Vec<(u32, u32)> {
+    let n = graph.nodes.len();
+    if n == 0 {
+        return stop_to_node;
+    }
+
+    let stop_nodes: HashSet<u32> = stop_to_node.iter().map(|&(_, node)| node).collect();
+    let adj = build_adj(graph);
+    let mut degree: Vec<u32> = adj.iter().map(|a| a.len() as u32).collect();
+    let mut keep = vec![true; n];
+
+    let is_protected = |u: u32| -> bool {
+        stop_nodes.contains(&u) || graph.nodes[u as usize].is_entrance
+    };
+
+    let mut worklist: Vec<u32> = (0..n as u32)
+        .filter(|&u| degree[u as usize] == 1 && !is_protected(u))
+        .collect();
+
+    let mut removed = 0u32;
+    while let Some(u) = worklist.pop() {
+        if !keep[u as usize] || degree[u as usize] != 1 {
+            continue;
+        }
+        let neighbor = adj[u as usize].iter().copied().find(|&v| keep[v as usize]);
+        keep[u as usize] = false;
+        removed += 1;
+        if let Some(v) = neighbor {
+            degree[v as usize] -= 1;
+            if degree[v as usize] == 1 && !is_protected(v) {
+                worklist.push(v);
+            }
+        }
+    }
+
+    if removed == 0 {
+        eprintln!("No leaf nodes to prune ({} nodes)", n);
+        return stop_to_node;
+    }
+
+    let remap = retain_nodes(graph, &keep);
+    eprintln!(
+        "Pruned {} leaf nodes ({} kept, {:.1}% reduction)",
+        removed,
+        n - removed as usize,
+        removed as f64 / n as f64 * 100.0
+    );
+
+    stop_to_node
+        .into_iter()
+        .map(|(stop, node)| (stop, remap[node as usize]))
+        .collect()
+}
+
 pub fn prune_unreachable_nodes(
     graph: &mut OsmGraph,
     stop_to_node: Vec<(u32, u32)>,
