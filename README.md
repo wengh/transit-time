@@ -77,7 +77,10 @@ The preprocessor downloads and caches both the GTFS feeds and the OSM extract. F
 
 3. **Snap stops to street nodes** — each transit stop is matched to the nearest point on the street network by inserting a virtual node on the nearest edge and connecting it. This lets the router walk from any street point directly to any stop.
 
-4. **Prune unreachable nodes** — a breadth-first search from every snapped stop node identifies all street nodes reachable on foot from transit. Nodes and edges outside that reachable set are removed and all indices remapped. This discards dead-end pedestrian areas disconnected from the transit network, shrinking both the routing graph and the output binary.
+4. **Compact the walk graph** — three passes shrink the routing graph without changing routing distances:
+   - *Prune unreachable nodes:* a breadth-first search from every snapped stop node identifies all street nodes reachable on foot from transit. Nodes and edges outside that reachable set are removed and all indices remapped, discarding dead-end pedestrian areas disconnected from the transit network.
+   - *Prune leaf nodes:* iteratively remove non-stop nodes with only one neighbor — driveways, dead-end footway stubs, etc. No shortest path can pass through them. Stops are protected as anchors.
+   - *Collapse degree-2 chains:* maximal chains of non-stop nodes with exactly two neighbors are contracted into single edges whose weight is the sum of the chain. This is distance-perfect for routing — every node on such a chain has no choice but to walk the whole chain in order. The pass iterates until stable, since dedup of parallel chains between the same anchor pair (e.g. a pedestrian island with two separately-mapped sides) can leave a previously deg-3 anchor with degree 2 for the next pass to absorb. Typical reduction: 25–35% fewer graph nodes, 20–30% fewer edges, 20–25% faster Dijkstra at query time, with travel-time results bit-for-bit identical.
 
 5. **Build service patterns and extract leg shapes** — trips that share the same stop sequence and service calendar are grouped into a pattern. For each pattern, stop times are stored as a sorted array of time offsets per stop, enabling binary-search-based lookup during routing. Frequency-based routes (trips defined by headway rather than fixed times) are stored separately. For trips that include GTFS shape data, per-leg polylines are extracted: for each (route, from-stop, to-stop) pair, a dynamic-programming subsequence match aligns the shape point sequence to the stop pair, handling reversed routes and partial alignments. The best-aligned shape for each leg is kept. After pattern construction, routes and stops not referenced in any event are removed and indices remapped, keeping the binary compact.
 
@@ -208,47 +211,47 @@ cargo run --release --bin benchmark_smoke -- transit-viz/public/data/chicago.bin
 === Binary Section Sizes (decompressed) ===
 Section                          Bytes % of total
 header                            32 B     0.0%
-nodes                          1.69 MB    17.4%
-edges                          1.59 MB    16.4%
-stops                         665.0 KB     6.7%
+nodes                          1.16 MB    13.1%
+edges                          1.26 MB    14.2%
+stops                         665.0 KB     7.4%
 route_names                     1.5 KB     0.0%
 route_colors                     844 B     0.0%
-patterns                       5.42 MB    55.9%
-leg_shapes                    360.7 KB     3.6%
-TOTAL decompressed             9.70 MB
+patterns                       5.41 MB    61.3%
+leg_shapes                    360.4 KB     4.0%
+TOTAL decompressed             8.83 MB
 
 === In-Memory Sizes ===
 Structure                        Bytes % of total
-nodes                         11.71 MB     9.7%
-edges                         13.14 MB    10.9%
-stops                         998.5 KB     0.8%
+nodes                          7.84 MB     7.4%
+edges                         10.13 MB     9.6%
+stops                         998.5 KB     0.9%
 route_names                     5.6 KB     0.0%
 route_colors                     844 B     0.0%
-patterns/events               54.97 MB    45.8%
-patterns/freq                  3.13 MB     2.6%
+patterns/events               54.97 MB    51.9%
+patterns/freq                  3.13 MB     3.0%
 patterns/other                   124 B     0.0%
-adj list                      20.44 MB    17.0%
-leg_shapes                     1.31 MB     1.1%
-node_grid                      4.69 MB     3.9%
-input buf                      9.70 MB     8.1%
-TOTAL in-memory              120.07 MB
+adj list                      15.47 MB    14.6%
+leg_shapes                     1.31 MB     1.2%
+node_grid                      3.24 MB     3.1%
+input buf                      8.83 MB     8.3%
+TOTAL in-memory              105.90 MB
 
 === Load Timings ===
 Phase                           Time % of total
-parse nodes                  13.4 ms     7.1%
-parse edges                  19.2 ms    10.2%
-parse stops                   0.9 ms     0.5%
+parse nodes                   8.9 ms     5.7%
+parse edges                  12.7 ms     8.1%
+parse stops                   0.9 ms     0.6%
 parse route_names             0.0 ms     0.0%
 parse route_colors            0.0 ms     0.0%
-parse+index patterns        107.2 ms    57.1%
-parse leg_shapes              1.4 ms     0.7%
-build adj list               16.9 ms     9.0%
-build node_grid              28.9 ms    15.4%
-TOTAL                       187.8 ms
+parse+index patterns        101.3 ms    64.9%
+parse leg_shapes              1.3 ms     0.9%
+build adj list               12.0 ms     7.7%
+build node_grid              19.0 ms    12.2%
+TOTAL                       156.1 ms
 
 === Counts ===
-nodes                         767136
-edges                        1147764
+nodes                         514123
+edges                         885101
 stops                          17076
 patterns                          48
 route_names                      211
@@ -256,26 +259,26 @@ leg_shapes                     21570
 total events (raw)           3397896
 sentinel events                    0
 total freq entries                 0
-grid cells                      6124
+grid cells                      5935
 
-Source node: 653585
+Source node: 440203
 Window: 09:00–10:00 (60 min), max_time=45 min, slack=60s
-[profile] setup=7.2ms phase1(walk)=10.6ms phase2(transit)=384.9ms phase3(stats)=11.6ms total=414.3ms initial_transit_entries=182541
-  run 1/10: 0.414 s
-  run 2/10: 0.421 s
-  run 3/10: 0.415 s
-  run 4/10: 0.406 s
-  run 5/10: 0.405 s
-  run 6/10: 0.400 s
-  run 7/10: 0.416 s
-  run 8/10: 0.437 s
-  run 9/10: 0.396 s
-  run 10/10: 0.396 s
+[profile] setup=5.1ms phase1(walk)=8.8ms phase2(transit)=282.4ms phase3(stats)=5.8ms total=302.1ms initial_transit_entries=182242
+  run 1/10: 0.302 s
+  run 2/10: 0.314 s
+  run 3/10: 0.320 s
+  run 4/10: 0.317 s
+  run 5/10: 0.279 s
+  run 6/10: 0.277 s
+  run 7/10: 0.291 s
+  run 8/10: 0.265 s
+  run 9/10: 0.271 s
+  run 10/10: 0.284 s
 
-Profile routing (10 runs): avg 0.411 s, min 0.396 s, max 0.437 s
-Nodes reached: 428844 / 767136
+Profile routing (10 runs): avg 0.292 s, min 0.265 s, max 0.320 s
+Nodes reached: 283469 / 514123
 Min travel time: 0 min, avg: 35 min, max: 45 min
-Always reachable (fraction=1): 202432, sometimes: 226412
+Always reachable (fraction=1): 135398, sometimes: 148071
 ```
 
 **Binary sizes** (regenerate with `make sizes`):
@@ -283,26 +286,26 @@ Always reachable (fraction=1): 202432, sometimes: 226412
 <!-- BEGIN sizes -->
 | City | Compressed |
 |---|---|
-| Berlin | 12.3M |
-| Boston | 4.4M |
-| Calgary | 3.2M |
-| Chicago | 9.1M |
-| Hong Kong | 9.0M |
-| Los Angeles | 10.6M |
-| Madrid | 8.5M |
-| Mexico City | 1.7M |
-| Montreal | 20.5M |
-| Moscow | 5.5M |
-| New York City | 19.1M |
-| Ottawa | 8.2M |
-| Paris | 18.4M |
-| Philadelphia | 4.6M |
-| San Francisco Bay Area | 11.4M |
-| Seattle | 6.2M |
-| Toronto | 16.3M |
-| Vancouver | 5.9M |
-| Washington | 11.7M |
-| Waterloo | 1.6M |
+| Berlin | 11.2M |
+| Boston | 4.2M |
+| Calgary | 3.0M |
+| Chicago | 8.2M |
+| Hong Kong | 8.7M |
+| Los Angeles | 9.7M |
+| Madrid | 8.3M |
+| Mexico City | 1.5M |
+| Montreal | 19.6M |
+| Moscow | 4.9M |
+| New York City | 18.0M |
+| Ottawa | 8.0M |
+| Paris | 17.5M |
+| Philadelphia | 4.3M |
+| San Francisco Bay Area | 10.3M |
+| Seattle | 5.4M |
+| Toronto | 15.9M |
+| Vancouver | 5.4M |
+| Washington | 11.3M |
+| Waterloo | 1.4M |
 <!-- END sizes -->
 
 **WASM module** (`ls -lh transit-viz/pkg/transit_router_bg.wasm`): ~250 KB

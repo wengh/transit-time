@@ -147,6 +147,10 @@ UPDATE: this idea kinda preserves the distances but makes the walk edges not fol
 
 -------
 
+remove all degree 2 nodes
+
+-------
+
 how difficult would it be to identify nearly colinear cycles and contract them into a chain?
 
 maybe do this: find all triangles in the graph where the longer side is more than k x (where k = 0.9 for example) the sum of the shorter sides (so losing the longer side doesn't hurt too much), and remove the longer side. this won't work for e.g. 4-cycles though. (this might be a very bad approach so use your own judgement)
@@ -154,3 +158,9 @@ maybe do this: find all triangles in the graph where the longer side is more tha
 make sure to do this before collapsing deg=2 nodes.
 
 also before implementing anything, write a standalone diagnostic script to get stats on the osm pbf files for how common the situation appears
+
+UPDATE: only results in ~1% saving
+
+-------
+
+also split long departure window into several, compute in parallel, and merge results at the end

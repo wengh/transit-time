@@ -1316,6 +1316,11 @@ pub fn run_prep(
     // No shortest path can pass through them; protected: stops.
     let stop_to_node = graph::prune_leaf_nodes(&mut osm_graph, stop_to_node);
 
+    // Step 3d: Collapse maximal chains of degree-2, non-stop nodes into single
+    // edges. Distance-perfect for routing — the only loss is the kink geometry
+    // at intermediate nodes, which walk-leg display straight-lines across.
+    let stop_to_node = graph::collapse_degree2_nodes(&mut osm_graph, stop_to_node);
+
     // Step 3c: Drop stop_times rows for stops that failed to snap/prune.
     // Patterns built from the remaining rows will naturally skip these stops;
     // through travel times stay correct because GTFS stores per-stop arrival/

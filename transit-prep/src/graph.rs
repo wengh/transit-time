@@ -773,6 +773,157 @@ pub fn prune_leaf_nodes(graph: &mut OsmGraph, stop_to_node: Vec<(u32, u32)>) -> 
         .collect()
 }
 
+/// Contract maximal chains of degree-2, non-stop nodes into single edges.
+///
+/// A chain `A — N1 — N2 — ... — Nk — B` (where every internal Ni has exactly
+/// two graph-edges and is not a transit stop) is replaced by one edge `A — B`
+/// whose `distance_meters` is the sum of the chain. This is **distance-perfect
+/// for routing** — any shortest path that traversed the chain had no choice
+/// but to walk every node in order, so summing the segment lengths preserves
+/// the cost exactly. The only loss is geometric: visualizing a walk leg now
+/// straight-lines across the kinks the chain encoded.
+///
+/// Subtleties:
+///   - Self-loop chains (chain returns to its own start anchor) carry no
+///     useful information and are dropped entirely.
+///   - If two chains connect the same pair `(A, B)` — or if a direct edge
+///     and a chain both connect them — only the shortest is kept, since
+///     routing will only ever use the shortest one.
+///   - The dedup in the previous bullet can leave a previously-deg-3 anchor
+///     with two distinct neighbors and degree 2, which would itself be
+///     collapsible. Iterating until stable handles this; in practice 1–2
+///     passes suffice.
+///
+/// Runs after `prune_leaf_nodes`, so chain endpoints are guaranteed to be
+/// either real intersections (deg≥3) or transit stops. Remaps `stop_to_node`.
+pub fn collapse_degree2_nodes(
+    graph: &mut OsmGraph,
+    mut stop_to_node: Vec<(u32, u32)>,
+) -> Vec<(u32, u32)> {
+    let initial_nodes = graph.nodes.len();
+    let initial_edges = graph.edges.len();
+    if initial_nodes == 0 {
+        return stop_to_node;
+    }
+
+    let mut iterations = 0u32;
+    loop {
+        let stop_nodes: HashSet<u32> = stop_to_node.iter().map(|&(_, n)| n).collect();
+        let n = graph.nodes.len();
+        let m = graph.edges.len();
+
+        // Adjacency with edge indices (so we can sum exact distances along chains).
+        let mut adj: Vec<Vec<(u32, u32)>> = vec![Vec::new(); n];
+        for (ei, e) in graph.edges.iter().enumerate() {
+            adj[e.u as usize].push((e.v, ei as u32));
+            adj[e.v as usize].push((e.u, ei as u32));
+        }
+
+        let is_anchor = |u: u32, adj: &[Vec<(u32, u32)>]| -> bool {
+            adj[u as usize].len() != 2 || stop_nodes.contains(&u)
+        };
+
+        let mut keep = vec![true; n];
+        let mut walked = vec![false; m];
+        // Dedup: keep shortest distance per unordered (u, v) pair.
+        let mut new_edges: HashMap<(u32, u32), f32> = HashMap::new();
+
+        for start in 0..n as u32 {
+            if !is_anchor(start, &adj) {
+                continue;
+            }
+            // Snapshot neighbors: walking may not mutate adj, but the borrow checker
+            // is happier with a copy of this small list.
+            let nbrs = adj[start as usize].clone();
+            for (n0, e0) in nbrs {
+                if walked[e0 as usize] {
+                    continue;
+                }
+                walked[e0 as usize] = true;
+
+                let mut total = graph.edges[e0 as usize].distance_meters as f64;
+                let mut curr = n0;
+
+                while !is_anchor(curr, &adj) {
+                    keep[curr as usize] = false;
+                    // Deg-2 non-stop: exactly two incident edges, one walked, one not.
+                    let next = adj[curr as usize]
+                        .iter()
+                        .find(|&&(_, e)| !walked[e as usize])
+                        .copied();
+                    let Some((nxt, ei)) = next else {
+                        // Both edges already walked: chain bit itself, treat as self-loop.
+                        break;
+                    };
+                    walked[ei as usize] = true;
+                    total += graph.edges[ei as usize].distance_meters as f64;
+                    curr = nxt;
+                }
+
+                let end = curr;
+                if end == start {
+                    // Self-loop chain — drop the entire chain (no routing value).
+                    continue;
+                }
+                let key = if start < end {
+                    (start, end)
+                } else {
+                    (end, start)
+                };
+                let d = total as f32;
+                new_edges
+                    .entry(key)
+                    .and_modify(|prev| {
+                        if d < *prev {
+                            *prev = d;
+                        }
+                    })
+                    .or_insert(d);
+            }
+        }
+
+        let removed = keep.iter().filter(|&&k| !k).count();
+        if removed == 0 {
+            break;
+        }
+
+        graph.edges = new_edges
+            .into_iter()
+            .map(|((u, v), d)| OsmEdge {
+                u,
+                v,
+                distance_meters: d,
+            })
+            .collect();
+        let remap = retain_nodes(graph, &keep);
+        stop_to_node = stop_to_node
+            .into_iter()
+            .map(|(s, node)| (s, remap[node as usize]))
+            .collect();
+        iterations += 1;
+    }
+
+    let final_nodes = graph.nodes.len();
+    let final_edges = graph.edges.len();
+    if iterations == 0 {
+        eprintln!("No deg-2 nodes to collapse ({} nodes)", initial_nodes);
+    } else {
+        eprintln!(
+            "Collapsed {} deg-2 nodes in {} pass{} ({} -> {} nodes, {} -> {} edges, {:.1}% node reduction)",
+            initial_nodes - final_nodes,
+            iterations,
+            if iterations == 1 { "" } else { "es" },
+            initial_nodes,
+            final_nodes,
+            initial_edges,
+            final_edges,
+            (initial_nodes - final_nodes) as f64 / initial_nodes as f64 * 100.0,
+        );
+    }
+
+    stop_to_node
+}
+
 pub fn prune_unreachable_nodes(
     graph: &mut OsmGraph,
     stop_to_node: Vec<(u32, u32)>,
