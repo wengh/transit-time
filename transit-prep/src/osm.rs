@@ -107,7 +107,6 @@ fn fetch_overpass(bbox: (f64, f64, f64, f64), cache_path: &Path) -> Result<PathB
         r#"[out:xml][timeout:300];
 (
   way["highway"~"^(footway|pedestrian|path|steps|residential|living_street|tertiary|secondary|primary|trunk|service|unclassified|crossing|cycleway|track|corridor)$"]({0},{1},{2},{3});
-  node["railway"="subway_entrance"]({0},{1},{2},{3});
 );
 (._;>;);
 out body;"#,

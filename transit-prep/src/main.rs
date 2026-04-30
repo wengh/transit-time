@@ -1313,7 +1313,7 @@ pub fn run_prep(
     let stop_to_node = graph::prune_unreachable_nodes(&mut osm_graph, stop_to_node);
 
     // Step 3c: Prune degree-1 leaf nodes (driveways, dead-end footway stubs).
-    // No shortest path can pass through them; protected: stops + subway entrances.
+    // No shortest path can pass through them; protected: stops.
     let stop_to_node = graph::prune_leaf_nodes(&mut osm_graph, stop_to_node);
 
     // Step 3c: Drop stop_times rows for stops that failed to snap/prune.

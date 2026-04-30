@@ -131,3 +131,26 @@ allow configurable departure window by changing the departure time slider to be 
 -------
 
 use rayon (already installed) to parallelize router phase 3 and path reconstruction
+
+-------
+
+in many cities like chicago and paris, a single intersection can have as many as ~10-30 nodes. is there an easy way to identify these situations (either directly from the processed graph or maybe use some info from the osm pbf) and replace them with e.g. 4 nodes (or as many as the polygon shape needs)? ultrathink
+
+try write a diagnostics script for option 3
+also for your concerns:
+- plaza should also be contracted
+- we could do a convex hull then simplify it (remove corners with small angles, remove points that are close together)
+- i don't think we're currently counting signal wait time at all? pls double check this
+- to avoid interfering with stops, do this step before we snap stops (but for diagnostics just do it on the final graph)
+
+UPDATE: this idea kinda preserves the distances but makes the walk edges not follow streets, often causing diagonal edges, etc.
+
+-------
+
+how difficult would it be to identify nearly colinear cycles and contract them into a chain?
+
+maybe do this: find all triangles in the graph where the longer side is more than k x (where k = 0.9 for example) the sum of the shorter sides (so losing the longer side doesn't hurt too much), and remove the longer side. this won't work for e.g. 4-cycles though. (this might be a very bad approach so use your own judgement)
+
+make sure to do this before collapsing deg=2 nodes.
+
+also before implementing anything, write a standalone diagnostic script to get stats on the osm pbf files for how common the situation appears
