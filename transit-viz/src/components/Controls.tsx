@@ -58,12 +58,11 @@ const STEP = 300; // 5 minutes
 interface DualRangeSliderProps {
   windowStart: number;
   windowEnd: number;
-  maxDuration: number;
   onChange: (start: number, end: number) => void;
   onCommit: (start: number, end: number) => void;
 }
 
-function DualRangeSlider({ windowStart, windowEnd, maxDuration, onChange, onCommit }: DualRangeSliderProps) {
+function DualRangeSlider({ windowStart, windowEnd, onChange, onCommit }: DualRangeSliderProps) {
   const trackRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<{ kind: 'start' | 'end' | 'middle'; originX: number; origStart: number; origEnd: number } | null>(null);
   const liveRef = useRef({ start: windowStart, end: windowEnd });
@@ -94,10 +93,8 @@ function DualRangeSlider({ windowStart, windowEnd, maxDuration, onChange, onComm
 
     if (kind === 'start') {
       s = clamp(sec, 0, en - STEP);
-      if (en - s > maxDuration) s = en - maxDuration;
     } else if (kind === 'end') {
       en = clamp(sec, s + STEP, 86400);
-      if (en - s > maxDuration) en = s + maxDuration;
     } else {
       const dur = origEnd - origStart;
       const rect = trackRef.current!.getBoundingClientRect();
@@ -108,7 +105,7 @@ function DualRangeSlider({ windowStart, windowEnd, maxDuration, onChange, onComm
     }
     s = snap(s); en = snap(en);
     onChange(s, en);
-  }, [xToSec, maxDuration, onChange]);
+  }, [xToSec, onChange]);
 
   const handlePointerUp = useCallback((e: React.PointerEvent) => {
     if (!dragRef.current) return;
@@ -177,10 +174,6 @@ export default function Controls({ onRunQuery, onCopy, isFront, onActivate }: Co
     setLiveStart(windowStart);
     setLiveEnd(windowEnd);
   }
-
-  // Max window duration: 65535 - maxTime must hold for the Rust u16 delta assert.
-  // Cap at 15h (54000s) for UX, but shrink if maxTime is very large.
-  const maxDuration = Math.min(54000, 65535 - maxTimeMin * 60);
 
   if (loadingState !== 'ready') return null;
 
@@ -305,7 +298,6 @@ export default function Controls({ onRunQuery, onCopy, isFront, onActivate }: Co
           <DualRangeSlider
             windowStart={liveStart}
             windowEnd={liveEnd}
-            maxDuration={maxDuration}
             onChange={(s, e) => { setLiveStart(s); setLiveEnd(e); }}
             onCommit={(s, e) => {
               dispatch({ type: 'SET_WINDOW', windowStart: s, windowEnd: e });
