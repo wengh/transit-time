@@ -3,13 +3,15 @@
 //!
 //! # Public interface
 //!
-//! [`ProfileRouter`] is the contract. The concrete type [`ProfileRouting`]
-//! implements it. Callers hold `impl ProfileRouter` or the concrete type;
-//! internal representation is free to change.
+//! [`ProfileRouter`] is the contract. [`ProfileRouting`] is the single-window
+//! engine; [`SplitProfileRouting`] wraps it for long windows. Callers hold
+//! `impl ProfileRouter` or a concrete implementation; internal representation
+//! is free to change.
 
-use std::{cmp::Reverse, ops::ControlFlow};
+use std::{cmp::Reverse, collections::HashSet, ops::ControlFlow};
 
 use radix_heap::RadixHeapMap;
+use rayon::prelude::*;
 
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
@@ -143,6 +145,7 @@ pub trait ProfileRouter: Sized {
 // Implementation
 // ============================================================================
 
+const MIN_SPLIT_WINDOW_SECONDS: u32 = 60 * 60;
 const LAST_ENTRY: u32 = u32::MAX;
 const INVALID_PREV: u32 = u32::MAX;
 const MAX_DELTA: u16 = u16::MAX;
@@ -329,12 +332,234 @@ struct DestinationStats {
     reachable_fraction: u16,
 }
 
+#[derive(Debug, Copy, Clone)]
+struct DestinationTotals {
+    numerator: u64,
+    denominator: u32,
+}
+
 struct Index {
     /// Inverted index: per global stop_idx, the active patterns that actually
     /// serve that stop (have ≥1 scheduled event or ≥1 frequency entry there).
     /// Replaces the per-pop `O(active_patterns)` scan in `expand_transit_legs`
     /// with `O(patterns_serving_this_stop)`. Populated once per query in `new`.
     patterns_at_stop: Vec<Vec<u32>>,
+}
+
+/// Profile router that transparently splits long departure windows into
+/// independent [`ProfileRouting`] subqueries, runs those subqueries in
+/// parallel when rayon is available, and merges their outputs behind the same
+/// [`ProfileRouter`] contract.
+pub struct SplitProfileRouting {
+    chunks: Vec<ProfileRouting>,
+    isochrone: Isochrone,
+}
+
+impl ProfileRouter for SplitProfileRouting {
+    fn compute(
+        data: &PreparedData,
+        query: &ProfileQuery,
+        mut progress: impl FnMut(usize, usize) -> ControlFlow<()>,
+    ) -> Self {
+        assert!(
+            query.window_start <= query.window_end,
+            "Time window must have non-negative duration"
+        );
+        assert!(
+            query.max_time <= MAX_DELTA as u32,
+            "max_time must fit in u16 deltas"
+        );
+
+        let chunk_queries = split_profile_query(query);
+        if chunk_queries.len() == 1 {
+            let routing = ProfileRouting::compute(data, &chunk_queries[0], progress);
+            return Self {
+                isochrone: routing.isochrone().clone(),
+                chunks: vec![routing],
+            };
+        }
+
+        let chunks = compute_profile_chunks(data, &chunk_queries, &mut progress);
+        let isochrone = merge_chunk_isochrones(data, query, &chunks);
+        Self { chunks, isochrone }
+    }
+
+    fn isochrone(&self) -> &Isochrone {
+        &self.isochrone
+    }
+
+    fn optimal_paths(&self, data: &PreparedData, destination: u32) -> Vec<Path> {
+        let mut paths = Vec::new();
+        let mut walk_path: Option<Path> = None;
+        let mut seen_transit_paths = HashSet::new();
+
+        for chunk in &self.chunks {
+            for path in chunk.optimal_paths(data, destination) {
+                if path.segments.iter().all(|s| s.kind == SegmentKind::Walk) {
+                    if walk_path
+                        .as_ref()
+                        .is_none_or(|existing| path.total_time < existing.total_time)
+                    {
+                        walk_path = Some(path);
+                    }
+                    continue;
+                }
+
+                if let Some(key) = transit_path_key(&path)
+                    && !seen_transit_paths.insert(key)
+                {
+                    continue;
+                }
+                paths.push(path);
+            }
+        }
+
+        if let Some(walk_path) = walk_path {
+            paths.push(walk_path);
+        }
+        paths.sort_by_key(|p| (p.home_departure, p.arrival_time));
+        paths
+    }
+}
+
+fn split_profile_query(query: &ProfileQuery) -> Vec<ProfileQuery> {
+    let max_chunk_points = MAX_DELTA as u32 - query.max_time + 1;
+    let window_points = query.window_end - query.window_start + 1;
+    let min_required_chunks = window_points.div_ceil(max_chunk_points) as usize;
+    let is_long_window = window_points > MIN_SPLIT_WINDOW_SECONDS + 1;
+    let chunk_count = if is_long_window {
+        profile_thread_count().max(min_required_chunks)
+    } else {
+        min_required_chunks
+    }
+    .min(window_points as usize);
+
+    let mut chunk_start = query.window_start;
+    let mut chunks = Vec::with_capacity(chunk_count);
+
+    for idx in 0..chunk_count {
+        let remaining_points = query.window_end - chunk_start + 1;
+        let remaining_chunks = chunk_count - idx;
+        let chunk_points = remaining_points.div_ceil(remaining_chunks as u32);
+        let chunk_end = chunk_start + chunk_points - 1;
+        chunks.push(ProfileQuery {
+            window_start: chunk_start,
+            window_end: chunk_end,
+            ..*query
+        });
+
+        if chunk_end == query.window_end {
+            break;
+        }
+        chunk_start = chunk_end + 1;
+    }
+
+    chunks
+}
+
+fn profile_thread_count() -> usize {
+    if crate::rayon_available() {
+        rayon::current_num_threads().max(1)
+    } else {
+        1
+    }
+}
+
+fn compute_profile_chunks(
+    data: &PreparedData,
+    chunk_queries: &[ProfileQuery],
+    progress: &mut impl FnMut(usize, usize) -> ControlFlow<()>,
+) -> Vec<ProfileRouting> {
+    let total = chunk_queries.len();
+    if crate::rayon_available() && rayon::current_num_threads() > 1 {
+        compute_profile_chunks_parallel(data, chunk_queries, progress)
+    } else {
+        let mut chunks = Vec::with_capacity(total);
+        for (idx, chunk_query) in chunk_queries.iter().enumerate() {
+            chunks.push(ProfileRouting::compute(data, chunk_query, |_, _| {
+                ControlFlow::Continue(())
+            }));
+            if progress(idx + 1, total).is_break() {
+                break;
+            }
+        }
+        chunks
+    }
+}
+
+fn compute_profile_chunks_parallel(
+    data: &PreparedData,
+    chunk_queries: &[ProfileQuery],
+    progress: &mut impl FnMut(usize, usize) -> ControlFlow<()>,
+) -> Vec<ProfileRouting> {
+    let total = chunk_queries.len();
+    let chunks: Vec<_> = chunk_queries
+        .to_vec()
+        .into_par_iter()
+        .map(|query| ProfileRouting::compute(data, &query, |_, _| ControlFlow::Continue(())))
+        .collect();
+    let _ = progress(total, total);
+    chunks
+}
+
+fn merge_chunk_isochrones(
+    data: &PreparedData,
+    query: &ProfileQuery,
+    chunks: &[ProfileRouting],
+) -> Isochrone {
+    let contexts: Vec<_> = chunks
+        .iter()
+        .map(|chunk| ProfileQueryContext {
+            data,
+            query: &chunk.isochrone.query,
+            index: &chunk.patterns,
+        })
+        .collect();
+    let total_window_len = query.window_end - query.window_start + 1;
+    let stats = crate::maybe_par_collect(0..data.num_nodes, |node_id| {
+        let mut total = DestinationTotals {
+            numerator: 0,
+            denominator: 0,
+        };
+        for (chunk, context) in chunks.iter().zip(contexts.iter()) {
+            let chunk_total = context.compute_destination_totals(&chunk.frontier, node_id as u32);
+            total.numerator += chunk_total.numerator;
+            total.denominator += chunk_total.denominator;
+        }
+        destination_totals_to_stats(total, total_window_len)
+    });
+
+    Isochrone {
+        mean_travel_time: stats.iter().map(|s| s.mean_travel_time).collect(),
+        reachable_fraction: stats.iter().map(|s| s.reachable_fraction).collect(),
+        query: *query,
+    }
+}
+
+fn destination_totals_to_stats(totals: DestinationTotals, window_length: u32) -> DestinationStats {
+    let fraction_q = (totals.denominator as u64 * u16::MAX as u64 / window_length as u64) as u16;
+    let mean = if totals.denominator > 0 {
+        (totals.numerator / totals.denominator as u64).min(u16::MAX as u64) as u16
+    } else {
+        0
+    };
+    DestinationStats {
+        mean_travel_time: mean,
+        reachable_fraction: fraction_q,
+    }
+}
+
+fn transit_path_key(path: &Path) -> Option<(u32, u32, Option<u32>, Vec<u32>)> {
+    let first_transit = path
+        .segments
+        .iter()
+        .find(|segment| segment.kind == SegmentKind::Transit)?;
+    Some((
+        first_transit.start_time,
+        path.arrival_time,
+        first_transit.route_index,
+        first_transit.node_sequence.clone(),
+    ))
 }
 
 /// Opaque routing state. Internal representation is not part of the public
@@ -925,19 +1150,27 @@ impl<'a> ProfileQueryContext<'a> {
     }
 
     fn compute_destination_stats(&self, frontier: &Frontier, node_id: u32) -> DestinationStats {
+        destination_totals_to_stats(
+            self.compute_destination_totals(frontier, node_id),
+            self.query.window_end - self.query.window_start + 1,
+        )
+    }
+
+    fn compute_destination_totals(&self, frontier: &Frontier, node_id: u32) -> DestinationTotals {
         let node_frontier = &frontier.nodes[node_id as usize];
         let walk_time = node_frontier.walk_only_time;
 
         if !node_frontier.has_head() {
             if let Some(walk_time) = walk_time {
-                return DestinationStats {
-                    mean_travel_time: walk_time,
-                    reachable_fraction: u16::MAX,
+                let window_length = self.query.window_end - self.query.window_start + 1;
+                return DestinationTotals {
+                    numerator: walk_time as u64 * window_length as u64,
+                    denominator: window_length,
                 };
             } else {
-                return DestinationStats {
-                    mean_travel_time: 0,
-                    reachable_fraction: 0,
+                return DestinationTotals {
+                    numerator: 0,
+                    denominator: 0,
                 };
             }
         }
@@ -957,7 +1190,7 @@ impl<'a> ProfileQueryContext<'a> {
         //
         // prev_departure starts at -1 (exclusive lower bound) so the first
         // segment correctly includes t = 0.
-        let mut numerator: u32 = 0;
+        let mut numerator: u64 = 0;
         let mut denominator: u32 = 0;
         let mut prev_departure: i32 = -1;
 
@@ -978,29 +1211,21 @@ impl<'a> ProfileQueryContext<'a> {
             denominator += reachable;
             // Sum of travel(t) over the reachable t's:
             //   reachable * travel_min + (0 + 1 + … + reachable − 1)
-            numerator += reachable * travel;
-            numerator += reachable * (reachable - 1) / 2;
+            numerator += reachable as u64 * travel as u64;
+            numerator += (reachable as u64 * (reachable - 1) as u64) / 2;
 
             prev_departure = departure as i32;
         }
 
         if let Some(walk) = walk_time {
             // Walk fills every t not claimed by a transit entry above.
-            numerator += walk as u32 * (window_length - denominator);
+            numerator += walk as u64 * (window_length - denominator) as u64;
             denominator = window_length;
         }
 
-        // Quantize fraction over u16::MAX. `denominator <= window_length` by
-        // construction, so the ratio fits in u16 without saturation.
-        let fraction_q = (denominator * u16::MAX as u32 / window_length) as u16;
-        let mean = if denominator > 0 {
-            (numerator / denominator) as u16
-        } else {
-            0
-        };
-        DestinationStats {
-            mean_travel_time: mean,
-            reachable_fraction: fraction_q,
+        DestinationTotals {
+            numerator,
+            denominator,
         }
     }
 

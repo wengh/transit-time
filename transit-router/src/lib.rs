@@ -48,11 +48,11 @@ where
 
 // === WASM wrappers ===
 
-/// Thin WASM adapter over [`profile::ProfileRouting`]. All logic lives inside
+/// Thin WASM adapter over [`profile::SplitProfileRouting`]. All logic lives inside
 /// the inner pure-Rust struct; this exists only to serialize outputs for JS.
 #[wasm_bindgen]
 pub struct WasmProfileRouting {
-    inner: profile::ProfileRouting,
+    inner: profile::SplitProfileRouting,
 }
 
 #[wasm_bindgen]
@@ -221,7 +221,7 @@ impl TransitRouter {
         };
         let cb = progress_cb;
         WasmProfileRouting {
-            inner: profile::ProfileRouting::compute(&self.data, &query, |done, total| {
+            inner: profile::SplitProfileRouting::compute(&self.data, &query, |done, total| {
                 if let Some(ref f) = cb {
                     // JS callback returns truthy to request cancellation.
                     let cancel = f

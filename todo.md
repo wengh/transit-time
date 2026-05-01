@@ -163,4 +163,5 @@ UPDATE: only results in ~1% saving
 
 -------
 
-also split long departure window into several, compute in parallel, and merge results at the end
+read readme and profile.rs. then consider this:
+split long departure window into several separate queries, compute in parallel, and merge results at the end. this should be done transparently behind profile routing interface as a separate implementation of the interface which uses the current implementation as a subroutine.
