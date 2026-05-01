@@ -139,7 +139,8 @@ function AppInner() {
         timeMs: performance.now() - start,
         numThreads: result.numThreads,
       });
-      dispatch({ type: 'UNPIN_DESTINATION' });
+      // Don't unpin here — parameter-only changes should keep the destination
+      // pin and sample selection. Pin teardown happens in `SET_SOURCE`.
     }).catch((e) => {
       if (String(e).includes('cancelled')) return; // query was superseded
       console.error(e);

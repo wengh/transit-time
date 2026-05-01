@@ -170,7 +170,7 @@ export function reducer(state: AppState, action: Action): AppState {
         hoverData: null,
       };
     case 'SET_SOURCE':
-      return { ...state, sourceNode: action.node, sourceLatLng: action.latLng, pinnedNode: null, pinnedLatLng: null, hoverData: null };
+      return { ...state, sourceNode: action.node, sourceLatLng: action.latLng, pinnedNode: null, pinnedLatLng: null, hoverData: null, selectedSampleIdx: null, lockedSampleIdx: null };
     case 'SET_MAP_STYLE':
       return { ...state, mapStyle: action.style };
     case 'SET_WINDOW':
