@@ -123,6 +123,7 @@ function handleRunQuery(id: number, params: RunQueryWorkerParams) {
     sampleCounts,
     totalSamples: PROFILE_FRACTION_SCALE,
     departureTime: params.windowStart,
+    numThreads: profile.num_threads(),
   };
 }
 

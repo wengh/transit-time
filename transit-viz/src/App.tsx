@@ -137,6 +137,7 @@ function AppInner() {
         sampleCounts: result.sampleCounts,
         totalSamples: result.totalSamples,
         timeMs: performance.now() - start,
+        numThreads: result.numThreads,
       });
       dispatch({ type: 'UNPIN_DESTINATION' });
     }).catch((e) => {

@@ -71,6 +71,10 @@ impl WasmProfileRouting {
         self.inner.isochrone().reachable_fraction.clone()
     }
 
+    pub fn num_threads(&self) -> u32 {
+        self.inner.isochrone().num_threads
+    }
+
     pub fn window_start(&self) -> u32 {
         self.inner.isochrone().query.window_start
     }

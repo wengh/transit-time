@@ -27,6 +27,7 @@ export interface QueryResult {
   sampleCounts: Uint32Array;
   totalSamples: number;
   departureTime: number; // windowStart, kept for downstream consumers
+  numThreads: number;
 }
 
 export interface RunQueryParams {

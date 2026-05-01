@@ -162,7 +162,7 @@ interface ControlsProps {
 export default function Controls({ onRunQuery, onCopy, isFront, onActivate }: ControlsProps): React.ReactNode {
   const { state, dispatch } = useAppState();
   const justActivatedRef = useRef(false);
-  const { loadingState, mapStyle, windowStart, windowEnd, date, maxTimeMin, transferSlack, computeStatus, computeProgress, computeTimeMs, patternCount, nodeCount, stopCount, sourceNode, showCopiedMessage } = state;
+  const { loadingState, mapStyle, windowStart, windowEnd, date, maxTimeMin, transferSlack, computeStatus, computeProgress, computeTimeMs, computeNumThreads, patternCount, nodeCount, stopCount, sourceNode, showCopiedMessage } = state;
 
   const [collapsed, setCollapsed] = useState(() => window.innerWidth < 600);
   // Live (dragging) window values — committed on pointer up
@@ -191,7 +191,7 @@ export default function Controls({ onRunQuery, onCopy, isFront, onActivate }: Co
         ? `Computing... ${Math.round((computeProgress.done / computeProgress.total) * 100)}%`
         : 'Computing...'
       : computeStatus === 'done'
-        ? `Done. Spent ${Math.round(computeTimeMs)} ms.`
+        ? `Done. Spent ${Math.round(computeTimeMs)} ms using ${computeNumThreads} thread${computeNumThreads === 1 ? '' : 's'}.`
         : computeStatus === 'error'
           ? 'Error'
           : sourceNode !== null

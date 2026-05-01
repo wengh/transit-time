@@ -29,6 +29,7 @@ export interface AppState {
   computeStatus: 'idle' | 'computing' | 'done' | 'error';
   computeProgress: { done: number; total: number } | null;
   computeTimeMs: number;
+  computeNumThreads: number;
   patternCount: number;
   nodeCount: number;
   stopCount: number;
@@ -73,7 +74,7 @@ export type Action =
   | { type: 'SET_PATTERN_COUNT'; count: number }
   | { type: 'COMPUTING' }
   | { type: 'COMPUTE_PROGRESS'; done: number; total: number }
-  | { type: 'QUERY_DONE'; travelTimes: Float32Array; sampleCounts: Uint32Array; totalSamples: number; timeMs: number }
+  | { type: 'QUERY_DONE'; travelTimes: Float32Array; sampleCounts: Uint32Array; totalSamples: number; timeMs: number; numThreads: number }
   | { type: 'QUERY_ERROR' }
   | { type: 'PIN_DESTINATION'; node: number; latLng: [number, number]; hoverData: HoverData }
   | { type: 'UNPIN_DESTINATION' }
@@ -111,6 +112,7 @@ export const initialState: AppState = {
   computeStatus: 'idle',
   computeProgress: null,
   computeTimeMs: 0,
+  computeNumThreads: 1,
   patternCount: 0,
   nodeCount: 0,
   stopCount: 0,
@@ -186,7 +188,7 @@ export function reducer(state: AppState, action: Action): AppState {
     case 'COMPUTE_PROGRESS':
       return { ...state, computeProgress: { done: action.done, total: action.total } };
     case 'QUERY_DONE':
-      return { ...state, travelTimes: action.travelTimes, sampleCounts: action.sampleCounts, totalSamples: action.totalSamples, computeStatus: 'done', computeTimeMs: action.timeMs, computeProgress: null };
+      return { ...state, travelTimes: action.travelTimes, sampleCounts: action.sampleCounts, totalSamples: action.totalSamples, computeStatus: 'done', computeTimeMs: action.timeMs, computeNumThreads: action.numThreads, computeProgress: null };
     case 'QUERY_ERROR':
       return { ...state, computeStatus: 'error', computeProgress: null };
     case 'PIN_DESTINATION':

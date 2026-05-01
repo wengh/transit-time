@@ -68,6 +68,8 @@ pub struct Isochrone {
     /// (i.e. fraction = `value / u16::MAX as f32`). Computed as the normalised
     /// interval union over the per-node Pareto frontier.
     pub reachable_fraction: Vec<u16>,
+    /// Number of worker threads used for the profile query's window splitting.
+    pub num_threads: u32,
     pub query: ProfileQuery,
 }
 
@@ -374,13 +376,16 @@ impl ProfileRouter for SplitProfileRouting {
         if chunk_queries.len() == 1 {
             let routing = ProfileRouting::compute(data, &chunk_queries[0], progress);
             return Self {
-                isochrone: routing.isochrone().clone(),
+                isochrone: Isochrone {
+                    ..routing.isochrone().clone()
+                },
                 chunks: vec![routing],
             };
         }
 
         let chunks = compute_profile_chunks(data, &chunk_queries, &mut progress);
-        let isochrone = merge_chunk_isochrones(data, query, &chunks);
+        let num_threads = profile_thread_count().min(chunks.len()).max(1) as u32;
+        let isochrone = merge_chunk_isochrones(data, query, &chunks, num_threads);
         Self { chunks, isochrone }
     }
 
@@ -506,6 +511,7 @@ fn merge_chunk_isochrones(
     data: &PreparedData,
     query: &ProfileQuery,
     chunks: &[ProfileRouting],
+    num_threads: u32,
 ) -> Isochrone {
     let contexts: Vec<_> = chunks
         .iter()
@@ -532,6 +538,7 @@ fn merge_chunk_isochrones(
     Isochrone {
         mean_travel_time: stats.iter().map(|s| s.mean_travel_time).collect(),
         reachable_fraction: stats.iter().map(|s| s.reachable_fraction).collect(),
+        num_threads,
         query: *query,
     }
 }
@@ -803,6 +810,7 @@ impl ProfileRouter for ProfileRouting {
         let isochrone = Isochrone {
             mean_travel_time: stats.iter().map(|s| s.mean_travel_time).collect(),
             reachable_fraction: stats.iter().map(|s| s.reachable_fraction).collect(),
+            num_threads: 1,
             query: *query,
         };
 
