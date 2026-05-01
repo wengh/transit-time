@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState, useCallback, useId } from 'react';
 import { useAppState } from '../state/AppContext';
 import type { HoverPath } from '../utils/router';
 import { getMedianPath } from '../utils/hoverInfo';
+import { formatTime } from '../utils/format';
 
 // ─── chart data types ────────────────────────────────────────────────────────
 
@@ -208,9 +209,7 @@ function drawChart(
     let label: string;
     if (windowDurMin > 120) {
       const totalSec = windowStart + min * 60;
-      const h = Math.floor(totalSec / 3600) % 24;
-      const m = Math.floor((totalSec % 3600) / 60);
-      label = `${h}:${String(m).padStart(2, '0')}`;
+      label = formatTime(totalSec);
     } else {
       label = `+${min}`;
     }
@@ -469,10 +468,7 @@ export default function HoverInfo({ isFront, onActivate }: HoverInfoProps): Reac
   let titleText: string;
   if (selectedSampleIdx !== null) {
     if (displayPath?.totalTime != null) {
-      const dep = displayPath.departureTime;
-      const h = Math.floor(dep / 3600) % 24;
-      const m = Math.floor((dep % 3600) / 60);
-      const depStr = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+      const depStr = formatTime(displayPath.departureTime);
       titleText = `Travel time: ${Math.round(displayPath.totalTime / 60)} min  (depart ${depStr})`;
     } else {
       titleText = 'Unreachable';

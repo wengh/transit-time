@@ -54,6 +54,7 @@ function RangeSlider({ id, min, max, step, defaultValue, formatDisplay, onCommit
 // ── Dual-ended range slider ────────────────────────────────────────────────
 
 const STEP = 300; // 5 minutes
+const SERVICE_WINDOW_MAX = 27 * 3600; // GTFS service-day times can extend past midnight.
 
 interface DualRangeSliderProps {
   windowStart: number;
@@ -68,14 +69,14 @@ function DualRangeSlider({ windowStart, windowEnd, onChange, onCommit }: DualRan
   const liveRef = useRef({ start: windowStart, end: windowEnd });
   liveRef.current = { start: windowStart, end: windowEnd };
 
-  const pct = (v: number) => (v / 86400) * 100;
+  const pct = (v: number) => (v / SERVICE_WINDOW_MAX) * 100;
 
   const snap = (v: number) => Math.round(v / STEP) * STEP;
   const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 
   const xToSec = useCallback((clientX: number) => {
     const rect = trackRef.current!.getBoundingClientRect();
-    return clamp(snap(((clientX - rect.left) / rect.width) * 86400), 0, 86400);
+    return clamp(snap(((clientX - rect.left) / rect.width) * SERVICE_WINDOW_MAX), 0, SERVICE_WINDOW_MAX);
   }, []);
 
   const handlePointerDown = useCallback((kind: 'start' | 'end' | 'middle', e: React.PointerEvent) => {
@@ -94,13 +95,13 @@ function DualRangeSlider({ windowStart, windowEnd, onChange, onCommit }: DualRan
     if (kind === 'start') {
       s = clamp(sec, 0, en - STEP);
     } else if (kind === 'end') {
-      en = clamp(sec, s + STEP, 86400);
+      en = clamp(sec, s + STEP, SERVICE_WINDOW_MAX);
     } else {
       const dur = origEnd - origStart;
       const rect = trackRef.current!.getBoundingClientRect();
       const dx = e.clientX - d.originX;
-      const dSec = snap((dx / rect.width) * 86400);
-      s = clamp(origStart + dSec, 0, 86400 - dur);
+      const dSec = snap((dx / rect.width) * SERVICE_WINDOW_MAX);
+      s = clamp(origStart + dSec, 0, SERVICE_WINDOW_MAX - dur);
       en = s + dur;
     }
     s = snap(s); en = snap(en);
