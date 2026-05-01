@@ -52,6 +52,7 @@ pub struct StopData {
 
 #[derive(Debug, Clone)]
 pub struct EventData {
+    /// Absolute seconds since the start of the GTFS service day.
     pub time_offset: u32,
     pub stop_index: u32,
     pub travel_time: u32,
@@ -388,7 +389,7 @@ pub fn load_with_stats(buf: &[u8]) -> Result<(PreparedData, LoadStats), String> 
 
         let data_vec: Vec<EventData> = (0..num_events)
             .map(|i| EventData {
-                time_offset: time_offsets[i],
+                time_offset: min_time + time_offsets[i],
                 stop_index: stop_indices[i],
                 travel_time: travel_times[i],
                 next_event_index: next_event_indices[i],
