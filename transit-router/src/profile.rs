@@ -671,7 +671,7 @@ impl ProfileRouting {
             };
 
             // Find predecessor entry
-            let prev = if let Some(curr) = curr {
+            let mut prev = if let Some(curr) = curr {
                 // Find the predecessor entry with the same home_departure_delta
                 self.frontier
                     .iter(prev_node)
@@ -684,7 +684,7 @@ impl ProfileRouting {
             };
 
             // Determine whether this entry is walk or transit
-            let prev_arrival_delta = get_true_arrival_delta(prev_node, &prev);
+            let mut prev_arrival_delta = get_true_arrival_delta(prev_node, &prev);
 
             let is_walk = if let Some(curr) = curr {
                 let edge_weight = context.data.adj[prev_node]
@@ -723,43 +723,42 @@ impl ProfileRouting {
             } else {
                 // Is transit
                 let curr = curr.unwrap();
-                // Find the transit leg taken
-                // Require transfer slack unless this is from initial walk
-                let min_departure = delta_to_time(prev_arrival_delta)
-                    + if prev.is_none() {
-                        0
-                    } else {
-                        self.isochrone.query.transfer_slack
-                    };
-                let max_departure = delta_to_time(curr.arrival_delta);
-                let mut found = None;
-                let _ = context.expand_transit_legs(
-                    ExpandTransitLegQuery {
-                        node: prev_node,
-                        min_departure,
-                        max_departure,
-                        expand_headways: false,
-                        max_arrival: Some(max_departure),
-                    },
-                    |leg| {
-                        if leg.node_id == curr_node && leg.arrival_delta == curr.arrival_delta {
-                            found = Some(leg);
-                            ControlFlow::Break(())
+                let find_leg = |prev_arrival_delta: u16, prev: Option<Entry>| {
+                    // Find the transit leg taken
+                    // Require transfer slack unless this is from initial walk
+                    let min_departure = delta_to_time(prev_arrival_delta)
+                        + if prev.is_none() {
+                            0
                         } else {
-                            ControlFlow::Continue(())
-                        }
-                    },
-                );
-                let leg = found.unwrap_or_else(|| {
-                    panic!(
-                        "No transit leg found from {} to {} departing between t={} and t={}\nprev_entries={:#?}\ncurr={:#?}",
-                        context.get_stop_name(prev_node),
-                        context.get_stop_name(curr_node),
-                        min_departure,
-                        max_departure,
-                        self.frontier.iter(prev_node).collect::<Vec<_>>(),
-                        curr,
-                    )
+                            self.isochrone.query.transfer_slack
+                        };
+                    let max_departure = delta_to_time(curr.arrival_delta);
+                    let mut found = None;
+                    let _ = context.expand_transit_legs(
+                        ExpandTransitLegQuery {
+                            node: prev_node,
+                            min_departure,
+                            max_departure,
+                            expand_headways: false,
+                            max_arrival: Some(max_departure),
+                        },
+                        |leg| {
+                            if leg.node_id == curr_node && leg.arrival_delta == curr.arrival_delta {
+                                found = Some(leg);
+                                ControlFlow::Break(())
+                            } else {
+                                ControlFlow::Continue(())
+                            }
+                        },
+                    );
+                    found
+                };
+                let leg = find_leg(prev_arrival_delta, prev).unwrap_or_else(|| {
+                    // Try to fall back assuming that prev is initial walk instead of another transit leg
+                    assert!(prev.is_some(), "Failed to find transit leg");
+                    prev = None;
+                    prev_arrival_delta = get_true_arrival_delta(prev_node, &prev);
+                    find_leg(prev_arrival_delta, None).expect("Failed to find transit leg")
                 });
 
                 // Find the route and the stops
@@ -832,6 +831,15 @@ impl ProfileRouting {
                 // We built it in reverse order so now flip it back
                 segment.node_sequence.reverse();
             }
+        }
+
+        if let Some(first) = segments.first() {
+            assert!(
+                first.start_time == delta_to_time(home_departure_delta),
+                "First segment start time {} does not match home departure time {}",
+                first.start_time,
+                delta_to_time(home_departure_delta)
+            );
         }
 
         let arrival_delta = get_true_arrival_delta(destination, &entry);
