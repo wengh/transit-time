@@ -75,9 +75,12 @@ fn main() {
     let mut routing_opt = None;
     for i in 0..repeats {
         let t0 = Instant::now();
-        let routing = profile::SplitProfileRouting::compute(&prepared, &query, |_, _| {
+        let routing = match profile::SplitProfileRouting::compute(&prepared, &query, |_, _| {
             std::ops::ControlFlow::Continue(())
-        });
+        }) {
+            std::ops::ControlFlow::Continue(r) => r,
+            std::ops::ControlFlow::Break(()) => unreachable!("smoke progress never cancels"),
+        };
         let dt = t0.elapsed();
         timings.push(dt);
         println!("  run {}/{}: {:.3} s", i + 1, repeats, dt.as_secs_f64());

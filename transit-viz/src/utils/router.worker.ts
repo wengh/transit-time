@@ -92,6 +92,8 @@ function handleRunQuery(id: number, params: RunQueryWorkerParams) {
   const numNodes = router.num_nodes();
   const dateInt = parseInt(params.date.replace(/-/g, ''));
 
+  // compute_profile now returns null when the progress callback requested
+  // cancellation (or any internal cancellation path fires).
   profile = router.compute_profile(
     params.sourceNode,
     params.windowStart,
@@ -103,9 +105,9 @@ function handleRunQuery(id: number, params: RunQueryWorkerParams) {
       postMessage({ id, type: 'progress', done, total } satisfies WorkerResponse);
       return cancelFlag ? Atomics.load(cancelFlag, 0) !== 0 : false;
     },
-  );
+  ) ?? null;
 
-  if (cancelFlag && Atomics.load(cancelFlag, 0) !== 0) {
+  if (!profile) {
     freeCurrentProfile();
     throw new Error('cancelled');
   }

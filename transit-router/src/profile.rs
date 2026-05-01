@@ -8,7 +8,15 @@
 //! `impl ProfileRouter` or a concrete implementation; internal representation
 //! is free to change.
 
-use std::{cmp::Reverse, ops::ControlFlow, sync::Arc};
+use std::{
+    cmp::Reverse,
+    ops::ControlFlow,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        mpsc,
+    },
+};
 
 use radix_heap::RadixHeapMap;
 use rayon::prelude::*;
@@ -127,13 +135,15 @@ pub enum SegmentKind {
 /// without touching callers in `lib.rs` or tests.
 pub trait ProfileRouter: Sized {
     /// Run profile routing from `query.source_node` over the departure window.
-    /// `progress` is called with `(entries_done, total_entries)` during phase 2.
-    /// Return `ControlFlow::Break(())` to cancel the computation early.
+    /// `progress` is called from the calling thread with `(done, total)`; return
+    /// `ControlFlow::Break(())` from it to cancel the computation. The compute
+    /// itself returns `ControlFlow::Break(())` when it observed cancellation
+    /// and `ControlFlow::Continue(self)` on a complete run.
     fn compute(
         data: &PreparedData,
         query: &ProfileQuery,
         progress: impl FnMut(usize, usize) -> ControlFlow<()>,
-    ) -> Self;
+    ) -> ControlFlow<(), Self>;
 
     /// Per-node isochrone for map rendering.
     fn isochrone(&self) -> &Isochrone;
@@ -363,7 +373,7 @@ impl ProfileRouter for SplitProfileRouting {
         data: &PreparedData,
         query: &ProfileQuery,
         mut progress: impl FnMut(usize, usize) -> ControlFlow<()>,
-    ) -> Self {
+    ) -> ControlFlow<(), Self> {
         assert!(
             query.window_start <= query.window_end,
             "Time window must have non-negative duration"
@@ -375,21 +385,26 @@ impl ProfileRouter for SplitProfileRouting {
 
         let chunk_queries = split_profile_query(query);
         if chunk_queries.len() == 1 {
-            let routing = ProfileRouting::compute(data, &chunk_queries[0], progress);
-            return Self {
+            // Forward inner per-tick progress under the same M-scaled contract
+            // the multi-chunk paths use, so the caller sees one consistent shape.
+            let routing = ProfileRouting::compute(data, &chunk_queries[0], |done, total| {
+                let scaled = scale_progress(done, total);
+                progress(scaled, PROGRESS_INCREMENTS)
+            })?;
+            return ControlFlow::Continue(Self {
                 isochrone: Isochrone {
                     ..routing.isochrone().clone()
                 },
                 chunks: vec![routing],
-            };
+            });
         }
 
         let index = Arc::new(Index::new(data, query));
         let chunks =
-            compute_profile_chunks(data, &chunk_queries, Arc::clone(&index), &mut progress);
+            compute_profile_chunks(data, &chunk_queries, Arc::clone(&index), &mut progress)?;
         let num_threads = profile_thread_count().min(chunks.len()).max(1) as u32;
         let isochrone = merge_chunk_isochrones(data, query, &chunks, num_threads);
-        Self { chunks, isochrone }
+        ControlFlow::Continue(Self { chunks, isochrone })
     }
 
     fn isochrone(&self) -> &Isochrone {
@@ -482,31 +497,37 @@ fn profile_thread_count() -> usize {
     }
 }
 
+/// Progress increments per chunk. Wrapping every chunk's local `(done, total)`
+/// onto a shared `[0, PROGRESS_INCREMENTS]` axis lets the wrapper compose chunk progress
+/// onto a single `[0, chunk_count * PROGRESS_INCREMENTS]` global stream without exposing
+/// per-chunk denominators that would jump under the caller.
+const PROGRESS_INCREMENTS: usize = 100;
+
 fn compute_profile_chunks(
     data: &PreparedData,
     chunk_queries: &[ProfileQuery],
     index: Arc<Index>,
     progress: &mut impl FnMut(usize, usize) -> ControlFlow<()>,
-) -> Vec<ProfileRouting> {
+) -> ControlFlow<(), Vec<ProfileRouting>> {
     let total = chunk_queries.len();
     if crate::rayon_available() && rayon::current_num_threads() > 1 {
-        compute_profile_chunks_parallel(data, chunk_queries, index, progress)
-    } else {
-        // TODO: fix progress reporting
-        let mut chunks = Vec::with_capacity(total);
-        for (idx, chunk_query) in chunk_queries.iter().enumerate() {
-            chunks.push(ProfileRouting::compute_with_index(
-                data,
-                chunk_query,
-                Arc::clone(&index),
-                |_, _| ControlFlow::Continue(()),
-            ));
-            if progress(idx + 1, total).is_break() {
-                break;
-            }
-        }
-        chunks
+        return compute_profile_chunks_parallel(data, chunk_queries, index, progress);
     }
+    let total_units = total * PROGRESS_INCREMENTS;
+    let mut chunks = Vec::with_capacity(total);
+    for (idx, chunk_query) in chunk_queries.iter().enumerate() {
+        let result = ProfileRouting::compute_with_index(
+            data,
+            chunk_query,
+            Arc::clone(&index),
+            |local_done, local_total| {
+                let local = scale_progress(local_done, local_total);
+                progress(idx * PROGRESS_INCREMENTS + local, total_units)
+            },
+        )?;
+        chunks.push(result);
+    }
+    ControlFlow::Continue(chunks)
 }
 
 fn compute_profile_chunks_parallel(
@@ -514,19 +535,92 @@ fn compute_profile_chunks_parallel(
     chunk_queries: &[ProfileQuery],
     index: Arc<Index>,
     progress: &mut impl FnMut(usize, usize) -> ControlFlow<()>,
-) -> Vec<ProfileRouting> {
-    let total = chunk_queries.len();
-    let chunks: Vec<_> = chunk_queries
-        .to_vec()
-        .into_par_iter()
-        .map(|query| {
-            ProfileRouting::compute_with_index(data, &query, Arc::clone(&index), |_, _| {
-                ControlFlow::Continue(())
-            })
-        })
+) -> ControlFlow<(), Vec<ProfileRouting>> {
+    let total_chunks = chunk_queries.len();
+    let total_units = total_chunks * PROGRESS_INCREMENTS;
+    let global_done = AtomicUsize::new(0);
+    let aborted = AtomicBool::new(false);
+    let check_abort = || {
+        if aborted.load(Ordering::Relaxed) {
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(())
+        }
+    };
+    let (tx, rx) = mpsc::channel::<()>();
+
+    // `in_place_scope` runs the body on the calling thread (and doesn't
+    // require it to be `Send`), unlike `rayon::scope` which may move it.
+    // That's exactly what we need: every `progress(...)` call below stays
+    // on the thread that entered `compute`.
+    let mut results: Vec<ControlFlow<(), ProfileRouting>> = Vec::with_capacity(total_chunks);
+    rayon::in_place_scope(|s| {
+        let global_done = &global_done;
+        let results = &mut results;
+        // Moves `tx` into the closure so `rx.recv()` returns `Err` once every
+        // worker's clone has been dropped (i.e. all chunks finished).
+        s.spawn(move |_| {
+            chunk_queries
+                .par_iter()
+                .map(|query| {
+                    check_abort()?;
+                    let mut prev: usize = 0;
+                    let bump = |new_local: usize, prev: &mut usize| {
+                        if new_local > *prev {
+                            let delta = new_local - *prev;
+                            *prev = new_local;
+                            global_done.fetch_add(delta, Ordering::Relaxed);
+                            let _ = tx.send(());
+                        }
+                    };
+                    let result = ProfileRouting::compute_with_index(
+                        data,
+                        &query,
+                        Arc::clone(&index),
+                        |local_done, local_total| {
+                            check_abort()?;
+                            let local = scale_progress(local_done, local_total);
+                            bump(local, &mut prev);
+                            ControlFlow::Continue(())
+                        },
+                    );
+                    // Top up so the global counter still reaches total_units even
+                    // for chunks where the inner progress closure never fired
+                    // (e.g. zero initial transit entries) or stopped short.
+                    bump(PROGRESS_INCREMENTS, &mut prev);
+                    result
+                })
+                .collect_into_vec(results);
+        });
+
+        // Calling thread: pump wakeups, report progress, observe cancellation.
+        while rx.recv().is_ok() {
+            if aborted.load(Ordering::Relaxed) {
+                continue; // drain remaining wakeups so the loop exits cleanly
+            }
+            let done = global_done.load(Ordering::Relaxed);
+            if progress(done, total_units).is_break() {
+                aborted.store(true, Ordering::Relaxed);
+            }
+        }
+    });
+
+    check_abort()?;
+    let chunks = results
+        .into_iter()
+        // All values are Continue if we didn't abort, so unwrap is fine.
+        .map(|r| r.continue_value().unwrap())
         .collect();
-    let _ = progress(total, total);
-    chunks
+    ControlFlow::Continue(chunks)
+}
+
+#[inline(always)]
+fn scale_progress(done: usize, total: usize) -> usize {
+    if total == 0 {
+        PROGRESS_INCREMENTS
+    } else {
+        (done * PROGRESS_INCREMENTS / total).min(PROGRESS_INCREMENTS)
+    }
 }
 
 fn merge_chunk_isochrones(
@@ -591,7 +685,7 @@ impl ProfileRouter for ProfileRouting {
         data: &PreparedData,
         query: &ProfileQuery,
         progress: impl FnMut(usize, usize) -> ControlFlow<()>,
-    ) -> Self {
+    ) -> ControlFlow<(), Self> {
         let index = Arc::new(Index::new(data, query));
         Self::compute_with_index(data, query, index, progress)
     }
@@ -611,7 +705,7 @@ impl ProfileRouting {
         query: &ProfileQuery,
         index: Arc<Index>,
         mut progress: impl FnMut(usize, usize) -> ControlFlow<()>,
-    ) -> Self {
+    ) -> ControlFlow<(), Self> {
         assert!(
             query.window_start <= query.window_end,
             "Time window must have non-negative duration"
@@ -805,10 +899,13 @@ impl ProfileRouting {
                 );
             }
             entries_done += chunk.len();
-            if progress(entries_done, total_entries).is_break() {
-                break;
-            }
+            progress(entries_done, total_entries)?;
         }
+        // Guarantee a terminal tick so wrappers see the chunk cross 100% even
+        // when `total_entries == 0` (the loop above never fired) or when the
+        // last chunk's `entries_done` already equalled the total before the
+        // final progress call.
+        progress(total_entries, total_entries)?;
 
         let phase2_ms = t_phase2.elapsed().as_secs_f64() * 1e3;
         let t_phase3 = Instant::now();
@@ -831,11 +928,11 @@ impl ProfileRouting {
             setup_ms, phase1_ms, phase2_ms, phase3_ms, total_ms, initial_transit_count,
         );
 
-        Self {
+        ControlFlow::Continue(Self {
             frontier,
             isochrone,
             patterns: index,
-        }
+        })
     }
 
     fn isochrone(&self) -> &Isochrone {

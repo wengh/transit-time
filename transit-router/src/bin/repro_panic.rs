@@ -45,12 +45,14 @@ fn main() {
         max_time: 45 * 60,
     };
 
-    let routing =
-        ProfileRouting::compute(
-            &prepared,
-            &query,
-            |_, _| std::ops::ControlFlow::Continue(()),
-        );
+    let routing = match ProfileRouting::compute(
+        &prepared,
+        &query,
+        |_, _| std::ops::ControlFlow::Continue(()),
+    ) {
+        std::ops::ControlFlow::Continue(r) => r,
+        std::ops::ControlFlow::Break(()) => unreachable!("repro progress never cancels"),
+    };
 
     let target: Option<u32> = std::env::args().nth(2).and_then(|s| s.parse().ok());
     if let Some(dst) = target {

@@ -203,8 +203,10 @@ impl TransitRouter {
     /// handle containing the isochrone (for map rendering) and internal Pareto
     /// frontier state (for subsequent `optimal_paths` queries).
     ///
-    /// `progress_cb` (optional): called with `(chunks_done, total_chunks)` during
-    /// the transit phase so the caller can report progress to the UI.
+    /// `progress_cb` (optional): called with `(done, total)` during the
+    /// transit phase so the caller can report progress to the UI. The JS
+    /// callback returns truthy to request cancellation; if it does (or any
+    /// other cancellation path fires) this method returns `None`.
     pub fn compute_profile(
         &self,
         source_node: u32,
@@ -214,7 +216,7 @@ impl TransitRouter {
         transfer_slack: u32,
         max_time: u32,
         progress_cb: Option<js_sys::Function>,
-    ) -> WasmProfileRouting {
+    ) -> Option<WasmProfileRouting> {
         let query = profile::ProfileQuery {
             source_node,
             window_start,
@@ -224,21 +226,21 @@ impl TransitRouter {
             max_time,
         };
         let cb = progress_cb;
-        WasmProfileRouting {
-            inner: profile::SplitProfileRouting::compute(&self.data, &query, |done, total| {
-                if let Some(ref f) = cb {
-                    // JS callback returns truthy to request cancellation.
-                    let cancel = f
-                        .call2(&JsValue::NULL, &JsValue::from(done), &JsValue::from(total))
-                        .map(|v| v.is_truthy())
-                        .unwrap_or(false);
-                    if cancel {
-                        return std::ops::ControlFlow::Break(());
-                    }
+        let result = profile::SplitProfileRouting::compute(&self.data, &query, |done, total| {
+            if let Some(ref f) = cb {
+                let cancel = f
+                    .call2(&JsValue::NULL, &JsValue::from(done), &JsValue::from(total))
+                    .map(|v| v.is_truthy())
+                    .unwrap_or(false);
+                if cancel {
+                    return std::ops::ControlFlow::Break(());
                 }
-                std::ops::ControlFlow::Continue(())
-            }),
-        }
+            }
+            std::ops::ControlFlow::Continue(())
+        });
+        result
+            .continue_value()
+            .map(|r| WasmProfileRouting { inner: r })
     }
 
     /// Chain per-leg GTFS shapes for a transit segment, or build a straight-line
