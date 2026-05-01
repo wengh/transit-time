@@ -8,7 +8,7 @@
 //! `impl ProfileRouter` or a concrete implementation; internal representation
 //! is free to change.
 
-use std::{cmp::Reverse, collections::HashSet, ops::ControlFlow, sync::Arc};
+use std::{cmp::Reverse, ops::ControlFlow, sync::Arc};
 
 use radix_heap::RadixHeapMap;
 use rayon::prelude::*;
@@ -16,7 +16,7 @@ use rayon::prelude::*;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
 
-use crate::data::PreparedData;
+use crate::{data::PreparedData, maybe_par_collect};
 use serde::Serialize;
 
 /// Zero-cost no-op Instant for wasm32 where std::time::Instant panics.
@@ -397,26 +397,29 @@ impl ProfileRouter for SplitProfileRouting {
     }
 
     fn optimal_paths(&self, data: &PreparedData, destination: u32) -> Vec<Path> {
-        let mut paths = Vec::new();
+        let mut paths: Vec<Path> = Vec::new();
         let mut walk_path: Option<Path> = None;
-        let mut seen_transit_paths = HashSet::new();
 
-        for chunk in &self.chunks {
-            for path in chunk.optimal_paths(data, destination) {
+        let chunk_results =
+            maybe_par_collect(&self.chunks, |chunk| chunk.optimal_paths(data, destination));
+
+        for chunk_result in chunk_results {
+            for path in chunk_result {
                 if path.segments.iter().all(|s| s.kind == SegmentKind::Walk) {
-                    if walk_path
-                        .as_ref()
-                        .is_none_or(|existing| path.total_time < existing.total_time)
-                    {
+                    if walk_path.is_none() {
                         walk_path = Some(path);
                     }
                     continue;
                 }
-
-                if let Some(key) = transit_path_key(&path)
-                    && !seen_transit_paths.insert(key)
+                if let Some(last) = paths.last()
+                    && last.arrival_time == path.arrival_time
                 {
-                    continue;
+                    // Two paths may have the same arrival time
+                    // when crossing chunk boundary.
+                    // In this case the one from later chunk is
+                    // always optimal since
+                    // it has a later home departure time.
+                    paths.pop();
                 }
                 paths.push(path);
             }
@@ -489,6 +492,7 @@ fn compute_profile_chunks(
     if crate::rayon_available() && rayon::current_num_threads() > 1 {
         compute_profile_chunks_parallel(data, chunk_queries, index, progress)
     } else {
+        // TODO: fix progress reporting
         let mut chunks = Vec::with_capacity(total);
         for (idx, chunk_query) in chunk_queries.iter().enumerate() {
             chunks.push(ProfileRouting::compute_with_index(
@@ -572,19 +576,6 @@ fn destination_totals_to_stats(totals: DestinationTotals, window_length: u32) ->
         mean_travel_time: mean,
         reachable_fraction: fraction_q,
     }
-}
-
-fn transit_path_key(path: &Path) -> Option<(u32, u32, Option<u32>, Vec<u32>)> {
-    let first_transit = path
-        .segments
-        .iter()
-        .find(|segment| segment.kind == SegmentKind::Transit)?;
-    Some((
-        first_transit.start_time,
-        path.arrival_time,
-        first_transit.route_index,
-        first_transit.node_sequence.clone(),
-    ))
 }
 
 /// Opaque routing state. Internal representation is not part of the public
