@@ -25,6 +25,7 @@ export default function MapView(): React.ReactNode {
   const bboxRectRef = useRef<L.Rectangle | null>(null);
   const tileLayerRef = useRef<L.TileLayer | null>(null);
   const routePolylinesRef = useRef<L.Path[]>([]);
+  const routeRendererRef = useRef<L.Canvas | null>(null);
   const drawRouteLayersRef = useRef<((paths: HoverPath[]) => void) | null>(null);
   const lastHoveredNodeRef = useRef<number | null>(null);
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -112,17 +113,22 @@ export default function MapView(): React.ReactNode {
 
     function drawRouteSegments(allPaths: HoverPath[]) {
       clearRouteOverlay();
+      if (!routeRendererRef.current) {
+        routeRendererRef.current = L.canvas({ pane: 'transitLines', padding: 0.5 });
+      }
+      const renderer = routeRendererRef.current;
       const routeColorMap: Record<string, string> = {};
       let colorIdx = 0;
+      const seenSegments = new Set<string>();
+      const seenTransfers = new Set<string>();
       for (const { segments } of allPaths) {
         for (const seg of segments) {
           if (seg.coords.length < 2) continue;
           let color: string, dashArray: string | null, weight: number;
           let coords = seg.coords;
           if (seg.edgeType === 0) {
-            // Normalize walk segment direction so overlapping walks on the same
-            // edge share an identical dash pattern instead of merging into a
-            // solid line.
+            // Normalize walk segment direction so the dedup key collapses
+            // walks traversing the same edge in either direction.
             const first = coords[0], last = coords[coords.length - 1];
             if (first[0] > last[0] || (first[0] === last[0] && first[1] > last[1])) {
               coords = [...coords].reverse();
@@ -150,24 +156,36 @@ export default function MapView(): React.ReactNode {
             dashArray = null;
             weight = 4;
           }
-          const line = L.polyline(coords, { color, weight, opacity: 1, ...(dashArray ? { dashArray } : {}), interactive: false, pane: 'transitLines' }).addTo(map);
-          routePolylinesRef.current.push(line);
+          const a = coords[0];
+          const b = coords[coords.length - 1];
+          const routeKey = seg.edgeType === 0 ? '' : seg.routeIdx;
+          const segKey = `${seg.edgeType}|${routeKey}|${a[0]},${a[1]}|${b[0]},${b[1]}|${coords.length}`;
+          if (!seenSegments.has(segKey)) {
+            seenSegments.add(segKey);
+            const line = L.polyline(coords, { color, weight, opacity: 1, ...(dashArray ? { dashArray } : {}), interactive: false, pane: 'transitLines', renderer }).addTo(map);
+            routePolylinesRef.current.push(line);
+          }
           // Add circle at end of transit segments to mark transfers
           if (seg.edgeType === 1) {
             const s = stateRef.current;
             if (s.nodeCoords && seg.endNodeIdx !== undefined) {
-              const lat = s.nodeCoords[seg.endNodeIdx * 2];
-              const lon = s.nodeCoords[seg.endNodeIdx * 2 + 1];
-              const circle = L.circleMarker([lat, lon], {
-                radius: 5,
-                color: color,
-                fillColor: color,
-                fillOpacity: 0.7,
-                weight: 1,
-                interactive: false,
-                pane: 'transitLines',
-              }).addTo(map);
-              routePolylinesRef.current.push(circle);
+              const tKey = `${seg.routeIdx}|${seg.endNodeIdx}`;
+              if (!seenTransfers.has(tKey)) {
+                seenTransfers.add(tKey);
+                const lat = s.nodeCoords[seg.endNodeIdx * 2];
+                const lon = s.nodeCoords[seg.endNodeIdx * 2 + 1];
+                const circle = L.circleMarker([lat, lon], {
+                  radius: 5,
+                  color: color,
+                  fillColor: color,
+                  fillOpacity: 0.7,
+                  weight: 1,
+                  interactive: false,
+                  pane: 'transitLines',
+                  renderer,
+                }).addTo(map);
+                routePolylinesRef.current.push(circle);
+              }
             }
           }
         }
