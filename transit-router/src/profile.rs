@@ -147,7 +147,8 @@ pub trait ProfileRouter: Sized {
 // Implementation
 // ============================================================================
 
-const MIN_SPLIT_WINDOW_SECONDS: u32 = 60 * 60;
+const MIN_SPLIT_CHUNK_SECONDS: u32 = 15 * 60; // 15 minutes
+
 const LAST_ENTRY: u32 = u32::MAX;
 const INVALID_PREV: u32 = u32::MAX;
 const MAX_DELTA: u16 = u16::MAX;
@@ -428,16 +429,22 @@ impl ProfileRouter for SplitProfileRouting {
 }
 
 fn split_profile_query(query: &ProfileQuery) -> Vec<ProfileQuery> {
+    split_profile_query_for_threads(query, profile_thread_count())
+}
+
+fn split_profile_query_for_threads(
+    query: &ProfileQuery,
+    desired_parallelism: usize,
+) -> Vec<ProfileQuery> {
     let max_chunk_points = MAX_DELTA as u32 - query.max_time + 1;
     let window_points = query.window_end - query.window_start + 1;
     let min_required_chunks = window_points.div_ceil(max_chunk_points) as usize;
-    let is_long_window = window_points > MIN_SPLIT_WINDOW_SECONDS + 1;
-    let chunk_count = if is_long_window {
-        profile_thread_count().max(min_required_chunks)
-    } else {
-        min_required_chunks
-    }
-    .min(window_points as usize);
+    let max_chunks_by_min_size = (window_points / MIN_SPLIT_CHUNK_SECONDS).max(1) as usize;
+    let max_allowed_chunks = max_chunks_by_min_size.max(min_required_chunks);
+    let chunk_count = desired_parallelism
+        .max(1)
+        .clamp(min_required_chunks, max_allowed_chunks)
+        .min(window_points as usize);
 
     let mut chunk_start = query.window_start;
     let mut chunks = Vec::with_capacity(chunk_count);
@@ -1362,5 +1369,74 @@ impl<'a> ProfileQueryContext<'a> {
             }
         }
         ControlFlow::Continue(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn query(window_duration: u32, max_time: u32) -> ProfileQuery {
+        ProfileQuery {
+            source_node: 0,
+            window_start: 10_000,
+            window_end: 10_000 + window_duration,
+            date: 20260430,
+            transfer_slack: 60,
+            max_time,
+        }
+    }
+
+    fn assert_chunks_cover_query(chunks: &[ProfileQuery], query: &ProfileQuery) {
+        assert!(!chunks.is_empty());
+        assert_eq!(chunks.first().unwrap().window_start, query.window_start);
+        assert_eq!(chunks.last().unwrap().window_end, query.window_end);
+        for pair in chunks.windows(2) {
+            assert_eq!(pair[0].window_end + 1, pair[1].window_start);
+        }
+    }
+
+    #[test]
+    fn split_query_targets_parallelism_with_large_enough_chunks() {
+        let query = query(4 * 60 * 60, 45 * 60);
+        let chunks = split_profile_query_for_threads(&query, 4);
+
+        assert_eq!(chunks.len(), 4);
+        assert_chunks_cover_query(&chunks, &query);
+    }
+
+    #[test]
+    fn split_query_caps_chunks_by_min_chunk_size() {
+        let query = query(60 * 60, 45 * 60);
+        let chunks = split_profile_query_for_threads(&query, 8);
+
+        assert_eq!(chunks.len(), 2);
+        assert_chunks_cover_query(&chunks, &query);
+        assert!(
+            chunks.iter().all(|chunk| {
+                chunk.window_end - chunk.window_start + 1 >= MIN_SPLIT_CHUNK_SECONDS
+            })
+        );
+    }
+
+    #[test]
+    fn split_query_keeps_short_windows_unsplit() {
+        let query = query(20 * 60, 45 * 60);
+        let chunks = split_profile_query_for_threads(&query, 8);
+
+        assert_eq!(chunks.len(), 1);
+        assert_chunks_cover_query(&chunks, &query);
+    }
+
+    #[test]
+    fn split_query_raises_chunks_to_fit_max_chunk_size() {
+        let query = query(2_000, MAX_DELTA as u32 - 600);
+        let chunks = split_profile_query_for_threads(&query, 1);
+
+        assert!(chunks.len() > 1);
+        assert_chunks_cover_query(&chunks, &query);
+        assert!(chunks.iter().all(
+            |chunk| chunk.window_end - chunk.window_start + query.max_time <= MAX_DELTA as u32
+        ));
     }
 }
