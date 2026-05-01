@@ -152,6 +152,7 @@ const MIN_SPLIT_CHUNK_SECONDS: u32 = 15 * 60; // 15 minutes
 const LAST_ENTRY: u32 = u32::MAX;
 const INVALID_PREV: u32 = u32::MAX;
 const MAX_DELTA: u16 = u16::MAX;
+const WALK_UNREACHABLE: u16 = u16::MAX;
 
 /// Sentinel `ArenaEntry` for an empty inline head.
 /// `prev = INVALID_PREV` signals "no head".
@@ -201,19 +202,15 @@ struct ArenaEntry {
 /// `ArenaEntry` (entry + sibling pointer), uniform with the entries it points
 /// to in the arena. "No head" is encoded by the sentinel `prev == INVALID_PREV`
 /// (guaranteed unused by the `MAX_DELTA` assert in `compute`), not
-/// by an `Option` discriminant — that's what gets us to 16 bytes.
+/// by an `Option` discriminant — that's what gets us to 12 bytes.
 ///
-/// Layout: `ArenaEntry` (12B = Entry 8B + u32) + `Option<u16>` (4B) =
-/// 16 bytes, align 4. Verified by the const assert below.
+/// Layout: `ArenaEntry` (12B = Entry 8B + u32), align 4. Verified by the const
+/// assert below.
 #[derive(Debug)]
 struct NodeFrontier {
     /// Most-recent (smallest-arrival) Pareto entry plus its sibling pointer
-    /// into the arena tail. Empty iff `head.entry.arrival_delta == INVALID_DELTA`.
+    /// into the arena tail. Empty iff `head.entry.prev == INVALID_PREV`.
     head: ArenaEntry,
-
-    /// Time it takes to walk from source to this node, or `None` if not
-    /// walk-reachable within `max_time`.
-    walk_only_time: Option<u16>,
 }
 
 impl NodeFrontier {
@@ -223,7 +220,7 @@ impl NodeFrontier {
     }
 }
 
-const _: () = assert!(std::mem::size_of::<NodeFrontier>() == 16);
+const _: () = assert!(std::mem::size_of::<NodeFrontier>() == 12);
 
 #[derive(Debug)]
 struct Frontier {
@@ -347,6 +344,9 @@ struct Index {
     /// Replaces the per-pop `O(active_patterns)` scan in `expand_transit_legs`
     /// with `O(patterns_serving_this_stop)`. Populated once per query in `new`.
     patterns_at_stop: Vec<Vec<u32>>,
+    /// Walk-only travel time from the source to each node. `WALK_UNREACHABLE`
+    /// means not reachable within `query.max_time`.
+    walk_only_time: Vec<u16>,
 }
 
 /// Profile router that transparently splits long departure windows into
@@ -369,8 +369,8 @@ impl ProfileRouter for SplitProfileRouting {
             "Time window must have non-negative duration"
         );
         assert!(
-            query.max_time <= MAX_DELTA as u32,
-            "max_time must fit in u16 deltas"
+            query.max_time < WALK_UNREACHABLE as u32,
+            "max_time must fit below the walk-unreachable sentinel"
         );
 
         let chunk_queries = split_profile_query(query);
@@ -629,6 +629,10 @@ impl ProfileRouting {
             query.window_end - query.window_start + query.max_time <= MAX_DELTA as u32,
             "Time values must fit in u16 deltas"
         );
+        assert!(
+            query.max_time < WALK_UNREACHABLE as u32,
+            "max_time must fit below the walk-unreachable sentinel"
+        );
 
         let t_total = Instant::now();
 
@@ -644,7 +648,6 @@ impl ProfileRouting {
             nodes: (0..n)
                 .map(|_| NodeFrontier {
                     head: EMPTY_ARENA_ENTRY,
-                    walk_only_time: None,
                 })
                 .collect(),
             arena: Vec::new(),
@@ -653,9 +656,8 @@ impl ProfileRouting {
 
         let t_phase1 = Instant::now();
 
-        // ── Phase 1: walk Dijkstra from source ───────────────────────────────
-        // - Populate all walk-only entries (home_departure_delta = INITIAL_WALK),
-        //   valid for any home departure across the whole window.
+        // ── Phase 1: initial transit boardings from walk-reachable stops ─────
+        // - Walk-only travel times are precomputed once in `Index`.
         // - Gather all transit legs available from walk-reachable stops:
         //   departure time in [window_start + walk_time, window_end + walk_time],
         //   i.e. home departure (= transit dep − walk_time) in [window_start, window_end].
@@ -665,15 +667,11 @@ impl ProfileRouting {
 
         // Our workload has monotonic pop so we can use a radix heap instead of a binary heap for better performance.
         let mut queue: RadixHeapMap<Reverse<u16>, u32> = RadixHeapMap::new();
-        queue.push(Reverse(0u16), query.source_node);
-        frontier.nodes[query.source_node as usize].walk_only_time = Some(0);
-
-        while let Some((Reverse(walk_time), node_id)) = queue.pop() {
-            // Skip stale queue entry
-            if walk_time > frontier.nodes[node_id as usize].walk_only_time.unwrap() {
+        for (node_id, &walk_time) in index.walk_only_time.iter().enumerate() {
+            if walk_time == WALK_UNREACHABLE {
                 continue;
             }
-
+            let node_id = node_id as u32;
             let window_length = (query.window_end - query.window_start) as u16;
             let _ = context.expand_transit_legs(
                 ExpandTransitLegQuery {
@@ -696,24 +694,6 @@ impl ProfileRouting {
                     ControlFlow::Continue(())
                 },
             );
-
-            for &(neighbor, edge_walk_time) in &data.adj[node_id] {
-                let new_walk_time = walk_time.saturating_add(edge_walk_time);
-
-                if new_walk_time as u32 > query.max_time {
-                    continue;
-                }
-
-                if let Some(existing_walk_time) = frontier.nodes[neighbor as usize].walk_only_time
-                    && new_walk_time >= existing_walk_time
-                {
-                    continue;
-                }
-
-                frontier.nodes[neighbor as usize].walk_only_time = Some(new_walk_time);
-
-                queue.push(Reverse(new_walk_time), neighbor);
-            }
         }
 
         // Sort by descending home_departure (= transit_departure − walk_time)
@@ -742,6 +722,7 @@ impl ProfileRouting {
             for &transit_entry in chunk {
                 relax(
                     &mut frontier,
+                    &index,
                     &mut queue,
                     transit_entry.node_id,
                     transit_entry.entry,
@@ -770,7 +751,7 @@ impl ProfileRouting {
                         arrival_delta: new_arrival_delta,
                     };
 
-                    relax(&mut frontier, &mut queue, neighbor, new_entry);
+                    relax(&mut frontier, &index, &mut queue, neighbor, new_entry);
                 }
 
                 // Skip unnecessary work if not a transit stop. Under v11,
@@ -794,7 +775,7 @@ impl ProfileRouting {
                     Some(
                         query.window_start + next_entry.arrival_delta as u32 + query.transfer_slack,
                     )
-                } else if let Some(walk_time) = frontier.nodes[node_id as usize].walk_only_time {
+                } else if let Some(walk_time) = index.walk_time(node_id) {
                     Some(query.window_start + home_departure_delta as u32 + walk_time as u32)
                 } else {
                     None
@@ -819,6 +800,7 @@ impl ProfileRouting {
                     |leg| {
                         relax(
                             &mut frontier,
+                            &index,
                             &mut queue,
                             leg.node_id,
                             Entry {
@@ -854,7 +836,7 @@ impl ProfileRouting {
         let phase3_ms = t_phase3.elapsed().as_secs_f64() * 1e3;
         let total_ms = t_total.elapsed().as_secs_f64() * 1e3;
         eprintln!(
-            "[profile] setup={:.1}ms phase1(walk)={:.1}ms phase2(transit)={:.1}ms phase3(stats)={:.1}ms total={:.1}ms initial_transit_entries={}",
+            "[profile] setup={:.1}ms phase1(initial)={:.1}ms phase2(transfer)={:.1}ms phase3(stats)={:.1}ms total={:.1}ms initial_transit_entries={}",
             setup_ms, phase1_ms, phase2_ms, phase3_ms, total_ms, initial_transit_count,
         );
 
@@ -879,11 +861,7 @@ impl ProfileRouting {
             .frontier
             .iter(destination)
             .map(|entry| Some(*entry))
-            .chain(
-                self.frontier.nodes[destination as usize]
-                    .walk_only_time
-                    .map(|_| None),
-            )
+            .chain(self.patterns.walk_time(destination).map(|_| None))
             .collect();
         crate::maybe_par_collect(entries, |entry| {
             self.reconstruct_path(&context, destination, entry)
@@ -911,7 +889,7 @@ impl ProfileRouting {
                 entry.arrival_delta
             } else {
                 // Walk-only entry, arrival delta is just departure delta + walk time
-                home_departure_delta + self.frontier.nodes[node as usize].walk_only_time.unwrap()
+                home_departure_delta + self.patterns.walk_time(node).unwrap()
             }
         };
 
@@ -925,13 +903,11 @@ impl ProfileRouting {
                 curr.prev
             } else {
                 // Walk-only entry, find predecessor from neighbours
-                let curr_walk_time = self.frontier.nodes[curr_node as usize]
-                    .walk_only_time
-                    .unwrap();
+                let curr_walk_time = self.patterns.walk_time(curr_node).unwrap();
                 context.data.adj[curr_node]
                     .iter()
                     .find(|&&(neighbor, edge_walk_time)| {
-                        let Some(walk_time) = self.frontier.nodes[neighbor as usize].walk_only_time else {
+                        let Some(walk_time) = self.patterns.walk_time(neighbor) else {
                             return false;
                         };
                         walk_time.saturating_add(edge_walk_time) == curr_walk_time
@@ -1125,11 +1101,13 @@ impl ProfileRouting {
 #[inline(always)]
 fn relax(
     frontier: &mut Frontier,
+    index: &Index,
     queue: &mut RadixHeapMap<Reverse<u16>, u32>,
     node_id: u32,
     new_entry: Entry,
 ) {
-    if let Some(walk_time) = frontier.nodes[node_id as usize].walk_only_time
+    let walk_time = index.walk_only_time[node_id as usize];
+    if walk_time != WALK_UNREACHABLE
         && new_entry.arrival_delta - new_entry.home_departure_delta >= walk_time
     {
         return;
@@ -1168,6 +1146,10 @@ struct ProfileQueryContext<'a> {
 
 impl Index {
     fn new(data: &PreparedData, query: &ProfileQuery) -> Self {
+        assert!(
+            query.max_time < WALK_UNREACHABLE as u32,
+            "max_time must fit below the walk-unreachable sentinel"
+        );
         let active_patterns = crate::router::patterns_for_date(data, query.date);
         let num_stops = data.stops.len();
         let mut patterns_at_stop: Vec<Vec<u32>> = vec![Vec::new(); num_stops];
@@ -1181,8 +1163,49 @@ impl Index {
                 }
             }
         }
-        Self { patterns_at_stop }
+        let walk_only_time = compute_walk_only_times(data, query);
+        Self {
+            patterns_at_stop,
+            walk_only_time,
+        }
     }
+
+    #[inline(always)]
+    fn walk_time(&self, node_id: u32) -> Option<u16> {
+        let walk_time = self.walk_only_time[node_id as usize];
+        (walk_time != WALK_UNREACHABLE).then_some(walk_time)
+    }
+}
+
+fn compute_walk_only_times(data: &PreparedData, query: &ProfileQuery) -> Vec<u16> {
+    let mut walk_only_time = vec![WALK_UNREACHABLE; data.num_nodes];
+    let mut queue: RadixHeapMap<Reverse<u16>, u32> = RadixHeapMap::new();
+    walk_only_time[query.source_node as usize] = 0;
+    queue.push(Reverse(0u16), query.source_node);
+
+    while let Some((Reverse(walk_time), node_id)) = queue.pop() {
+        if walk_time != walk_only_time[node_id as usize] {
+            continue;
+        }
+
+        for &(neighbor, edge_walk_time) in &data.adj[node_id] {
+            let new_walk_time = walk_time.saturating_add(edge_walk_time);
+
+            if new_walk_time == WALK_UNREACHABLE || new_walk_time as u32 > query.max_time {
+                continue;
+            }
+
+            let existing = &mut walk_only_time[neighbor as usize];
+            if new_walk_time >= *existing {
+                continue;
+            }
+
+            *existing = new_walk_time;
+            queue.push(Reverse(new_walk_time), neighbor);
+        }
+    }
+
+    walk_only_time
 }
 
 impl<'a> ProfileQueryContext<'a> {
@@ -1203,7 +1226,7 @@ impl<'a> ProfileQueryContext<'a> {
 
     fn compute_destination_totals(&self, frontier: &Frontier, node_id: u32) -> DestinationTotals {
         let node_frontier = &frontier.nodes[node_id as usize];
-        let walk_time = node_frontier.walk_only_time;
+        let walk_time = self.index.walk_time(node_id);
 
         if !node_frontier.has_head() {
             if let Some(walk_time) = walk_time {
@@ -1440,7 +1463,7 @@ mod tests {
         let query = query(60 * 60, 45 * 60);
         let chunks = split_profile_query_for_threads(&query, 8);
 
-        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks.len(), 4);
         assert_chunks_cover_query(&chunks, &query);
         assert!(
             chunks.iter().all(|chunk| {
