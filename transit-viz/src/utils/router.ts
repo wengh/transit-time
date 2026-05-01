@@ -124,11 +124,23 @@ export async function runQuery(
   params: RunQueryParams,
   onProgress?: (done: number, total: number) => void,
 ): Promise<QueryResult> {
-  // Signal cancellation to any in-flight query.
-  if (activeCancelBuf) Atomics.store(activeCancelBuf, 0, 1);
+  cancelInflightQuery();
   const sab = new SharedArrayBuffer(4);
   activeCancelBuf = new Int32Array(sab);
   return call({ type: 'runQuery', params, cancelBuf: sab }, { onProgress });
+}
+
+/// Signal cancellation to any in-flight query without queueing a new one.
+/// Call this before any `await` on a worker round-trip (e.g. `snapToNode`)
+/// that would otherwise sit behind a running compute — the worker's progress
+/// callback polls the shared cancel flag from inside the running compute, so
+/// flipping it from the main thread unblocks the worker without needing the
+/// worker to be idle first.
+export function cancelInflightQuery() {
+  if (activeCancelBuf) {
+    Atomics.store(activeCancelBuf, 0, 1);
+    activeCancelBuf = null;
+  }
 }
 
 export async function getProfileHoverData(node: number): Promise<HoverPath[]> {

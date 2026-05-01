@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef } from 'react';
 import L from 'leaflet';
 import { useAppState } from '../state/AppContext';
 import { initWebGL, renderIsochrone } from '../utils/webgl';
-import { getProfileHoverData, snapToNode, type HoverPath } from '../utils/router';
+import { cancelInflightQuery, getProfileHoverData, snapToNode, type HoverPath } from '../utils/router';
 import { ROUTE_COLORS } from '../utils/colors';
 import { getHashParams, setHashParams } from '../utils/urlHash';
 import { getSortedTravelTimes } from '../utils/hoverInfo';
@@ -229,6 +229,10 @@ export default function MapView(): React.ReactNode {
     async function setSource(lat: number, lng: number) {
       const s = stateRef.current;
       if (s.loadingState !== 'ready') return;
+      // Cancel any in-flight query *before* awaiting the worker round-trip
+      // for snapToNode — otherwise that message queues behind the running
+      // compute and the cancel flag isn't flipped until the compute finishes.
+      cancelInflightQuery();
       const node = await snapToNode(lat, lng);
       if (node === null) return;
       const latLng = getNodeLatLng(node);
