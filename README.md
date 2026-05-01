@@ -38,7 +38,7 @@ All controls re-run the routing query immediately when changed.
 
 **Date** — select any calendar date. The tool activates only the transit schedules valid on that date (weekday, weekend, or holiday service), and shows how many service patterns are active.
 
-**Departure time** — slider from midnight to midnight in 5-minute steps. The router computes travel times across a one-hour window starting at this time, smoothing out the "lucky timing" effect of any single departure.
+**Departure window** — dual-ended slider from midnight to midnight in 5-minute steps. The router computes travel times across the selected window, smoothing out the "lucky timing" effect of any single departure. Long windows are split internally and evaluated in parallel; the UI shows how many worker threads were used when the query finishes.
 
 **Max travel time** — caps the search at 10–180 minutes. Locations unreachable within this limit are not shown.
 
@@ -46,7 +46,7 @@ All controls re-run the routing query immediately when changed.
 
 ### Sawtooth chart
 
-When a destination is pinned, a chart appears below the itinerary. The X-axis is departure time within the hour window; the Y-axis is travel time to the destination. Each diagonal line represents one transit trip: as your departure time gets later and closer to when the vehicle leaves the stop, your wait shrinks and total travel time decreases — that is the downward slope. When you depart late enough to miss that vehicle, travel time jumps up because you must wait for the next one, forming the sawtooth pattern. The dashed horizontal line (if present) is the walk-only time. Shaded grey columns mark departure times where no transit option falls within the travel-time limit.
+When a destination is pinned, a chart appears below the itinerary. The X-axis is departure time within the selected window; the Y-axis is travel time to the destination. Each diagonal line represents one transit trip: as your departure time gets later and closer to when the vehicle leaves the stop, your wait shrinks and total travel time decreases — that is the downward slope. When you depart late enough to miss that vehicle, travel time jumps up because you must wait for the next one, forming the sawtooth pattern. The dashed horizontal line (if present) is the walk-only time. Shaded grey columns mark departure times where no transit option falls within the travel-time limit.
 
 Hover over a transit segment to highlight that departure and see its route on the map; click to lock it.
 
@@ -100,7 +100,7 @@ The city `.bin` file is fetched and streamed through the browser's native gzip d
 
 **Loading and indexing:** The WASM module decodes all Pcodec-compressed sections and builds two additional in-memory structures: a flat (jagged array) adjacency list for the street graph, and a spatial grid index over all nodes for snapping a clicked lat/lon to the nearest node. Because nodes are stored in SFC order, walking a neighborhood during the search accesses nodes that are close together in both geography and memory, improving cache locality.
 
-**Routing — profile search over a departure window:** When an origin is set, the router computes a Pareto frontier of (departure, arrival) pairs for every reachable node in a single pass across the full one-hour window. Walking edges have a fixed cost based on distance at 1.4 m/s. At each node that is a transit stop, the router scans the event arrays for all active service patterns and considers every boarding that sits on the frontier; a transfer between different vehicles requires at least the configured transfer slack. From the frontier the router derives, per node, the mean travel time and the fraction of departures within the window from which the node is reachable — the two quantities the overlay and hover summaries display. A compact set of representative (Pareto-optimal) departures is retained for path reconstruction on hover, which drives the sawtooth chart and the itinerary view.
+**Routing — profile search over a departure window:** When an origin is set, the router computes a Pareto frontier of (departure, arrival) pairs for every reachable node across the selected departure window. The public routing interface uses a split-window implementation: it divides long windows into a small number of subqueries, generally one per available worker thread, while enforcing a 15-minute minimum chunk size and the internal maximum chunk size required by the profile engine's compact time deltas. Each subquery uses the single-window profile router, then the wrapper merges the per-node totals and path frontiers transparently. Walking edges have a fixed cost based on distance at 1.4 m/s. At each node that is a transit stop, the router scans the event arrays for all active service patterns and considers every boarding that sits on the frontier; a transfer between different vehicles requires at least the configured transfer slack. From the frontier the router derives, per node, the mean travel time and the fraction of departures within the window from which the node is reachable — the two quantities the overlay and hover summaries display. A compact set of representative (Pareto-optimal) departures is retained for path reconstruction on hover, which drives the sawtooth chart and the itinerary view.
 
 **Rendering:** After routing, each node's travel time is sent to a WebGL shader that maps it to a color. Points are rendered onto an offscreen canvas at a size proportional to the map zoom level, producing a continuous-looking coverage surface. The canvas is then composited onto the Leaflet map as an image overlay. Route polylines are drawn using the GTFS shape data where available, falling back to straight-line segments between stops.
 
@@ -238,16 +238,16 @@ TOTAL in-memory              105.90 MB
 
 === Load Timings ===
 Phase                           Time % of total
-parse nodes                   8.9 ms     5.7%
-parse edges                  12.7 ms     8.1%
+parse nodes                   8.9 ms     5.5%
+parse edges                  12.8 ms     7.9%
 parse stops                   0.9 ms     0.6%
 parse route_names             0.0 ms     0.0%
 parse route_colors            0.0 ms     0.0%
-parse+index patterns        101.3 ms    64.9%
-parse leg_shapes              1.3 ms     0.9%
-build adj list               12.0 ms     7.7%
-build node_grid              19.0 ms    12.2%
-TOTAL                       156.1 ms
+parse+index patterns        101.5 ms    62.7%
+parse leg_shapes              1.3 ms     0.8%
+build adj list               12.8 ms     7.9%
+build node_grid              23.6 ms    14.6%
+TOTAL                       161.9 ms
 
 === Counts ===
 nodes                         514123
@@ -263,19 +263,22 @@ grid cells                      5935
 
 Source node: 440203
 Window: 09:00–10:00 (60 min), max_time=45 min, slack=60s
-[profile] setup=5.1ms phase1(walk)=8.8ms phase2(transit)=282.4ms phase3(stats)=5.8ms total=302.1ms initial_transit_entries=182242
-  run 1/10: 0.302 s
-  run 2/10: 0.314 s
-  run 3/10: 0.320 s
-  run 4/10: 0.317 s
-  run 5/10: 0.279 s
-  run 6/10: 0.277 s
-  run 7/10: 0.291 s
-  run 8/10: 0.265 s
-  run 9/10: 0.271 s
-  run 10/10: 0.284 s
+[profile] setup=5.5ms phase1(walk)=4.3ms phase2(transit)=90.0ms phase3(stats)=4.1ms total=103.9ms initial_transit_entries=46464
+[profile] setup=5.5ms phase1(walk)=4.7ms phase2(transit)=90.4ms phase3(stats)=3.6ms total=104.2ms initial_transit_entries=46698
+[profile] setup=5.1ms phase1(walk)=5.3ms phase2(transit)=90.3ms phase3(stats)=6.4ms total=107.0ms initial_transit_entries=46670
+[profile] setup=5.3ms phase1(walk)=4.8ms phase2(transit)=88.1ms phase3(stats)=8.8ms total=107.1ms initial_transit_entries=46706
+  run 1/10: 0.120 s
+  run 2/10: 0.127 s
+  run 3/10: 0.124 s
+  run 4/10: 0.143 s
+  run 5/10: 0.142 s
+  run 6/10: 0.107 s
+  run 7/10: 0.127 s
+  run 8/10: 0.135 s
+  run 9/10: 0.118 s
+  run 10/10: 0.116 s
 
-Profile routing (10 runs): avg 0.292 s, min 0.265 s, max 0.320 s
+Profile routing (10 runs, 4 threads): avg 0.126 s, min 0.107 s, max 0.143 s
 Nodes reached: 283469 / 514123
 Min travel time: 0 min, avg: 35 min, max: 45 min
 Always reachable (fraction=1): 135398, sometimes: 148071
@@ -296,9 +299,9 @@ Always reachable (fraction=1): 135398, sometimes: 148071
 | Mexico City | 1.5M |
 | Montreal | 19.6M |
 | Moscow | 4.9M |
-| New York City | 18.0M |
+| New York City | 17.9M |
 | Ottawa | 8.0M |
-| Paris | 17.5M |
+| Paris | 17.4M |
 | Philadelphia | 4.3M |
 | San Francisco Bay Area | 10.3M |
 | Seattle | 5.4M |

@@ -75,7 +75,7 @@ fn main() {
     let mut routing_opt = None;
     for i in 0..repeats {
         let t0 = Instant::now();
-        let routing = profile::ProfileRouting::compute(&prepared, &query, |_, _| {
+        let routing = profile::SplitProfileRouting::compute(&prepared, &query, |_, _| {
             std::ops::ControlFlow::Continue(())
         });
         let dt = t0.elapsed();
@@ -92,6 +92,7 @@ fn main() {
     let elapsed = avg;
 
     let iso = routing.isochrone();
+    let num_threads = iso.num_threads;
     // Reachability is signaled by `reachable_fraction > 0`; the mean is
     // undefined (zero-init) for never-reachable nodes.
     let reachable: Vec<u32> = iso
@@ -105,14 +106,29 @@ fn main() {
     println!();
     if repeats > 1 {
         println!(
-            "Profile routing ({} runs): avg {:.3} s, min {:.3} s, max {:.3} s",
+            "Profile routing ({} runs, {} {}): avg {:.3} s, min {:.3} s, max {:.3} s",
             repeats,
+            num_threads,
+            if num_threads == 1 {
+                "thread"
+            } else {
+                "threads"
+            },
             avg.as_secs_f64(),
             min.as_secs_f64(),
             max.as_secs_f64()
         );
     } else {
-        println!("Profile routing took {:.3}", elapsed.as_secs_f32());
+        println!(
+            "Profile routing took {:.3} s using {} {}",
+            elapsed.as_secs_f32(),
+            num_threads,
+            if num_threads == 1 {
+                "thread"
+            } else {
+                "threads"
+            },
+        );
     }
     println!(
         "Nodes reached: {} / {}",

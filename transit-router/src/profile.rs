@@ -8,7 +8,7 @@
 //! `impl ProfileRouter` or a concrete implementation; internal representation
 //! is free to change.
 
-use std::{cmp::Reverse, collections::HashSet, ops::ControlFlow};
+use std::{cmp::Reverse, collections::HashSet, ops::ControlFlow, sync::Arc};
 
 use radix_heap::RadixHeapMap;
 use rayon::prelude::*;
@@ -384,7 +384,9 @@ impl ProfileRouter for SplitProfileRouting {
             };
         }
 
-        let chunks = compute_profile_chunks(data, &chunk_queries, &mut progress);
+        let index = Arc::new(Index::new(data, query));
+        let chunks =
+            compute_profile_chunks(data, &chunk_queries, Arc::clone(&index), &mut progress);
         let num_threads = profile_thread_count().min(chunks.len()).max(1) as u32;
         let isochrone = merge_chunk_isochrones(data, query, &chunks, num_threads);
         Self { chunks, isochrone }
@@ -480,17 +482,21 @@ fn profile_thread_count() -> usize {
 fn compute_profile_chunks(
     data: &PreparedData,
     chunk_queries: &[ProfileQuery],
+    index: Arc<Index>,
     progress: &mut impl FnMut(usize, usize) -> ControlFlow<()>,
 ) -> Vec<ProfileRouting> {
     let total = chunk_queries.len();
     if crate::rayon_available() && rayon::current_num_threads() > 1 {
-        compute_profile_chunks_parallel(data, chunk_queries, progress)
+        compute_profile_chunks_parallel(data, chunk_queries, index, progress)
     } else {
         let mut chunks = Vec::with_capacity(total);
         for (idx, chunk_query) in chunk_queries.iter().enumerate() {
-            chunks.push(ProfileRouting::compute(data, chunk_query, |_, _| {
-                ControlFlow::Continue(())
-            }));
+            chunks.push(ProfileRouting::compute_with_index(
+                data,
+                chunk_query,
+                Arc::clone(&index),
+                |_, _| ControlFlow::Continue(()),
+            ));
             if progress(idx + 1, total).is_break() {
                 break;
             }
@@ -502,13 +508,18 @@ fn compute_profile_chunks(
 fn compute_profile_chunks_parallel(
     data: &PreparedData,
     chunk_queries: &[ProfileQuery],
+    index: Arc<Index>,
     progress: &mut impl FnMut(usize, usize) -> ControlFlow<()>,
 ) -> Vec<ProfileRouting> {
     let total = chunk_queries.len();
     let chunks: Vec<_> = chunk_queries
         .to_vec()
         .into_par_iter()
-        .map(|query| ProfileRouting::compute(data, &query, |_, _| ControlFlow::Continue(())))
+        .map(|query| {
+            ProfileRouting::compute_with_index(data, &query, Arc::clone(&index), |_, _| {
+                ControlFlow::Continue(())
+            })
+        })
         .collect();
     let _ = progress(total, total);
     chunks
@@ -581,13 +592,33 @@ fn transit_path_key(path: &Path) -> Option<(u32, u32, Option<u32>, Vec<u32>)> {
 pub struct ProfileRouting {
     frontier: Frontier,
     isochrone: Isochrone,
-    patterns: Index,
+    patterns: Arc<Index>,
 }
 
 impl ProfileRouter for ProfileRouting {
     fn compute(
         data: &PreparedData,
         query: &ProfileQuery,
+        progress: impl FnMut(usize, usize) -> ControlFlow<()>,
+    ) -> Self {
+        let index = Arc::new(Index::new(data, query));
+        Self::compute_with_index(data, query, index, progress)
+    }
+
+    fn isochrone(&self) -> &Isochrone {
+        &self.isochrone
+    }
+
+    fn optimal_paths(&self, data: &PreparedData, destination: u32) -> Vec<Path> {
+        ProfileRouting::optimal_paths(self, data, destination)
+    }
+}
+
+impl ProfileRouting {
+    fn compute_with_index(
+        data: &PreparedData,
+        query: &ProfileQuery,
+        index: Arc<Index>,
         mut progress: impl FnMut(usize, usize) -> ControlFlow<()>,
     ) -> Self {
         assert!(
@@ -603,7 +634,6 @@ impl ProfileRouter for ProfileRouting {
 
         let n = data.num_nodes;
         let t_setup = Instant::now();
-        let index = Index::new(data, query);
         let context = ProfileQueryContext {
             data,
             query,
