@@ -142,6 +142,24 @@ cd transit-viz && npm run build
 ```
 The output in `transit-viz/dist/` is a fully static site that can be deployed anywhere.
 
+### Formatting
+
+`cargo fmt` formats Rust; `prettier` formats the frontend (TS/TSX/CSS/HTML/JSON/MD inside `transit-viz/`).
+
+A [`pre-commit`](https://pre-commit.com/) hook auto-formats staged files. Install once:
+
+```
+pipx install pre-commit   # or: brew install pre-commit
+pre-commit install
+```
+
+The hooks run `cargo fmt` and `prettier` from your local toolchain (`language: system`), so they don't build any isolated environments. CI also enforces these via `.github/workflows/format.yml` — to check manually:
+
+```
+cargo fmt --all -- --check
+cd transit-viz && npm run format:check
+```
+
 ### Adding a city
 
 The easiest way is to auto-generate a config from a BBBike city name or OSM PBF URL:

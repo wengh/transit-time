@@ -1,0 +1,20 @@
+# Run `pre-commit install` once to enable the git hook.
+# All hooks use `language: system`, so they run the tools already on PATH
+# (your Rust toolchain + transit-viz/node_modules) instead of building isolated envs.
+repos:
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: cargo fmt
+        language: system
+        entry: cargo fmt --
+        types: [rust]
+        pass_filenames: true
+
+      - id: prettier
+        name: prettier
+        language: system
+        # Runs from repo root; uses the prettier installed by `npm ci` in transit-viz/.
+        entry: transit-viz/node_modules/.bin/prettier --write --ignore-unknown --config transit-viz/.prettierrc.json --ignore-path transit-viz/.prettierignore
+        files: ^transit-viz/.*\.(ts|tsx|js|jsx|css|html|json|md)$
+        exclude: ^transit-viz/(node_modules|dist|pkg|public/data)/|^transit-viz/package-lock\.json$
