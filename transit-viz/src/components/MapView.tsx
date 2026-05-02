@@ -219,9 +219,9 @@ export default function MapView(): React.ReactNode {
     drawRouteLayersRef.current = drawRouteSegments;
 
     async function showDestination(node: number, pin: boolean) {
-      const s = stateRef.current;
-      if (!s.travelTimes) return;
-      const tt = s.travelTimes[node];
+      const sAtStart = stateRef.current;
+      if (!sAtStart.travelTimes) return;
+      const tt = sAtStart.travelTimes[node];
       if (isNaN(tt) || tt < 0) {
         clearRouteOverlay();
         if (destMarkerRef.current) {
@@ -233,6 +233,12 @@ export default function MapView(): React.ReactNode {
       }
 
       const allPaths = await getProfileHoverData(node);
+
+      // Re-verify state after async work. If the source changed or was
+      // cleared, this destination data is stale.
+      const s = stateRef.current;
+      if (!s.travelTimes || s.sourceNode !== sAtStart.sourceNode) return;
+
       const travelTimes = getSortedTravelTimes(allPaths);
 
       drawRouteSegments(allPaths.filter((p) => p.segments.length > 0));
@@ -318,6 +324,9 @@ export default function MapView(): React.ReactNode {
         if (node !== null) showDestination(node, true);
         return;
       }
+
+      // Desktop: ignore the second click of a double-click (handled by onDblClick).
+      if (e.originalEvent.detail > 1) return;
 
       if (s.sourceNode === null) return;
 

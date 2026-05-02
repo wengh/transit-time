@@ -196,6 +196,8 @@ export function reducer(state: AppState, action: Action): AppState {
         ...state,
         sourceNode: action.node,
         sourceLatLng: action.latLng,
+        travelTimes: null,
+        sampleCounts: null,
         pinnedNode: null,
         pinnedLatLng: null,
         hoverData: null,
