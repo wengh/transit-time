@@ -496,7 +496,6 @@ export default function HoverInfo({ isFront, onActivate }: HoverInfoProps): Reac
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const chartInfoRef = useRef<ChartInfo | null>(null);
   const [hidden, setHidden] = useState(false);
-  const justActivatedRef = useRef(false);
 
   const { hoverData, maxTimeMin, pinnedNode, selectedSampleIdx, lockedSampleIdx } = state;
 
@@ -546,19 +545,8 @@ export default function HoverInfo({ isFront, onActivate }: HoverInfoProps): Reac
       <button
         id="hover-info"
         onClick={() => setHidden(false)}
-        onPointerDown={(e) => {
-          if (!isFront) {
-            justActivatedRef.current = true;
-            onActivate();
-            e.preventDefault();
-          }
-        }}
-        onClickCapture={(e) => {
-          if (justActivatedRef.current) {
-            justActivatedRef.current = false;
-            e.stopPropagation();
-            e.preventDefault();
-          }
+        onPointerDown={() => {
+          if (!isFront) onActivate();
         }}
         className={`absolute bottom-5 right-2.5 ${isFront ? 'z-[1001]' : 'z-[1000]'}
           bg-zinc-900 dark:bg-zinc-900
@@ -626,20 +614,8 @@ export default function HoverInfo({ isFront, onActivate }: HoverInfoProps): Reac
   return (
     <div
       id="hover-info"
-      onPointerDownCapture={(e) => {
-        if (!isFront) {
-          justActivatedRef.current = true;
-          onActivate();
-          e.stopPropagation();
-          e.preventDefault();
-        }
-      }}
-      onClickCapture={(e) => {
-        if (justActivatedRef.current) {
-          justActivatedRef.current = false;
-          e.stopPropagation();
-          e.preventDefault();
-        }
+      onPointerDownCapture={() => {
+        if (!isFront) onActivate();
       }}
       className={`absolute bottom-5 right-2.5 ${isFront ? 'z-[1001]' : 'z-[1000]'}
         bg-zinc-900 dark:bg-zinc-900

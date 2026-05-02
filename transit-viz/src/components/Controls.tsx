@@ -1,4 +1,4 @@
-import React, { useRef } from 'react';
+import React from 'react';
 import { useAppState } from '../state/AppContext';
 import ControlsBody from './ControlsBody';
 
@@ -18,27 +18,14 @@ export default function Controls({
   onActivate,
 }: ControlsProps): React.ReactNode {
   const { state } = useAppState();
-  const justActivatedRef = useRef(false);
 
   if (state.loadingState !== 'ready') return null;
 
   return (
     <div
       id="controls"
-      onPointerDownCapture={(e) => {
-        if (!isFront) {
-          justActivatedRef.current = true;
-          onActivate();
-          e.stopPropagation();
-          e.preventDefault();
-        }
-      }}
-      onClickCapture={(e) => {
-        if (justActivatedRef.current) {
-          justActivatedRef.current = false;
-          e.stopPropagation();
-          e.preventDefault();
-        }
+      onPointerDownCapture={() => {
+        if (!isFront) onActivate();
       }}
       className={[
         `absolute ${isFront ? 'z-[1001]' : 'z-[1000]'}`,
