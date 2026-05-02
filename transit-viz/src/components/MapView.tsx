@@ -12,12 +12,7 @@ import { ROUTE_COLORS } from '../utils/colors';
 import { getHashParams, setHashParams } from '../utils/urlHash';
 import { getSortedTravelTimes } from '../utils/hoverInfo';
 import { resolveMapStyle, DEFAULT_MAP_STYLE } from '../utils/mapStyles';
-
-const isTouchDevice =
-  typeof window !== 'undefined' &&
-  (navigator.userAgentData?.mobile ??
-    (/Android.*Mobile|iPhone|iPod/i.test(navigator.userAgent) ||
-      window.matchMedia('(pointer: coarse) and (hover: none)').matches));
+import { useIsMobile } from '../utils/useIsMobile';
 
 export default function MapView(): React.ReactNode {
   const { state, dispatch } = useAppState();
@@ -33,13 +28,27 @@ export default function MapView(): React.ReactNode {
   const routeRendererRef = useRef<L.Canvas | null>(null);
   const drawRouteLayersRef = useRef<((paths: HoverPath[]) => void) | null>(null);
   const lastHoveredNodeRef = useRef<number | null>(null);
-  const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const longPressStartRef = useRef<number | null>(null);
   const renderIsoRef = useRef<(() => void) | null>(null);
 
   // Keep current state in refs for event handlers
   const stateRef = useRef(state);
   stateRef.current = state;
+
+  // Width-based mobile detection. Mirrored to a ref so the once-installed
+  // Leaflet click handlers can read the live value without being re-registered
+  // when the viewport crosses the breakpoint.
+  const isMobile = useIsMobile();
+  const isMobileRef = useRef(isMobile);
+  isMobileRef.current = isMobile;
+
+  // Keep leaflet's double-click-zoom in sync when the user crosses the
+  // breakpoint at runtime (e.g. rotating a tablet, resizing a window).
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    if (isMobile) map.doubleClickZoom.enable();
+    else map.doubleClickZoom.disable();
+  }, [isMobile]);
 
   // Clear destination marker and routes
   const clearDestination = useCallback(() => {
@@ -54,7 +63,10 @@ export default function MapView(): React.ReactNode {
   // Initialize map
   useEffect(() => {
     if (mapRef.current) return;
-    const map = L.map('map', { doubleClickZoom: isTouchDevice }).setView([40, -90], 4);
+    // Desktop uses double-click to set the source, so leaflet's default
+    // double-click-to-zoom would conflict. On mobile that gesture is unused,
+    // so let leaflet keep its default zoom behavior.
+    const map = L.map('map', { doubleClickZoom: isMobileRef.current }).setView([40, -90], 4);
     const initialStyle = resolveMapStyle(DEFAULT_MAP_STYLE);
     tileLayerRef.current = L.tileLayer(initialStyle.url, {
       attribution: initialStyle.attribution,
@@ -284,32 +296,39 @@ export default function MapView(): React.ReactNode {
     let lastPinTime = 0;
     function onDblClick(e: L.LeafletMouseEvent) {
       if (stateRef.current.loadingState !== 'ready') return;
-      // Prevent on mobile (handled by long press)
-      if (isTouchDevice) return;
+      // Mobile uses the Origin/Dest toggle in the top bar instead.
+      if (isMobileRef.current) return;
       setSource(e.latlng.lat, e.latlng.lng);
     }
 
-    // Single click: pin/unpin destination
+    // Single click: behavior depends on platform.
+    // Desktop: pin/unpin destination. Mobile: routes by interactionMode —
+    // 'origin' sets the source, 'dest' pins (or repins) the destination.
     async function onClick(e: L.LeafletMouseEvent) {
       const s = stateRef.current;
-      if (s.loadingState !== 'ready' || s.sourceNode === null) return;
+      if (s.loadingState !== 'ready') return;
 
-      // Ignore if this was part of a long press
-      if (longPressStartRef.current) {
-        const elapsed = Date.now() - longPressStartRef.current;
-        longPressStartRef.current = null;
-        if (elapsed > 400) return;
+      if (isMobileRef.current) {
+        if (s.interactionMode === 'origin') {
+          setSource(e.latlng.lat, e.latlng.lng);
+          return;
+        }
+        // Dest mode: replace any existing pin with the tapped node.
+        const node = await snapToNode(e.latlng.lat, e.latlng.lng);
+        if (node !== null) showDestination(node, true);
+        return;
       }
+
+      if (s.sourceNode === null) return;
 
       // Desktop: if already pinned, unpin on click (swallow if it's the second
       // click of a double-click so dblclick can set source cleanly).
-      if (!isTouchDevice && s.pinnedNode !== null) {
+      if (s.pinnedNode !== null) {
         if (Date.now() - lastPinTime < 300) return;
         dispatch({ type: 'UNPIN_DESTINATION' });
         return;
       }
 
-      // Otherwise (or on mobile regardless of pin state): pin the clicked position.
       const node = await snapToNode(e.latlng.lat, e.latlng.lng);
       if (node !== null) {
         lastPinTime = Date.now();
@@ -334,34 +353,6 @@ export default function MapView(): React.ReactNode {
         clearRouteOverlay();
         dispatch({ type: 'CLEAR_HOVER' });
       }
-    }
-
-    // Mobile: long press to set source
-    function onTouchStart(e: TouchEvent) {
-      if (e.touches.length !== 1) return;
-      const touch = e.touches[0];
-      longPressStartRef.current = Date.now();
-      longPressTimerRef.current = setTimeout(() => {
-        if (stateRef.current.loadingState !== 'ready') return;
-        const latLng = map.containerPointToLatLng(new L.Point(touch.clientX, touch.clientY));
-        setSource(latLng.lat, latLng.lng);
-        longPressStartRef.current = null;
-      }, 600);
-    }
-
-    function onTouchEnd() {
-      if (longPressTimerRef.current) {
-        clearTimeout(longPressTimerRef.current);
-        longPressTimerRef.current = null;
-      }
-    }
-
-    function onTouchMove() {
-      if (longPressTimerRef.current) {
-        clearTimeout(longPressTimerRef.current);
-        longPressTimerRef.current = null;
-      }
-      longPressStartRef.current = null;
     }
 
     // Re-render isochrone on map move/zoom
@@ -462,13 +453,6 @@ export default function MapView(): React.ReactNode {
     map.on('moveend', onMoveEnd);
     map.on('zoomend', onMoveEnd);
 
-    // Touch events on the map container
-    const container = map.getContainer();
-    const touchStartHandler = (e: TouchEvent) => onTouchStart(e);
-    container.addEventListener('touchstart', touchStartHandler, { passive: true });
-    container.addEventListener('touchend', onTouchEnd, { passive: true });
-    container.addEventListener('touchmove', onTouchMove, { passive: true });
-
     return () => {
       map.off('dblclick', onDblClick);
       map.off('click', onClick);
@@ -476,9 +460,6 @@ export default function MapView(): React.ReactNode {
       map.off('mouseout', onMouseOut);
       map.off('moveend', onMoveEnd);
       map.off('zoomend', onMoveEnd);
-      container.removeEventListener('touchstart', touchStartHandler);
-      container.removeEventListener('touchend', onTouchEnd);
-      container.removeEventListener('touchmove', onTouchMove);
     };
   }, [dispatch]);
 

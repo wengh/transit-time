@@ -1,8 +1,10 @@
 import React, { useEffect, useRef, useState, useCallback, useId } from 'react';
 import { useAppState } from '../state/AppContext';
-import type { HoverPath } from '../utils/router';
+import type { HoverPath, PathSegment } from '../utils/router';
+import type { HoverData } from '../state/reducer';
 import { getMedianPath } from '../utils/hoverInfo';
 import { formatTime } from '../utils/format';
+import PathSegmentList from './PathSegmentList';
 
 // ─── chart data types ────────────────────────────────────────────────────────
 
@@ -374,6 +376,121 @@ interface HoverInfoProps {
   onActivate: () => void;
 }
 
+// ── Shared helpers + components reused by the mobile bottom sheet ──────────
+
+export function deriveDisplayPath(
+  hoverData: HoverData,
+  selectedSampleIdx: number | null
+): HoverPath | null {
+  const { allPaths } = hoverData;
+  const path =
+    selectedSampleIdx !== null
+      ? allPaths[selectedSampleIdx]
+        ? { ...allPaths[selectedSampleIdx] }
+        : null
+      : getMedianPath(allPaths);
+
+  // When a specific Pareto path is selected, strip the first wait so the user
+  // sees the in-vehicle trip time from the chosen departure rather than
+  // "time since earliest viable leave".
+  if (selectedSampleIdx !== null && path) {
+    const firstTransitIndex = path.segments.findIndex((s: PathSegment) => s.edgeType === 1);
+    if (firstTransitIndex !== -1) {
+      const firstTransit = path.segments[firstTransitIndex];
+      const waitTime = firstTransit.waitTime;
+      path.segments = path.segments.map((s: PathSegment, i: number) =>
+        i === firstTransitIndex ? { ...s, waitTime: 0 } : s
+      );
+      if (path.totalTime !== null) path.totalTime -= waitTime;
+      path.departureTime += waitTime;
+    }
+  }
+  return path;
+}
+
+export function deriveTitleText(
+  hoverData: HoverData,
+  selectedSampleIdx: number | null,
+  displayPath: HoverPath | null
+): string {
+  if (selectedSampleIdx !== null) {
+    if (displayPath?.totalTime != null) {
+      const depStr = formatTime(displayPath.departureTime);
+      return `Travel time: ${Math.round(displayPath.totalTime / 60)} min  (depart ${depStr})`;
+    }
+    return 'Unreachable';
+  }
+  const avgSec = hoverData.avgTravelTime;
+  const frac = hoverData.reachableFraction ?? 0;
+  if (avgSec === null || frac <= 0) return 'Unreachable';
+  return `Avg travel time: ${Math.round(avgSec / 60)} min (${Math.round(frac * 100)}% reachable)`;
+}
+
+interface TripChartProps {
+  // CSS aspect-ratio for the canvas. Default '1/1' matches the desktop
+  // HoverInfo card; the mobile bottom drawer passes '5/2' for a wide-short
+  // shape that fits a phone viewport.
+  aspectRatio?: string;
+}
+
+// Sawtooth chart canvas + selection wiring. No outer chrome — callers decide
+// the wrapping container and padding. The chart reads `state.hoverData`,
+// `state.selectedSampleIdx`, `state.lockedSampleIdx`, `state.windowStart`,
+// `state.windowEnd`, `state.maxTimeMin` directly.
+export function TripChart({ aspectRatio = '1/1' }: TripChartProps = {}): React.ReactNode {
+  const { state, dispatch } = useAppState();
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const chartInfoRef = useRef<ChartInfo | null>(null);
+  const { hoverData, maxTimeMin, pinnedNode, selectedSampleIdx, lockedSampleIdx } = state;
+
+  useEffect(() => {
+    if (!canvasRef.current || !hoverData) return;
+    const info = computeChartInfo(
+      hoverData.allPaths,
+      state.windowStart,
+      state.windowEnd,
+      maxTimeMin * 60
+    );
+    chartInfoRef.current = info;
+    drawChart(canvasRef.current, info, selectedSampleIdx, getChartTheme());
+  }, [hoverData, maxTimeMin, state.windowStart, state.windowEnd, selectedSampleIdx]);
+
+  const handleMouseMove = useCallback(
+    (e: React.MouseEvent<HTMLCanvasElement>) => {
+      if (lockedSampleIdx !== null || pinnedNode === null || !chartInfoRef.current) return;
+      const rect = (e.currentTarget as HTMLCanvasElement).getBoundingClientRect();
+      const idx = pathIdxAtCanvasX(e.clientX - rect.left, rect.width, chartInfoRef.current);
+      dispatch({ type: 'SELECT_SAMPLE', idx });
+    },
+    [lockedSampleIdx, pinnedNode, dispatch]
+  );
+
+  const handleMouseLeave = useCallback(() => {
+    if (lockedSampleIdx !== null || pinnedNode === null) return;
+    dispatch({ type: 'SELECT_SAMPLE', idx: null });
+  }, [lockedSampleIdx, pinnedNode, dispatch]);
+
+  const handleClick = useCallback(
+    (e: React.MouseEvent<HTMLCanvasElement>) => {
+      if (pinnedNode === null || !chartInfoRef.current) return;
+      const rect = (e.currentTarget as HTMLCanvasElement).getBoundingClientRect();
+      const idx = pathIdxAtCanvasX(e.clientX - rect.left, rect.width, chartInfoRef.current);
+      dispatch({ type: 'LOCK_SAMPLE', idx: lockedSampleIdx === idx ? null : idx });
+    },
+    [lockedSampleIdx, pinnedNode, dispatch]
+  );
+
+  return (
+    <canvas
+      ref={canvasRef}
+      style={{ width: '100%', display: 'block', cursor: 'crosshair', aspectRatio }}
+      onMouseMove={handleMouseMove}
+      onMouseLeave={handleMouseLeave}
+      onClick={handleClick}
+    />
+  );
+}
+
 export default function HoverInfo({ isFront, onActivate }: HoverInfoProps): React.ReactNode {
   const { state, dispatch } = useAppState();
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -534,48 +651,7 @@ export default function HoverInfo({ isFront, onActivate }: HoverInfoProps): Reac
         max-sm:max-w-none max-sm:max-h-[calc(100vh-90px)] max-sm:overflow-y-auto`}
     >
       <div id="hover-info-details" className="overflow-y-auto max-h-[30vh]">
-        {displayPath && displayPath.segments.length > 0 && (
-          <div
-            className="border-b border-zinc-800 dark:border-zinc-800
-            [@media(prefers-color-scheme:light)]:border-zinc-200
-            pb-1.5 mb-0.5"
-          >
-            {displayPath.segments.map((seg, si) => (
-              <div key={si}>
-                {seg.edgeType === 0 ? (
-                  <div
-                    className="text-[12px] text-zinc-500 dark:text-zinc-500
-                    [@media(prefers-color-scheme:light)]:text-zinc-500 py-0.5"
-                  >
-                    Walk {(seg.duration / 60).toFixed(1)} min
-                  </div>
-                ) : (
-                  <>
-                    {seg.waitTime > 0 && (
-                      <div
-                        className="text-[11px] text-zinc-600 dark:text-zinc-600
-                        [@media(prefers-color-scheme:light)]:text-zinc-500
-                        py-px italic"
-                      >
-                        Wait {(seg.waitTime / 60).toFixed(1)} min
-                      </div>
-                    )}
-                    <div
-                      className="text-[12px] py-0.5 text-zinc-100 dark:text-zinc-100
-                      [@media(prefers-color-scheme:light)]:text-zinc-900"
-                    >
-                      <b>{seg.routeName || 'Transit'}</b>
-                      {seg.startStopName && seg.endStopName
-                        ? ` · ${seg.startStopName} → ${seg.endStopName}`
-                        : ''}{' '}
-                      {(seg.duration / 60).toFixed(1)} min
-                    </div>
-                  </>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
+        {displayPath && displayPath.segments.length > 0 && <PathSegmentList path={displayPath} />}
         <div className="flex items-start justify-between gap-2 mt-1.5">
           <div
             className="font-semibold text-[13px] text-zinc-100 dark:text-zinc-100

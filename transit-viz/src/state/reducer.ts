@@ -46,6 +46,11 @@ export interface AppState {
 
   // UI feedback
   showCopiedMessage: boolean;
+
+  // Mobile interaction mode: 'origin' = next map tap sets the source,
+  // 'dest' = next map tap pins (or repins) the destination. Auto-switches
+  // to 'dest' after the source is set; sticky thereafter.
+  interactionMode: 'origin' | 'dest';
 }
 
 export interface HoverData {
@@ -96,7 +101,8 @@ export type Action =
   | { type: 'SELECT_SAMPLE'; idx: number | null }
   | { type: 'LOCK_SAMPLE'; idx: number | null }
   | { type: 'SHOW_COPIED_MESSAGE' }
-  | { type: 'HIDE_COPIED_MESSAGE' };
+  | { type: 'HIDE_COPIED_MESSAGE' }
+  | { type: 'SET_INTERACTION_MODE'; mode: 'origin' | 'dest' };
 
 export const initialState: AppState = {
   // City loading
@@ -139,6 +145,9 @@ export const initialState: AppState = {
 
   // UI feedback
   showCopiedMessage: false,
+
+  // Mobile interaction mode (no-op on desktop)
+  interactionMode: 'origin',
 };
 
 export function reducer(state: AppState, action: Action): AppState {
@@ -192,6 +201,8 @@ export function reducer(state: AppState, action: Action): AppState {
         hoverData: null,
         selectedSampleIdx: null,
         lockedSampleIdx: null,
+        // Auto-switch to dest mode so the next map tap pins a destination.
+        interactionMode: 'dest',
       };
     case 'SET_MAP_STYLE':
       return { ...state, mapStyle: action.style };
@@ -228,6 +239,12 @@ export function reducer(state: AppState, action: Action): AppState {
         pinnedNode: action.node,
         pinnedLatLng: action.latLng,
         hoverData: action.hoverData,
+        // Pinning a new destination should show its median trip from the
+        // chart, not whichever Pareto sample the user had locked from the
+        // previous destination (which would be wrong data anyway since
+        // hoverData.allPaths comes from the new node).
+        selectedSampleIdx: null,
+        lockedSampleIdx: null,
       };
     case 'UNPIN_DESTINATION':
       return {
@@ -251,5 +268,7 @@ export function reducer(state: AppState, action: Action): AppState {
       return { ...state, showCopiedMessage: true };
     case 'HIDE_COPIED_MESSAGE':
       return { ...state, showCopiedMessage: false };
+    case 'SET_INTERACTION_MODE':
+      return { ...state, interactionMode: action.mode };
   }
 }

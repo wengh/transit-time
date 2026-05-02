@@ -36,11 +36,15 @@ since city bin build is embarrassingly parallel, can we run the build on a distr
 
 make use of the z order sorting of nodes to reduce memory footprint of node snapping index in frontend
 
+DONE
+
 -------
 
 compress graph by contracting clusters of adjacent walking nodes (e.g. intersections), with all distance $(d' - d) < \epsilon d + \delta$ for something like $\epsilon = 0.05, \delta = 10$?
 
 remove 1-degree nodes with short edges and no transit stop (e.g. driveways)?
+
+REJECTED
 
 -------
 
@@ -107,11 +111,15 @@ ultrathink
 
 also as much as possible of the logic should live in the rust side to make it easy to test. for example shapes should be returned as rust objects and only converted to json at the wasm boundary
 
+DONE
+
 -------
 
 when backtracking we need the route/trip id of the transit leg, and early termination once found the desired transit leg. is there a way to satisfy this need without compromising performance and without duplicating too much code?
 
 i changed prep to ensure each node has at most 1 snapped stop, so we can store a dict of node_id -> stop_idx instead of a sparse jagged array. review my changes to prep and corresponding changes to router
+
+DONE
 
 -------
 
@@ -124,13 +132,19 @@ profile routing performance
 - maybe add parallelism somewhere?
 - maybe use a linked list of entries instead of an array of vectors?
 
+DONE
+
 -------
 
 allow configurable departure window by changing the departure time slider to be 2 ended where dragging an endpoint changes the endpoint and dragging the middle changes both endpoints (keeping the same duration). limit the duration to 16 hours so it fits well in u16.
 
+DONE
+
 -------
 
 use rayon (already installed) to parallelize router phase 3 and path reconstruction
+
+DONE
 
 -------
 
@@ -149,6 +163,8 @@ UPDATE: this idea kinda preserves the distances but makes the walk edges not fol
 
 remove all degree 2 nodes
 
+DONE
+
 -------
 
 how difficult would it be to identify nearly colinear cycles and contract them into a chain?
@@ -165,3 +181,36 @@ UPDATE: only results in ~1% saving
 
 read readme and profile.rs. then consider this:
 split long departure window into several separate queries, compute in parallel, and merge results at the end. this should be done transparently behind profile routing interface as a separate implementation of the interface which uses the current implementation as a subroutine.
+
+DONE
+
+-------
+
+from claude design output:
+
+Transit Time – UI redesign changes to implement
+
+Mobile UI (viewport < 640px)
+Replace the existing bottom-sheet controls + floating HoverInfo with:
+New: Top bar
+
+Fixed to top, background: rgba(18,18,20,0.95) with backdrop-filter: blur(10px) and a subtle bottom border
+Left: city name
+Center: Origin / Dest segmented toggle — replaces long-press-to-set-origin. Tapping "Origin" then tapping the map sets the source. Tapping "Dest" then tapping the map pins the destination. After setting origin, auto-switches to Dest mode. Tapping again pins new destination.
+Right: gear icon → opens settings sheet
+Below the toggle: one-line contextual hint ("Tap map to set origin", "Tap map to set destination", "Computing…")
+New: Bottom info strip + expandable drawer (replaces floating HoverInfo)
+
+Collapsed: 56px tall. Shows summary line: avg travel time + reachability, or selected trip time + departure. Drag handle at top.
+Tap to expand: slides up to ~68vh with smooth transition
+Expanded: route segment list (walk times, transit legs with route color, wait times, stop names), then the sawtooth chart
+Sawtooth chart uses 5:2 aspect ratio on mobile (wide and short) instead of square
+Only shown when a destination is hovered or pinned
+New: Settings bottom sheet (replaces collapsible controls panel)
+
+Opens on gear tap over a dim backdrop; tap backdrop to dismiss
+Contains all existing controls: map style, date, departure window, max travel time, transfer slack, service pattern count, Change City, Copy Info
+Mobile interaction model
+Origin mode tap → sets source, triggers computation, auto-switches to Dest mode
+Dest mode tap → pins destination; tap again to pin new destination
+Remove long-press to set origin

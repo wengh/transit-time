@@ -6,6 +6,10 @@ import Controls from './components/Controls';
 import MapView from './components/MapView';
 import Legend from './components/Legend';
 import HoverInfo from './components/HoverInfo';
+import MobileTopBar from './components/MobileTopBar';
+import MobileBottomSheet from './components/MobileBottomSheet';
+import MobileSettingsSheet from './components/MobileSettingsSheet';
+import { useIsMobile } from './utils/useIsMobile';
 import { loadCity } from './utils/cityLoader';
 import { getCityFromUrl } from './cities';
 import { runQuery, getProfileHoverData, snapToNode } from './utils/router';
@@ -241,24 +245,44 @@ function AppInner() {
     return () => document.removeEventListener('keydown', onKeyDown);
   }, [copyInfo]);
 
+  const isMobile = useIsMobile();
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const handleCopy = () => {
+    if (stateRef.current) copyInfo();
+  };
+
   return (
     <>
       <CitySelect />
       <LoadingOverlay />
       <MapView />
-      <Controls
-        onRunQuery={handleRunQuery}
-        onCopy={() => {
-          if (stateRef.current) copyInfo();
-        }}
-        isFront={frontPanel === 'controls'}
-        onActivate={() => setFrontPanel('controls')}
-      />
-      <Legend />
-      <HoverInfo
-        isFront={frontPanel === 'hoverInfo'}
-        onActivate={() => setFrontPanel('hoverInfo')}
-      />
+      {isMobile ? (
+        <>
+          <MobileTopBar onOpenSettings={() => setSettingsOpen(true)} />
+          <MobileBottomSheet />
+          {settingsOpen && (
+            <MobileSettingsSheet
+              onClose={() => setSettingsOpen(false)}
+              onRunQuery={handleRunQuery}
+              onCopy={handleCopy}
+            />
+          )}
+        </>
+      ) : (
+        <>
+          <Controls
+            onRunQuery={handleRunQuery}
+            onCopy={handleCopy}
+            isFront={frontPanel === 'controls'}
+            onActivate={() => setFrontPanel('controls')}
+          />
+          <Legend />
+          <HoverInfo
+            isFront={frontPanel === 'hoverInfo'}
+            onActivate={() => setFrontPanel('hoverInfo')}
+          />
+        </>
+      )}
     </>
   );
 }
