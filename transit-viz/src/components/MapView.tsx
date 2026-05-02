@@ -2,17 +2,22 @@ import React, { useCallback, useEffect, useRef } from 'react';
 import L from 'leaflet';
 import { useAppState } from '../state/AppContext';
 import { initWebGL, renderIsochrone } from '../utils/webgl';
-import { cancelInflightQuery, getProfileHoverData, snapToNode, type HoverPath } from '../utils/router';
+import {
+  cancelInflightQuery,
+  getProfileHoverData,
+  snapToNode,
+  type HoverPath,
+} from '../utils/router';
 import { ROUTE_COLORS } from '../utils/colors';
 import { getHashParams, setHashParams } from '../utils/urlHash';
 import { getSortedTravelTimes } from '../utils/hoverInfo';
 import { resolveMapStyle, DEFAULT_MAP_STYLE } from '../utils/mapStyles';
 
-const isTouchDevice = typeof window !== 'undefined' && (
-  navigator.userAgentData?.mobile ??
-  (/Android.*Mobile|iPhone|iPod/i.test(navigator.userAgent) ||
-    window.matchMedia('(pointer: coarse) and (hover: none)').matches)
-);
+const isTouchDevice =
+  typeof window !== 'undefined' &&
+  (navigator.userAgentData?.mobile ??
+    (/Android.*Mobile|iPhone|iPod/i.test(navigator.userAgent) ||
+      window.matchMedia('(pointer: coarse) and (hover: none)').matches));
 
 export default function MapView(): React.ReactNode {
   const { state, dispatch } = useAppState();
@@ -129,7 +134,8 @@ export default function MapView(): React.ReactNode {
           if (seg.edgeType === 0) {
             // Normalize walk segment direction so the dedup key collapses
             // walks traversing the same edge in either direction.
-            const first = coords[0], last = coords[coords.length - 1];
+            const first = coords[0],
+              last = coords[coords.length - 1];
             if (first[0] > last[0] || (first[0] === last[0] && first[1] > last[1])) {
               coords = [...coords].reverse();
             }
@@ -143,9 +149,7 @@ export default function MapView(): React.ReactNode {
               // Empty string means the route has no GTFS colour — fall back to
               // the palette.
               const s = stateRef.current;
-              let routeColor = seg.routeIdx < 0xffffffff
-                ? (s.routeColors[seg.routeIdx] || '')
-                : '';
+              let routeColor = seg.routeIdx < 0xffffffff ? s.routeColors[seg.routeIdx] || '' : '';
               if (!routeColor) {
                 routeColor = ROUTE_COLORS[colorIdx % ROUTE_COLORS.length];
               }
@@ -162,7 +166,15 @@ export default function MapView(): React.ReactNode {
           const segKey = `${seg.edgeType}|${routeKey}|${a[0]},${a[1]}|${b[0]},${b[1]}|${coords.length}`;
           if (!seenSegments.has(segKey)) {
             seenSegments.add(segKey);
-            const line = L.polyline(coords, { color, weight, opacity: 1, ...(dashArray ? { dashArray } : {}), interactive: false, pane: 'transitLines', renderer }).addTo(map);
+            const line = L.polyline(coords, {
+              color,
+              weight,
+              opacity: 1,
+              ...(dashArray ? { dashArray } : {}),
+              interactive: false,
+              pane: 'transitLines',
+              renderer,
+            }).addTo(map);
             routePolylinesRef.current.push(line);
           }
           // Add circle at end of transit segments to mark transfers
@@ -217,9 +229,8 @@ export default function MapView(): React.ReactNode {
       // avoids re-aggregating from the (Pareto-filtered) `allPaths`, which no
       // longer corresponds to discrete sample counts.
       const avgTravelTime = isFinite(tt) ? tt : null;
-      const reachableFraction = s.sampleCounts && s.totalSamples > 0
-        ? s.sampleCounts[node] / s.totalSamples
-        : null;
+      const reachableFraction =
+        s.sampleCounts && s.totalSamples > 0 ? s.sampleCounts[node] / s.totalSamples : null;
       const hoverData = { allPaths, travelTimes, avgTravelTime, reachableFraction };
 
       const latLng = getNodeLatLng(node);
@@ -361,7 +372,16 @@ export default function MapView(): React.ReactNode {
         glStateRef.current = initWebGL();
       }
       if (!glStateRef.current) return;
-      const result = renderIsochrone(glStateRef.current, map, s.travelTimes, s.nodeCoords, s.maxTimeMin * 60, L, s.sampleCounts, s.totalSamples);
+      const result = renderIsochrone(
+        glStateRef.current,
+        map,
+        s.travelTimes,
+        s.nodeCoords,
+        s.maxTimeMin * 60,
+        L,
+        s.sampleCounts,
+        s.totalSamples
+      );
       if (result) {
         if (isoOverlayRef.current) {
           // Layer already added — just update its bounds and reposition
@@ -390,7 +410,10 @@ export default function MapView(): React.ReactNode {
               return this;
             },
             getEvents() {
-              const events: Record<string, (e: any) => void> = { zoom: this._reset, viewreset: this._reset };
+              const events: Record<string, (e: any) => void> = {
+                zoom: this._reset,
+                viewreset: this._reset,
+              };
               if (this._zoomAnimated) {
                 events.zoomanim = this._animateZoom;
               }
@@ -399,7 +422,11 @@ export default function MapView(): React.ReactNode {
             _animateZoom(e: any) {
               const m: L.Map = this._map;
               const scale = m.getZoomScale(e.zoom);
-              const offset = (m as any)._latLngBoundsToNewLayerBounds(this._isoBounds, e.zoom, e.center).min;
+              const offset = (m as any)._latLngBoundsToNewLayerBounds(
+                this._isoBounds,
+                e.zoom,
+                e.center
+              ).min;
               L.DomUtil.setTransform(this._isoCanvas, offset, scale);
             },
             _reset() {
@@ -408,11 +435,11 @@ export default function MapView(): React.ReactNode {
               const topLeft = m.latLngToLayerPoint(this._isoBounds.getNorthWest());
               const bottomRight = m.latLngToLayerPoint(this._isoBounds.getSouthEast());
               L.DomUtil.setTransform(this._isoCanvas, topLeft, 1);
-              this._isoCanvas.style.width = (bottomRight.x - topLeft.x) + 'px';
-              this._isoCanvas.style.height = (bottomRight.y - topLeft.y) + 'px';
+              this._isoCanvas.style.width = bottomRight.x - topLeft.x + 'px';
+              this._isoCanvas.style.height = bottomRight.y - topLeft.y + 'px';
             },
           });
-          isoOverlayRef.current = (new (CanvasLayer as any)()).addTo(map);
+          isoOverlayRef.current = new (CanvasLayer as any)().addTo(map);
         }
       }
     }
@@ -471,13 +498,19 @@ export default function MapView(): React.ReactNode {
     // Draw bounding box
     if (bboxRectRef.current) bboxRectRef.current.remove();
     const [minLon, minLat, maxLon, maxLat] = city.bbox;
-    bboxRectRef.current = L.rectangle([[minLat, minLon], [maxLat, maxLon]], {
-      color: '#666',
-      weight: 1,
-      fillOpacity: 0,
-      dashArray: '4 6',
-      interactive: false,
-    }).addTo(map);
+    bboxRectRef.current = L.rectangle(
+      [
+        [minLat, minLon],
+        [maxLat, maxLon],
+      ],
+      {
+        color: '#666',
+        weight: 1,
+        fillOpacity: 0,
+        dashArray: '4 6',
+        interactive: false,
+      }
+    ).addTo(map);
 
     // Clean up old overlays
     if (sourceMarkerRef.current) {
@@ -514,9 +547,12 @@ export default function MapView(): React.ReactNode {
   useEffect(() => {
     const { hoverData, pinnedNode, selectedSampleIdx } = state;
     if (!drawRouteLayersRef.current || !hoverData || pinnedNode === null) return;
-    const paths = selectedSampleIdx !== null
-      ? [hoverData.allPaths[selectedSampleIdx]].filter((p): p is HoverPath => !!p && p.segments.length > 0)
-      : hoverData.allPaths.filter(p => p.segments.length > 0);
+    const paths =
+      selectedSampleIdx !== null
+        ? [hoverData.allPaths[selectedSampleIdx]].filter(
+            (p): p is HoverPath => !!p && p.segments.length > 0
+          )
+        : hoverData.allPaths.filter((p) => p.segments.length > 0);
     drawRouteLayersRef.current(paths);
   }, [state.selectedSampleIdx, state.hoverData, state.pinnedNode]);
 

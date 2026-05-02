@@ -6,10 +6,7 @@ export function LegendContent({ maxMin }: { maxMin: number }): React.ReactNode {
   const maxSec = maxMin * 60;
   return (
     <>
-      <div
-        className="w-[200px] h-5 rounded"
-        style={{ background: legendGradient(maxSec) }}
-      />
+      <div className="w-[200px] h-5 rounded" style={{ background: legendGradient(maxSec) }} />
       <div
         className="flex justify-between text-[11px] mt-1
           text-zinc-500 dark:text-zinc-500

@@ -62,7 +62,13 @@ export type Action =
   | { type: 'START_LOADING'; city: City }
   | { type: 'LOADING_PROGRESS'; progress: number }
   | { type: 'START_INITIALIZING' }
-  | { type: 'CITY_LOADED'; nodeCoords: Float32Array; nodeCount: number; stopCount: number; routeColors: string[] }
+  | {
+      type: 'CITY_LOADED';
+      nodeCoords: Float32Array;
+      nodeCount: number;
+      stopCount: number;
+      routeColors: string[];
+    }
   | { type: 'LOAD_ERROR' }
   | { type: 'CHANGE_CITY' }
   | { type: 'SET_SOURCE'; node: number; latLng: [number, number] }
@@ -74,7 +80,14 @@ export type Action =
   | { type: 'SET_PATTERN_COUNT'; count: number }
   | { type: 'COMPUTING' }
   | { type: 'COMPUTE_PROGRESS'; done: number; total: number }
-  | { type: 'QUERY_DONE'; travelTimes: Float32Array; sampleCounts: Uint32Array; totalSamples: number; timeMs: number; numThreads: number }
+  | {
+      type: 'QUERY_DONE';
+      travelTimes: Float32Array;
+      sampleCounts: Uint32Array;
+      totalSamples: number;
+      timeMs: number;
+      numThreads: number;
+    }
   | { type: 'QUERY_ERROR' }
   | { type: 'PIN_DESTINATION'; node: number; latLng: [number, number]; hoverData: HoverData }
   | { type: 'UNPIN_DESTINATION' }
@@ -94,7 +107,7 @@ export const initialState: AppState = {
   // Controls
   mapStyle: DEFAULT_MAP_STYLE,
   windowStart: 11 * 3600, // 11:00 AM
-  windowEnd: 12 * 3600,   // 12:00 PM (1-hour default)
+  windowEnd: 12 * 3600, // 12:00 PM (1-hour default)
   date: new Date().toISOString().slice(0, 10),
   maxTimeMin: 45,
   transferSlack: 60,
@@ -170,7 +183,16 @@ export function reducer(state: AppState, action: Action): AppState {
         hoverData: null,
       };
     case 'SET_SOURCE':
-      return { ...state, sourceNode: action.node, sourceLatLng: action.latLng, pinnedNode: null, pinnedLatLng: null, hoverData: null, selectedSampleIdx: null, lockedSampleIdx: null };
+      return {
+        ...state,
+        sourceNode: action.node,
+        sourceLatLng: action.latLng,
+        pinnedNode: null,
+        pinnedLatLng: null,
+        hoverData: null,
+        selectedSampleIdx: null,
+        lockedSampleIdx: null,
+      };
     case 'SET_MAP_STYLE':
       return { ...state, mapStyle: action.style };
     case 'SET_WINDOW':
@@ -188,13 +210,34 @@ export function reducer(state: AppState, action: Action): AppState {
     case 'COMPUTE_PROGRESS':
       return { ...state, computeProgress: { done: action.done, total: action.total } };
     case 'QUERY_DONE':
-      return { ...state, travelTimes: action.travelTimes, sampleCounts: action.sampleCounts, totalSamples: action.totalSamples, computeStatus: 'done', computeTimeMs: action.timeMs, computeNumThreads: action.numThreads, computeProgress: null };
+      return {
+        ...state,
+        travelTimes: action.travelTimes,
+        sampleCounts: action.sampleCounts,
+        totalSamples: action.totalSamples,
+        computeStatus: 'done',
+        computeTimeMs: action.timeMs,
+        computeNumThreads: action.numThreads,
+        computeProgress: null,
+      };
     case 'QUERY_ERROR':
       return { ...state, computeStatus: 'error', computeProgress: null };
     case 'PIN_DESTINATION':
-      return { ...state, pinnedNode: action.node, pinnedLatLng: action.latLng, hoverData: action.hoverData };
+      return {
+        ...state,
+        pinnedNode: action.node,
+        pinnedLatLng: action.latLng,
+        hoverData: action.hoverData,
+      };
     case 'UNPIN_DESTINATION':
-      return { ...state, pinnedNode: null, pinnedLatLng: null, hoverData: null, selectedSampleIdx: null, lockedSampleIdx: null };
+      return {
+        ...state,
+        pinnedNode: null,
+        pinnedLatLng: null,
+        hoverData: null,
+        selectedSampleIdx: null,
+        lockedSampleIdx: null,
+      };
     case 'SET_HOVER_DATA':
       return { ...state, hoverData: action.hoverData };
     case 'CLEAR_HOVER':

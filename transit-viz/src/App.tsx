@@ -78,9 +78,8 @@ function AppInner() {
       const s = stateRef.current;
       const tt = s.travelTimes ? s.travelTimes[node] : NaN;
       const avgTravelTime = isFinite(tt) ? tt : null;
-      const reachableFraction = s.sampleCounts && s.totalSamples > 0
-        ? s.sampleCounts[node] / s.totalSamples
-        : null;
+      const reachableFraction =
+        s.sampleCounts && s.totalSamples > 0 ? s.sampleCounts[node] / s.totalSamples : null;
       dispatch({
         type: 'PIN_DESTINATION',
         node,
@@ -110,43 +109,58 @@ function AppInner() {
       zoom: current.zoom,
       center: current.center,
     });
-  }, [state.sourceLatLng, state.pinnedLatLng, state.lockedSampleIdx, state.mapStyle, state.date, state.windowStart, state.windowEnd, state.maxTimeMin, state.transferSlack]);
+  }, [
+    state.sourceLatLng,
+    state.pinnedLatLng,
+    state.lockedSampleIdx,
+    state.mapStyle,
+    state.date,
+    state.windowStart,
+    state.windowEnd,
+    state.maxTimeMin,
+    state.transferSlack,
+  ]);
 
   // Run query when source or params change
-  const handleRunQuery = useCallback((overrides: Record<string, any> = {}) => {
-    const s = stateRef.current;
-    if (s.loadingState !== 'ready' || s.sourceNode === null) return;
+  const handleRunQuery = useCallback(
+    (overrides: Record<string, any> = {}) => {
+      const s = stateRef.current;
+      if (s.loadingState !== 'ready' || s.sourceNode === null) return;
 
-    const params: RunQueryParams = {
-      sourceNode: s.sourceNode,
-      windowStart: overrides.windowStart ?? s.windowStart,
-      windowEnd: overrides.windowEnd ?? s.windowEnd,
-      date: overrides.date ?? s.date,
-      transferSlack: overrides.transferSlack ?? s.transferSlack,
-      maxTime: (overrides.maxTimeMin ?? s.maxTimeMin) * 60,
-    };
+      const params: RunQueryParams = {
+        sourceNode: s.sourceNode,
+        windowStart: overrides.windowStart ?? s.windowStart,
+        windowEnd: overrides.windowEnd ?? s.windowEnd,
+        date: overrides.date ?? s.date,
+        transferSlack: overrides.transferSlack ?? s.transferSlack,
+        maxTime: (overrides.maxTimeMin ?? s.maxTimeMin) * 60,
+      };
 
-    dispatch({ type: 'COMPUTING' });
-    const start = performance.now();
-    runQuery(params, (done, total) => {
-      dispatch({ type: 'COMPUTE_PROGRESS', done, total });
-    }).then((result) => {
-      dispatch({
-        type: 'QUERY_DONE',
-        travelTimes: result.travelTimes,
-        sampleCounts: result.sampleCounts,
-        totalSamples: result.totalSamples,
-        timeMs: performance.now() - start,
-        numThreads: result.numThreads,
-      });
-      // Don't unpin here — parameter-only changes should keep the destination
-      // pin and sample selection. Pin teardown happens in `SET_SOURCE`.
-    }).catch((e) => {
-      if (String(e).includes('cancelled')) return; // query was superseded
-      console.error(e);
-      dispatch({ type: 'QUERY_ERROR' });
-    });
-  }, [dispatch]);
+      dispatch({ type: 'COMPUTING' });
+      const start = performance.now();
+      runQuery(params, (done, total) => {
+        dispatch({ type: 'COMPUTE_PROGRESS', done, total });
+      })
+        .then((result) => {
+          dispatch({
+            type: 'QUERY_DONE',
+            travelTimes: result.travelTimes,
+            sampleCounts: result.sampleCounts,
+            totalSamples: result.totalSamples,
+            timeMs: performance.now() - start,
+            numThreads: result.numThreads,
+          });
+          // Don't unpin here — parameter-only changes should keep the destination
+          // pin and sample selection. Pin teardown happens in `SET_SOURCE`.
+        })
+        .catch((e) => {
+          if (String(e).includes('cancelled')) return; // query was superseded
+          console.error(e);
+          dispatch({ type: 'QUERY_ERROR' });
+        });
+    },
+    [dispatch]
+  );
 
   // Re-run query when source changes
   useEffect(() => {
@@ -214,7 +228,12 @@ function AppInner() {
     function onKeyDown(e: KeyboardEvent) {
       if (e.key !== 'c' || e.ctrlKey || e.metaKey || e.altKey) return;
       const target = e.target as HTMLElement;
-      if (target.tagName === 'INPUT' || target.tagName === 'SELECT' || target.tagName === 'TEXTAREA') return;
+      if (
+        target.tagName === 'INPUT' ||
+        target.tagName === 'SELECT' ||
+        target.tagName === 'TEXTAREA'
+      )
+        return;
       if (copyInfo()) e.preventDefault();
     }
 

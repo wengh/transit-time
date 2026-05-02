@@ -1,4 +1,15 @@
-export const ROUTE_COLORS = ['#e6194b', '#3cb44b', '#4363d8', '#f58231', '#911eb4', '#42d4f4', '#f032e6', '#bfef45', '#469990', '#e6beff'];
+export const ROUTE_COLORS = [
+  '#e6194b',
+  '#3cb44b',
+  '#4363d8',
+  '#f58231',
+  '#911eb4',
+  '#42d4f4',
+  '#f032e6',
+  '#bfef45',
+  '#469990',
+  '#e6beff',
+];
 
 export function hexToRgb(hex: string): [number, number, number] | null {
   const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
@@ -52,7 +63,11 @@ function coolColor(t: number): [number, number, number] {
 
 // 2D color: warm (yellow→red) when fraction=1, cool (cyan→purple) when fraction=0,
 // with a smooth blend in between.
-export function isochroneColor(seconds: number, maxTimeSec: number, fraction: number): [number, number, number] {
+export function isochroneColor(
+  seconds: number,
+  maxTimeSec: number,
+  fraction: number
+): [number, number, number] {
   const t = Math.max(0, Math.min(1, seconds / maxTimeSec));
   const f = Math.max(0, Math.min(1, fraction));
   const warm = travelTimeColor(seconds, maxTimeSec);

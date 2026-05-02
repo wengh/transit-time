@@ -34,7 +34,7 @@ export default function CitySelect(): React.ReactNode {
 
   if (state.currentCity) return null;
 
-  async function handleCityClick(city: typeof CITIES[0]) {
+  async function handleCityClick(city: (typeof CITIES)[0]) {
     history.replaceState(null, '', `${import.meta.env.BASE_URL}?city=${city.id}`);
     try {
       await loadCity(city, dispatch, false);
@@ -67,13 +67,17 @@ export default function CitySelect(): React.ReactNode {
           p-10 rounded-xl shadow-[0_4px_24px_rgba(0,0,0,0.5)]
           max-w-[520px] w-[90%] text-center"
       >
-        <h1 className="text-2xl mb-2 text-zinc-100 dark:text-zinc-100
-          [@media(prefers-color-scheme:light)]:text-zinc-900 font-semibold">
+        <h1
+          className="text-2xl mb-2 text-zinc-100 dark:text-zinc-100
+          [@media(prefers-color-scheme:light)]:text-zinc-900 font-semibold"
+        >
           Transit Isochrone
         </h1>
-        <p className="text-zinc-500 dark:text-zinc-500
+        <p
+          className="text-zinc-500 dark:text-zinc-500
           [@media(prefers-color-scheme:light)]:text-zinc-500
-          mb-4 text-sm">
+          mb-4 text-sm"
+        >
           Select a city to visualize transit travel times
         </p>
 
@@ -99,9 +103,10 @@ export default function CitySelect(): React.ReactNode {
                 key={tag}
                 onClick={() => toggleTag(tag)}
                 className={`px-2.5 py-1 rounded-full text-xs font-medium border transition-colors duration-100
-                  ${active
-                    ? 'bg-blue-600 border-blue-500 text-white'
-                    : `bg-zinc-800 border-zinc-600 text-zinc-400
+                  ${
+                    active
+                      ? 'bg-blue-600 border-blue-500 text-white'
+                      : `bg-zinc-800 border-zinc-600 text-zinc-400
                        dark:bg-zinc-800 dark:border-zinc-600 dark:text-zinc-400
                        [@media(prefers-color-scheme:light)]:bg-zinc-100
                        [@media(prefers-color-scheme:light)]:border-zinc-300
@@ -133,8 +138,10 @@ export default function CitySelect(): React.ReactNode {
                 onClick={() => handleCityClick(city)}
               >
                 <div className="city-name font-semibold">{city.name}</div>
-                <div className="city-detail text-xs text-zinc-500 dark:text-zinc-500
-                  [@media(prefers-color-scheme:light)]:text-zinc-500 mt-0.5">
+                <div
+                  className="city-detail text-xs text-zinc-500 dark:text-zinc-500
+                  [@media(prefers-color-scheme:light)]:text-zinc-500 mt-0.5"
+                >
                   {city.detail}
                 </div>
               </button>

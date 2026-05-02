@@ -16,7 +16,11 @@ export interface RenderResult {
 
 export function initWebGL(): GLState | null {
   const canvas = document.createElement('canvas');
-  const gl = canvas.getContext('webgl', { alpha: true, premultipliedAlpha: false, antialias: false });
+  const gl = canvas.getContext('webgl', {
+    alpha: true,
+    premultipliedAlpha: false,
+    antialias: false,
+  });
   if (!gl) return null;
 
   const vsrc = `
@@ -71,7 +75,7 @@ export function renderIsochrone(
   maxTimeSec: number,
   L: typeof import('leaflet'),
   sampleCounts?: Uint32Array | null,
-  totalSamples?: number,
+  totalSamples?: number
 ): RenderResult | null {
   if (!travelTimes || !map || !nodeCoords) return null;
 
@@ -119,16 +123,18 @@ export function renderIsochrone(
     const tt = travelTimes[i];
     if (!(tt >= 0 && tt <= maxTimeSec)) continue;
 
-    const fraction = sampleCounts != null && totalSamples != null && totalSamples > 1
-      ? sampleCounts[i] / totalSamples
-      : 1.0;
+    const fraction =
+      sampleCounts != null && totalSamples != null && totalSamples > 1
+        ? sampleCounts[i] / totalSamples
+        : 1.0;
     const color = isochroneColor(tt, maxTimeSec, fraction);
     const ci2 = i * 2;
     const lat = nodeCoords[ci2];
     const lon = nodeCoords[ci2 + 1];
 
     const x = scale * (lon / 360 + 0.5) - ox;
-    const y = scale * (0.5 - Math.log(Math.tan(Math.PI / 4 + (lat * Math.PI) / 360)) / (2 * Math.PI)) - oy;
+    const y =
+      scale * (0.5 - Math.log(Math.tan(Math.PI / 4 + (lat * Math.PI) / 360)) / (2 * Math.PI)) - oy;
 
     if (x < -dotSize || x > w + dotSize || y < -dotSize || y > h + dotSize) continue;
 

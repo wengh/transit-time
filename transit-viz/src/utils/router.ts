@@ -54,12 +54,15 @@ export interface HoverPath {
 
 let worker: Worker | null = null;
 let nextId = 0;
-const pending = new Map<number, {
-  resolve: (v: any) => void;
-  reject: (e: Error) => void;
-  onProgress?: (done: number, total: number) => void;
-  onLoadProgress?: (pct: number) => void;
-}>();
+const pending = new Map<
+  number,
+  {
+    resolve: (v: any) => void;
+    reject: (e: Error) => void;
+    onProgress?: (done: number, total: number) => void;
+    onLoadProgress?: (pct: number) => void;
+  }
+>();
 
 function getWorker(): Worker {
   if (!worker) {
@@ -89,12 +92,20 @@ function getWorker(): Worker {
 
 function call<T>(
   msg: Record<string, any>,
-  opts?: { onProgress?: (done: number, total: number) => void; onLoadProgress?: (pct: number) => void },
+  opts?: {
+    onProgress?: (done: number, total: number) => void;
+    onLoadProgress?: (pct: number) => void;
+  }
 ): Promise<T> {
   const id = nextId++;
   const w = getWorker();
   return new Promise<T>((resolve, reject) => {
-    pending.set(id, { resolve, reject, onProgress: opts?.onProgress, onLoadProgress: opts?.onLoadProgress });
+    pending.set(id, {
+      resolve,
+      reject,
+      onProgress: opts?.onProgress,
+      onLoadProgress: opts?.onLoadProgress,
+    });
     w.postMessage({ ...msg, id });
   });
 }
@@ -107,8 +118,13 @@ export async function initWasm(): Promise<void> {
 
 export async function loadRouter(
   cityFile: string,
-  onProgress?: (pct: number) => void,
-): Promise<{ nodeCoords: Float32Array; nodeCount: number; stopCount: number; routeColors: string[] }> {
+  onProgress?: (pct: number) => void
+): Promise<{
+  nodeCoords: Float32Array;
+  nodeCount: number;
+  stopCount: number;
+  routeColors: string[];
+}> {
   return call({ type: 'loadRouter', cityFile }, { onLoadProgress: onProgress });
 }
 
@@ -122,7 +138,7 @@ let activeCancelBuf: Int32Array | null = null;
 
 export async function runQuery(
   params: RunQueryParams,
-  onProgress?: (done: number, total: number) => void,
+  onProgress?: (done: number, total: number) => void
 ): Promise<QueryResult> {
   cancelInflightQuery();
   const sab = new SharedArrayBuffer(4);

@@ -5,13 +5,15 @@ export interface MapStyle {
   subdomains?: string;
 }
 
-const CARTO_ATTR = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/">CARTO</a>';
-const OSM_ATTR = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors';
+const CARTO_ATTR =
+  '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/">CARTO</a>';
+const OSM_ATTR =
+  '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors';
 
 export const MAP_STYLES: Record<string, MapStyle> = {
   default: {
     label: 'Default (follows system theme)',
-    url: '',           // resolved at runtime via resolveMapStyle()
+    url: '', // resolved at runtime via resolveMapStyle()
     attribution: '',
   },
   dark: {

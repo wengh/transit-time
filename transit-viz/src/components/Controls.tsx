@@ -15,7 +15,15 @@ interface RangeSliderProps {
   onCommit: (v: number) => void;
 }
 
-function RangeSlider({ id, min, max, step, defaultValue, formatDisplay, onCommit }: RangeSliderProps) {
+function RangeSlider({
+  id,
+  min,
+  max,
+  step,
+  defaultValue,
+  formatDisplay,
+  onCommit,
+}: RangeSliderProps) {
   const [display, setDisplay] = useState(formatDisplay(defaultValue));
   const ref = useRef<HTMLInputElement>(null);
 
@@ -65,7 +73,12 @@ interface DualRangeSliderProps {
 
 function DualRangeSlider({ windowStart, windowEnd, onChange, onCommit }: DualRangeSliderProps) {
   const trackRef = useRef<HTMLDivElement>(null);
-  const dragRef = useRef<{ kind: 'start' | 'end' | 'middle'; originX: number; origStart: number; origEnd: number } | null>(null);
+  const dragRef = useRef<{
+    kind: 'start' | 'end' | 'middle';
+    originX: number;
+    origStart: number;
+    origEnd: number;
+  } | null>(null);
   const liveRef = useRef({ start: windowStart, end: windowEnd });
   liveRef.current = { start: windowStart, end: windowEnd };
 
@@ -76,44 +89,64 @@ function DualRangeSlider({ windowStart, windowEnd, onChange, onCommit }: DualRan
 
   const xToSec = useCallback((clientX: number) => {
     const rect = trackRef.current!.getBoundingClientRect();
-    return clamp(snap(((clientX - rect.left) / rect.width) * SERVICE_WINDOW_MAX), 0, SERVICE_WINDOW_MAX);
+    return clamp(
+      snap(((clientX - rect.left) / rect.width) * SERVICE_WINDOW_MAX),
+      0,
+      SERVICE_WINDOW_MAX
+    );
   }, []);
 
-  const handlePointerDown = useCallback((kind: 'start' | 'end' | 'middle', e: React.PointerEvent) => {
-    e.preventDefault();
-    (e.target as HTMLElement).setPointerCapture(e.pointerId);
-    dragRef.current = { kind, originX: e.clientX, origStart: liveRef.current.start, origEnd: liveRef.current.end };
-  }, []);
+  const handlePointerDown = useCallback(
+    (kind: 'start' | 'end' | 'middle', e: React.PointerEvent) => {
+      e.preventDefault();
+      (e.target as HTMLElement).setPointerCapture(e.pointerId);
+      dragRef.current = {
+        kind,
+        originX: e.clientX,
+        origStart: liveRef.current.start,
+        origEnd: liveRef.current.end,
+      };
+    },
+    []
+  );
 
-  const handlePointerMove = useCallback((e: React.PointerEvent) => {
-    const d = dragRef.current;
-    if (!d) return;
-    const { kind, origStart, origEnd } = d;
-    const sec = xToSec(e.clientX);
-    let s = liveRef.current.start, en = liveRef.current.end;
+  const handlePointerMove = useCallback(
+    (e: React.PointerEvent) => {
+      const d = dragRef.current;
+      if (!d) return;
+      const { kind, origStart, origEnd } = d;
+      const sec = xToSec(e.clientX);
+      let s = liveRef.current.start,
+        en = liveRef.current.end;
 
-    if (kind === 'start') {
-      s = clamp(sec, 0, en - STEP);
-    } else if (kind === 'end') {
-      en = clamp(sec, s + STEP, SERVICE_WINDOW_MAX);
-    } else {
-      const dur = origEnd - origStart;
-      const rect = trackRef.current!.getBoundingClientRect();
-      const dx = e.clientX - d.originX;
-      const dSec = snap((dx / rect.width) * SERVICE_WINDOW_MAX);
-      s = clamp(origStart + dSec, 0, SERVICE_WINDOW_MAX - dur);
-      en = s + dur;
-    }
-    s = snap(s); en = snap(en);
-    onChange(s, en);
-  }, [xToSec, onChange]);
+      if (kind === 'start') {
+        s = clamp(sec, 0, en - STEP);
+      } else if (kind === 'end') {
+        en = clamp(sec, s + STEP, SERVICE_WINDOW_MAX);
+      } else {
+        const dur = origEnd - origStart;
+        const rect = trackRef.current!.getBoundingClientRect();
+        const dx = e.clientX - d.originX;
+        const dSec = snap((dx / rect.width) * SERVICE_WINDOW_MAX);
+        s = clamp(origStart + dSec, 0, SERVICE_WINDOW_MAX - dur);
+        en = s + dur;
+      }
+      s = snap(s);
+      en = snap(en);
+      onChange(s, en);
+    },
+    [xToSec, onChange]
+  );
 
-  const handlePointerUp = useCallback((e: React.PointerEvent) => {
-    if (!dragRef.current) return;
-    dragRef.current = null;
-    (e.target as HTMLElement).releasePointerCapture(e.pointerId);
-    onCommit(liveRef.current.start, liveRef.current.end);
-  }, [onCommit]);
+  const handlePointerUp = useCallback(
+    (e: React.PointerEvent) => {
+      if (!dragRef.current) return;
+      dragRef.current = null;
+      (e.target as HTMLElement).releasePointerCapture(e.pointerId);
+      onCommit(liveRef.current.start, liveRef.current.end);
+    },
+    [onCommit]
+  );
 
   const leftPct = pct(windowStart);
   const widthPct = pct(windowEnd - windowStart);
@@ -127,8 +160,10 @@ function DualRangeSlider({ windowStart, windowEnd, onChange, onCommit }: DualRan
       onPointerUp={handlePointerUp}
     >
       {/* Track background */}
-      <div className="absolute top-[9px] left-0 right-0 h-[3px] rounded bg-zinc-600 dark:bg-zinc-600
-        [@media(prefers-color-scheme:light)]:bg-zinc-300 pointer-events-none" />
+      <div
+        className="absolute top-[9px] left-0 right-0 h-[3px] rounded bg-zinc-600 dark:bg-zinc-600
+        [@media(prefers-color-scheme:light)]:bg-zinc-300 pointer-events-none"
+      />
       {/* Active range */}
       <div
         className="absolute top-[9px] h-[3px] rounded bg-blue-500 pointer-events-none"
@@ -138,13 +173,19 @@ function DualRangeSlider({ windowStart, windowEnd, onChange, onCommit }: DualRan
       <div
         className="absolute top-[5px] w-[12px] h-[12px] rounded-full bg-white border-2 border-blue-500 cursor-ew-resize -translate-x-1/2 z-10"
         style={{ left: `${leftPct}%` }}
-        onPointerDown={(e) => { e.stopPropagation(); handlePointerDown('start', e); }}
+        onPointerDown={(e) => {
+          e.stopPropagation();
+          handlePointerDown('start', e);
+        }}
       />
       {/* End thumb */}
       <div
         className="absolute top-[5px] w-[12px] h-[12px] rounded-full bg-white border-2 border-blue-500 cursor-ew-resize -translate-x-1/2 z-10"
         style={{ left: `${leftPct + widthPct}%` }}
-        onPointerDown={(e) => { e.stopPropagation(); handlePointerDown('end', e); }}
+        onPointerDown={(e) => {
+          e.stopPropagation();
+          handlePointerDown('end', e);
+        }}
       />
     </div>
   );
@@ -157,10 +198,32 @@ interface ControlsProps {
   onActivate: () => void;
 }
 
-export default function Controls({ onRunQuery, onCopy, isFront, onActivate }: ControlsProps): React.ReactNode {
+export default function Controls({
+  onRunQuery,
+  onCopy,
+  isFront,
+  onActivate,
+}: ControlsProps): React.ReactNode {
   const { state, dispatch } = useAppState();
   const justActivatedRef = useRef(false);
-  const { loadingState, mapStyle, windowStart, windowEnd, date, maxTimeMin, transferSlack, computeStatus, computeProgress, computeTimeMs, computeNumThreads, patternCount, nodeCount, stopCount, sourceNode, showCopiedMessage } = state;
+  const {
+    loadingState,
+    mapStyle,
+    windowStart,
+    windowEnd,
+    date,
+    maxTimeMin,
+    transferSlack,
+    computeStatus,
+    computeProgress,
+    computeTimeMs,
+    computeNumThreads,
+    patternCount,
+    nodeCount,
+    stopCount,
+    sourceNode,
+    showCopiedMessage,
+  } = state;
 
   const [collapsed, setCollapsed] = useState(() => window.innerWidth < 600);
   // Live (dragging) window values — committed on pointer up
@@ -277,10 +340,16 @@ export default function Controls({ onRunQuery, onCopy, isFront, onActivate }: Co
       {/* Map Style */}
       <div className="mb-0">
         <label className="block text-[13px] text-zinc-500 dark:text-zinc-400">Map Style</label>
-        <select id="map-style" value={mapStyle} onChange={handleMapStyleChange}
-          className={selectClass}>
+        <select
+          id="map-style"
+          value={mapStyle}
+          onChange={handleMapStyleChange}
+          className={selectClass}
+        >
           {Object.entries(MAP_STYLES).map(([id, s]) => (
-            <option key={id} value={id}>{s.label}</option>
+            <option key={id} value={id}>
+              {s.label}
+            </option>
           ))}
         </select>
       </div>
@@ -288,18 +357,29 @@ export default function Controls({ onRunQuery, onCopy, isFront, onActivate }: Co
       {/* Date */}
       <div className="mb-0">
         <label className="block text-[13px] text-zinc-500 dark:text-zinc-400">Date</label>
-        <input type="date" id="date-picker" value={date} onChange={handleDateChange}
-          className={dateClass} />
+        <input
+          type="date"
+          id="date-picker"
+          value={date}
+          onChange={handleDateChange}
+          className={dateClass}
+        />
       </div>
 
       {/* Departure Window */}
       <div className="mb-0">
         <label className="block text-[13px] text-zinc-500 dark:text-zinc-400">
-          Departure Window: <span>{formatTime(liveStart)} – {formatTime(liveEnd)}</span>
+          Departure Window:{' '}
+          <span>
+            {formatTime(liveStart)} – {formatTime(liveEnd)}
+          </span>
           <DualRangeSlider
             windowStart={liveStart}
             windowEnd={liveEnd}
-            onChange={(s, e) => { setLiveStart(s); setLiveEnd(e); }}
+            onChange={(s, e) => {
+              setLiveStart(s);
+              setLiveEnd(e);
+            }}
             onCommit={(s, e) => {
               dispatch({ type: 'SET_WINDOW', windowStart: s, windowEnd: e });
               onRunQuery({ windowStart: s, windowEnd: e });
@@ -307,7 +387,6 @@ export default function Controls({ onRunQuery, onCopy, isFront, onActivate }: Co
           />
         </label>
       </div>
-
 
       {/* Max travel time */}
       <div className="mb-0">
@@ -382,8 +461,10 @@ export default function Controls({ onRunQuery, onCopy, isFront, onActivate }: Co
           </button>
         )}
       </div>
-      <div className="sm:hidden mt-3 pt-3 border-t border-zinc-700 dark:border-zinc-700
-        [@media(prefers-color-scheme:light)]:border-zinc-200">
+      <div
+        className="sm:hidden mt-3 pt-3 border-t border-zinc-700 dark:border-zinc-700
+        [@media(prefers-color-scheme:light)]:border-zinc-200"
+      >
         <LegendContent maxMin={state.maxTimeMin} />
       </div>
     </div>

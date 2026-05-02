@@ -45,7 +45,9 @@ export function getHashParams(): HashParams {
   result.zoom = parseInt2(p.get('zoom'));
 
   // Remove undefined keys
-  return Object.fromEntries(Object.entries(result).filter(([, v]) => v !== undefined)) as HashParams;
+  return Object.fromEntries(
+    Object.entries(result).filter(([, v]) => v !== undefined)
+  ) as HashParams;
 }
 
 export function setHashParams(params: HashParams): void {
@@ -60,6 +62,11 @@ export function setHashParams(params: HashParams): void {
   if (params.maxtime !== undefined) p.set('maxtime', String(params.maxtime));
   if (params.slack !== undefined) p.set('slack', String(params.slack));
   if (params.zoom !== undefined) p.set('zoom', String(params.zoom));
-  if (params.center) p.set('center', `${params.center[0].toFixed(5)},${params.center[1].toFixed(5)}`);
-  history.replaceState(null, '', window.location.pathname + window.location.search + '#' + p.toString());
+  if (params.center)
+    p.set('center', `${params.center[0].toFixed(5)},${params.center[1].toFixed(5)}`);
+  history.replaceState(
+    null,
+    '',
+    window.location.pathname + window.location.search + '#' + p.toString()
+  );
 }

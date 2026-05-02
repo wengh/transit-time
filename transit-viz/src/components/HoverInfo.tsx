@@ -7,8 +7,8 @@ import { formatTime } from '../utils/format';
 // ─── chart data types ────────────────────────────────────────────────────────
 
 interface ChartTip {
-  tipX: number;    // absolute departure time when you just catch this trip (seconds)
-  tipY: number;    // travel time if you just catch it (seconds)
+  tipX: number; // absolute departure time when you just catch this trip (seconds)
+  tipY: number; // travel time if you just catch it (seconds)
   pathIdx: number; // index into allPaths for the representative path for this trip
   color: string;
 }
@@ -28,7 +28,7 @@ function computeChartInfo(
   allPaths: HoverPath[],
   windowStart: number,
   windowEnd: number,
-  maxTimeSec: number,
+  maxTimeSec: number
 ): ChartInfo {
   let walkTime: number | null = null;
   let walkPathIdx: number | null = null;
@@ -38,7 +38,7 @@ function computeChartInfo(
     const p = allPaths[i];
     if (p.totalTime === null) continue;
 
-    const isWalkOnly = p.segments.length > 0 && p.segments.every(s => s.edgeType === 0);
+    const isWalkOnly = p.segments.length > 0 && p.segments.every((s) => s.edgeType === 0);
     if (isWalkOnly) {
       if (walkTime === null || p.totalTime < walkTime) {
         walkTime = p.totalTime;
@@ -47,7 +47,7 @@ function computeChartInfo(
       continue;
     }
 
-    const firstTransit = p.segments.find(s => s.edgeType === 1);
+    const firstTransit = p.segments.find((s) => s.edgeType === 1);
     if (!firstTransit) continue;
 
     const w = firstTransit.waitTime;
@@ -121,7 +121,7 @@ function drawChart(
   canvas: HTMLCanvasElement,
   info: ChartInfo,
   selectedIdx: number | null,
-  theme: ChartTheme,
+  theme: ChartTheme
 ): void {
   const rect = canvas.getBoundingClientRect();
   const size = Math.round(rect.width);
@@ -133,7 +133,8 @@ function drawChart(
   if (!ctx) return;
 
   const { tips, walkTime, walkPathIdx, windowStart, windowEnd, yMax } = info;
-  const W = size, H = height;
+  const W = size,
+    H = height;
   const { top: pT, right: pR, bottom: pB, left: pL } = PAD;
   const plotW = W - pL - pR;
   const plotH = H - pT - pB;
@@ -177,16 +178,25 @@ function drawChart(
   // Pick x-axis tick step: aim for 4-7 ticks
   let xStepMin = 15;
   for (const s of [5, 10, 15, 30, 60, 120, 180, 240]) {
-    if (windowDurMin / s <= 8) { xStepMin = s; break; }
+    if (windowDurMin / s <= 8) {
+      xStepMin = s;
+      break;
+    }
   }
   for (let min = 0; min <= windowDurMin; min += xStepMin) {
     const x = xToC(windowStart + min * 60);
-    ctx.beginPath(); ctx.moveTo(x, pT); ctx.lineTo(x, pT + plotH); ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(x, pT);
+    ctx.lineTo(x, pT + plotH);
+    ctx.stroke();
   }
   const step = yTickStep(yMax);
   for (let y = 0; y <= yMax; y += step) {
     const cy = yToC(y);
-    ctx.beginPath(); ctx.moveTo(pL, cy); ctx.lineTo(pL + plotW, cy); ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(pL, cy);
+    ctx.lineTo(pL + plotW, cy);
+    ctx.stroke();
   }
 
   // Axes
@@ -255,7 +265,7 @@ function drawChart(
     if (segStartX > tipX) continue;
 
     const isSelected = selectedIdx === pathIdx;
-    const DENSE_SLOPE_THRESHOLD = 4;  // When slope exceeds this, switch to thinner line and hide tip dot
+    const DENSE_SLOPE_THRESHOLD = 4; // When slope exceeds this, switch to thinner line and hide tip dot
     const dense = (windowEnd - windowStart) / yMax > DENSE_SLOPE_THRESHOLD;
     ctx.strokeStyle = color;
     ctx.lineWidth = isSelected ? 3.5 : dense ? 1.5 : 2;
@@ -277,7 +287,7 @@ function drawChart(
 
   // Selection highlight ring around the tip dot
   if (selectedIdx !== null) {
-    const tip = tips.find(t => t.pathIdx === selectedIdx);
+    const tip = tips.find((t) => t.pathIdx === selectedIdx);
     if (tip && tip.tipY <= yMax) {
       ctx.strokeStyle = theme.selectionRing;
       ctx.lineWidth = 1.5;
@@ -320,12 +330,14 @@ function ChartHintButton(): React.ReactNode {
         aria-label="How to read this chart"
         aria-expanded={open}
         aria-controls={id}
-        onClick={() => setOpen(v => !v)}
+        onClick={() => setOpen((v) => !v)}
         className="flex-shrink-0 w-[18px] h-[18px] text-[11px] leading-[16px] cursor-pointer
           rounded-full p-0
           bg-transparent border border-zinc-600 text-zinc-500
           dark:border-zinc-600 dark:text-zinc-500"
-      >?</button>
+      >
+        ?
+      </button>
       {open && (
         <div
           id={id}
@@ -338,16 +350,16 @@ function ChartHintButton(): React.ReactNode {
         >
           <strong className="block mb-1">How to read this chart</strong>
           <p className="m-0 mb-1">
-            <strong>X-axis:</strong> departure time.{' '}
-            <strong>Y-axis:</strong> travel time to this location.
+            <strong>X-axis:</strong> departure time. <strong>Y-axis:</strong> travel time to this
+            location.
           </p>
           <p className="m-0 mb-1">
             Each <strong>sawtooth curve</strong> is one transit trip — travel time rises as you
             depart later and miss the vehicle, then drops when you catch the next one.
           </p>
           <p className="m-0">
-            <strong>Hover</strong> to highlight a departure.{' '}
-            <strong>Click</strong> to pin it and see its route on the map.
+            <strong>Hover</strong> to highlight a departure. <strong>Click</strong> to pin it and
+            see its route on the map.
           </p>
         </div>
       )}
@@ -379,30 +391,36 @@ export default function HoverInfo({ isFront, onActivate }: HoverInfoProps): Reac
       hoverData.allPaths,
       state.windowStart,
       state.windowEnd,
-      maxTimeMin * 60,
+      maxTimeMin * 60
     );
     chartInfoRef.current = info;
     drawChart(canvasRef.current, info, selectedSampleIdx, getChartTheme());
   }, [hoverData, maxTimeMin, state.windowStart, state.windowEnd, selectedSampleIdx]);
 
-  const handleMouseMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (lockedSampleIdx !== null || pinnedNode === null || !chartInfoRef.current) return;
-    const rect = (e.currentTarget as HTMLCanvasElement).getBoundingClientRect();
-    const idx = pathIdxAtCanvasX(e.clientX - rect.left, rect.width, chartInfoRef.current);
-    dispatch({ type: 'SELECT_SAMPLE', idx });
-  }, [lockedSampleIdx, pinnedNode, dispatch]);
+  const handleMouseMove = useCallback(
+    (e: React.MouseEvent<HTMLCanvasElement>) => {
+      if (lockedSampleIdx !== null || pinnedNode === null || !chartInfoRef.current) return;
+      const rect = (e.currentTarget as HTMLCanvasElement).getBoundingClientRect();
+      const idx = pathIdxAtCanvasX(e.clientX - rect.left, rect.width, chartInfoRef.current);
+      dispatch({ type: 'SELECT_SAMPLE', idx });
+    },
+    [lockedSampleIdx, pinnedNode, dispatch]
+  );
 
   const handleMouseLeave = useCallback(() => {
     if (lockedSampleIdx !== null || pinnedNode === null) return;
     dispatch({ type: 'SELECT_SAMPLE', idx: null });
   }, [lockedSampleIdx, pinnedNode, dispatch]);
 
-  const handleClick = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (pinnedNode === null || !chartInfoRef.current) return;
-    const rect = (e.currentTarget as HTMLCanvasElement).getBoundingClientRect();
-    const idx = pathIdxAtCanvasX(e.clientX - rect.left, rect.width, chartInfoRef.current);
-    dispatch({ type: 'LOCK_SAMPLE', idx: lockedSampleIdx === idx ? null : idx });
-  }, [lockedSampleIdx, pinnedNode, dispatch]);
+  const handleClick = useCallback(
+    (e: React.MouseEvent<HTMLCanvasElement>) => {
+      if (pinnedNode === null || !chartInfoRef.current) return;
+      const rect = (e.currentTarget as HTMLCanvasElement).getBoundingClientRect();
+      const idx = pathIdxAtCanvasX(e.clientX - rect.left, rect.width, chartInfoRef.current);
+      dispatch({ type: 'LOCK_SAMPLE', idx: lockedSampleIdx === idx ? null : idx });
+    },
+    [lockedSampleIdx, pinnedNode, dispatch]
+  );
 
   if (!hoverData) return null;
 
@@ -446,17 +464,20 @@ export default function HoverInfo({ isFront, onActivate }: HoverInfoProps): Reac
   // When a specific Pareto path is selected in the chart, show its detail; the
   // first wait is stripped so the user sees the actual in-vehicle trip time
   // from the chosen departure rather than "time since earliest viable leave".
-  const displayPath = selectedSampleIdx !== null
-    ? (allPaths[selectedSampleIdx] ? { ...allPaths[selectedSampleIdx] } : null)
-    : getMedianPath(allPaths);
+  const displayPath =
+    selectedSampleIdx !== null
+      ? allPaths[selectedSampleIdx]
+        ? { ...allPaths[selectedSampleIdx] }
+        : null
+      : getMedianPath(allPaths);
 
   if (selectedSampleIdx !== null && displayPath) {
-    const firstTransitIndex = displayPath.segments.findIndex(s => s.edgeType === 1);
+    const firstTransitIndex = displayPath.segments.findIndex((s) => s.edgeType === 1);
     if (firstTransitIndex !== -1) {
       const firstTransit = displayPath.segments[firstTransitIndex];
       const waitTime = firstTransit.waitTime;
       displayPath.segments = displayPath.segments.map((s, i) =>
-        i === firstTransitIndex ? { ...s, waitTime: 0 } : s,
+        i === firstTransitIndex ? { ...s, waitTime: 0 } : s
       );
       if (displayPath.totalTime !== null) displayPath.totalTime -= waitTime;
       displayPath.departureTime += waitTime;
@@ -514,32 +535,40 @@ export default function HoverInfo({ isFront, onActivate }: HoverInfoProps): Reac
     >
       <div id="hover-info-details" className="overflow-y-auto max-h-[30vh]">
         {displayPath && displayPath.segments.length > 0 && (
-          <div className="border-b border-zinc-800 dark:border-zinc-800
+          <div
+            className="border-b border-zinc-800 dark:border-zinc-800
             [@media(prefers-color-scheme:light)]:border-zinc-200
-            pb-1.5 mb-0.5">
+            pb-1.5 mb-0.5"
+          >
             {displayPath.segments.map((seg, si) => (
               <div key={si}>
                 {seg.edgeType === 0 ? (
-                  <div className="text-[12px] text-zinc-500 dark:text-zinc-500
-                    [@media(prefers-color-scheme:light)]:text-zinc-500 py-0.5">
+                  <div
+                    className="text-[12px] text-zinc-500 dark:text-zinc-500
+                    [@media(prefers-color-scheme:light)]:text-zinc-500 py-0.5"
+                  >
                     Walk {(seg.duration / 60).toFixed(1)} min
                   </div>
                 ) : (
                   <>
                     {seg.waitTime > 0 && (
-                      <div className="text-[11px] text-zinc-600 dark:text-zinc-600
+                      <div
+                        className="text-[11px] text-zinc-600 dark:text-zinc-600
                         [@media(prefers-color-scheme:light)]:text-zinc-500
-                        py-px italic">
+                        py-px italic"
+                      >
                         Wait {(seg.waitTime / 60).toFixed(1)} min
                       </div>
                     )}
-                    <div className="text-[12px] py-0.5 text-zinc-100 dark:text-zinc-100
-                      [@media(prefers-color-scheme:light)]:text-zinc-900">
+                    <div
+                      className="text-[12px] py-0.5 text-zinc-100 dark:text-zinc-100
+                      [@media(prefers-color-scheme:light)]:text-zinc-900"
+                    >
                       <b>{seg.routeName || 'Transit'}</b>
                       {seg.startStopName && seg.endStopName
                         ? ` · ${seg.startStopName} → ${seg.endStopName}`
-                        : ''}
-                      {' '}{(seg.duration / 60).toFixed(1)} min
+                        : ''}{' '}
+                      {(seg.duration / 60).toFixed(1)} min
                     </div>
                   </>
                 )}
@@ -548,8 +577,10 @@ export default function HoverInfo({ isFront, onActivate }: HoverInfoProps): Reac
           </div>
         )}
         <div className="flex items-start justify-between gap-2 mt-1.5">
-          <div className="font-semibold text-[13px] text-zinc-100 dark:text-zinc-100
-            [@media(prefers-color-scheme:light)]:text-zinc-900">
+          <div
+            className="font-semibold text-[13px] text-zinc-100 dark:text-zinc-100
+            [@media(prefers-color-scheme:light)]:text-zinc-900"
+          >
             {titleText}
           </div>
           <button

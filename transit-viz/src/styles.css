@@ -1,9 +1,12 @@
-@import "tailwindcss";
+@import 'tailwindcss';
 
 /* ── Map fills the viewport ──────────────────────────────────────────── */
 #map {
   position: absolute;
-  top: 0; left: 0; right: 0; bottom: 0;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
   z-index: 0;
   background: #090909;
 }
@@ -14,13 +17,19 @@
   color: #e0e0e0 !important;
   border-color: #383838 !important;
 }
-.leaflet-control-zoom a:hover { background: #2a2a2a !important; }
-.leaflet-bar { border-color: #383838 !important; }
+.leaflet-control-zoom a:hover {
+  background: #2a2a2a !important;
+}
+.leaflet-bar {
+  border-color: #383838 !important;
+}
 .leaflet-control-attribution {
-  background: rgba(20,20,20,0.8) !important;
+  background: rgba(20, 20, 20, 0.8) !important;
   color: #555 !important;
 }
-.leaflet-control-attribution a { color: #4a90d9 !important; }
+.leaflet-control-attribution a {
+  color: #4a90d9 !important;
+}
 
 @media (prefers-color-scheme: light) {
   .leaflet-control-zoom a {
@@ -28,11 +37,17 @@
     color: #374151 !important;
     border-color: #d1d5db !important;
   }
-  .leaflet-control-zoom a:hover { background: #f3f4f6 !important; }
-  .leaflet-bar { border-color: #d1d5db !important; }
+  .leaflet-control-zoom a:hover {
+    background: #f3f4f6 !important;
+  }
+  .leaflet-bar {
+    border-color: #d1d5db !important;
+  }
   .leaflet-control-attribution {
-    background: rgba(255,255,255,0.85) !important;
+    background: rgba(255, 255, 255, 0.85) !important;
     color: #6b7280 !important;
   }
-  .leaflet-control-attribution a { color: #2563eb !important; }
+  .leaflet-control-attribution a {
+    color: #2563eb !important;
+  }
 }

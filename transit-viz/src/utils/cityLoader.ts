@@ -6,7 +6,7 @@ import type { City } from '../cities';
 export async function loadCity(
   city: City,
   dispatch: React.Dispatch<Action>,
-  includePatternCount: boolean = false,
+  includePatternCount: boolean = false
 ): Promise<{ nodeCoords: Float32Array }> {
   dispatch({ type: 'START_LOADING', city });
 

@@ -1,4 +1,9 @@
-import init, { initThreadPool, TransitRouter, WasmProfileRouting, __markRayonReady } from '../../pkg/transit_router';
+import init, {
+  initThreadPool,
+  TransitRouter,
+  WasmProfileRouting,
+  __markRayonReady,
+} from '../../pkg/transit_router';
 
 let router: TransitRouter | null = null;
 let profile: WasmProfileRouting | null = null;
@@ -52,16 +57,22 @@ async function handleLoadRouter(id: number, cityFile: string) {
   const total = parseInt(resp.headers.get('content-length') || '0');
   let loaded = 0;
 
-  const decompressedStream = resp.body!
-    .pipeThrough(new TransformStream({
-      transform(chunk, controller) {
-        loaded += chunk.length;
-        if (total > 0) {
-          postMessage({ id, type: 'loadProgress', progress: Math.round((loaded / total) * 100) } satisfies WorkerResponse);
-        }
-        controller.enqueue(chunk);
-      }
-    }))
+  const decompressedStream = resp
+    .body!.pipeThrough(
+      new TransformStream({
+        transform(chunk, controller) {
+          loaded += chunk.length;
+          if (total > 0) {
+            postMessage({
+              id,
+              type: 'loadProgress',
+              progress: Math.round((loaded / total) * 100),
+            } satisfies WorkerResponse);
+          }
+          controller.enqueue(chunk);
+        },
+      })
+    )
     .pipeThrough(new DecompressionStream('gzip'));
 
   const dataBytes = new Uint8Array(await new Response(decompressedStream).arrayBuffer());
@@ -94,18 +105,19 @@ function handleRunQuery(id: number, params: RunQueryWorkerParams) {
 
   // compute_profile now returns null when the progress callback requested
   // cancellation (or any internal cancellation path fires).
-  profile = router.compute_profile(
-    params.sourceNode,
-    params.windowStart,
-    params.windowEnd,
-    dateInt,
-    params.transferSlack,
-    params.maxTime,
-    (done: number, total: number) => {
-      postMessage({ id, type: 'progress', done, total } satisfies WorkerResponse);
-      return cancelFlag ? Atomics.load(cancelFlag, 0) !== 0 : false;
-    },
-  ) ?? null;
+  profile =
+    router.compute_profile(
+      params.sourceNode,
+      params.windowStart,
+      params.windowEnd,
+      dateInt,
+      params.transferSlack,
+      params.maxTime,
+      (done: number, total: number) => {
+        postMessage({ id, type: 'progress', done, total } satisfies WorkerResponse);
+        return cancelFlag ? Atomics.load(cancelFlag, 0) !== 0 : false;
+      }
+    ) ?? null;
 
   if (!profile) {
     freeCurrentProfile();
@@ -159,8 +171,8 @@ function handleGetHoverData(node: number) {
     const segments = p.segments.map((seg) => {
       const nodes = new Uint32Array(seg.nodeSequence);
       const flat = router!.segment_shape(
-        seg.kind === 'transit' ? seg.routeIndex ?? undefined : undefined,
-        nodes,
+        seg.kind === 'transit' ? (seg.routeIndex ?? undefined) : undefined,
+        nodes
       );
       const coords: Array<[number, number]> = [];
       for (let i = 0; i + 1 < flat.length; i += 2) {
@@ -190,7 +202,11 @@ function handleGetHoverData(node: number) {
 
 function freeCurrentProfile() {
   if (!profile) return;
-  try { profile.free(); } catch { /* ignore */ }
+  try {
+    profile.free();
+  } catch {
+    /* ignore */
+  }
   profile = null;
 }
 
