@@ -18,7 +18,7 @@ The landing page lists available cities. Click one to load it. The city's transi
 
 **Desktop:** Double-click anywhere on the map to set your starting point. A pin appears snapped to the nearest walkable street node.
 
-**Mobile:** Long-press to set the origin.
+**Mobile:** Use the **Origin / Dest** toggle in the top bar. Tap "Origin", then tap anywhere on the map to set your starting point. The tool automatically switches to "Dest" mode after the origin is set.
 
 Once an origin is set, the map fills with a color-coded isochrone overlay. Green/yellow areas are reachable quickly; the color shifts through orange and red as travel time increases, fading out where nothing is reachable within the time limit.
 
@@ -26,15 +26,15 @@ The overlay also encodes how consistently a location is reachable across the dep
 
 ### Exploring destinations
 
-**Desktop:** Move your cursor over the map. The route from your origin to the point under the cursor is drawn on the map — walk segments as gray dashed lines, transit segments colored by route. A panel appears showing the travel time and the step-by-step itinerary.
+**Desktop:** Move your cursor over the map. The route from your origin to the point under the cursor is drawn on the map — walk segments as gray dashed lines, transit segments colored by route. A panel appears showing the travel time and the step-by-step itinerary. Single-click to pin a destination so the route stays visible while you adjust controls; click again to unpin.
 
-**Mobile:** Tap to pin a destination.
-
-**Pinning:** Single-click (desktop) or tap (mobile) to pin a destination so the route stays visible while you adjust controls. Click/tap again to unpin.
+**Mobile:** Ensure the toggle is set to **Dest**, then tap anywhere on the map to pin a destination. A bottom sheet appears showing the travel time summary. Drag the handle or tap the sheet to expand it and see the full itinerary and sawtooth chart. Tap "Clear" in the sheet or tap another location to pin a new destination.
 
 ### Controls
 
 All controls re-run the routing query immediately when changed.
+
+**Mobile:** Access controls by tapping the gear icon in the top bar, which opens a settings sheet.
 
 **Date** — select any calendar date. The tool activates only the transit schedules valid on that date (weekday, weekend, or holiday service), and shows how many service patterns are active.
 
