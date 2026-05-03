@@ -433,7 +433,7 @@ impl ProfileRouter for SplitProfileRouting {
         let index_ms = t_index.elapsed().as_secs_f64() * 1e3;
         let chunks =
             compute_profile_chunks(data, &chunk_queries, Arc::clone(&index), &mut progress)?;
-        let num_threads = profile_thread_count().min(chunks.len()).max(1) as u32;
+        let num_threads = get_thread_count().min(chunks.len()).max(1) as u32;
         let t_isochrone = Instant::now();
         let isochrone = compute_isochrone_chunks(data, query, &chunks, num_threads);
         let isochrone_ms = t_isochrone.elapsed().as_secs_f64() * 1e3;
@@ -493,7 +493,7 @@ fn split_profile_query(query: &ProfileQuery) -> Vec<ProfileQuery> {
     let min_required_chunks = window_points.div_ceil(max_chunk_points) as usize;
     let max_chunks_by_min_size = (window_points / MIN_SPLIT_CHUNK_SECONDS).max(1) as usize;
     let max_allowed_chunks = max_chunks_by_min_size.max(min_required_chunks);
-    let desired_num_chunks = profile_thread_count() * CHUNKS_PER_THREAD;
+    let desired_num_chunks = get_thread_count() * CHUNKS_PER_THREAD;
     let chunk_count = desired_num_chunks
         .max(1)
         .clamp(min_required_chunks, max_allowed_chunks)
@@ -522,7 +522,7 @@ fn split_profile_query(query: &ProfileQuery) -> Vec<ProfileQuery> {
     chunks
 }
 
-fn profile_thread_count() -> usize {
+fn get_thread_count() -> usize {
     if crate::rayon_available() {
         rayon::current_num_threads().max(1)
     } else {
@@ -546,18 +546,11 @@ fn compute_profile_chunks(
     if crate::rayon_available() && rayon::current_num_threads() > 1 {
         return compute_profile_chunks_parallel(data, chunk_queries, index, progress);
     }
-    let total_units = total * PROGRESS_INCREMENTS;
+    // Sequential fallback
     let mut chunks = Vec::with_capacity(total);
-    for (idx, chunk_query) in chunk_queries.iter().enumerate() {
-        let result = ProfileRouting::compute_with_index(
-            data,
-            chunk_query,
-            Arc::clone(&index),
-            |local_done, local_total| {
-                let local = scale_progress(local_done, local_total);
-                progress(idx * PROGRESS_INCREMENTS + local, total_units)
-            },
-        )?;
+    for chunk_query in chunk_queries {
+        let result =
+            ProfileRouting::compute_with_index(data, chunk_query, Arc::clone(&index), progress)?;
         chunks.push(result);
     }
     ControlFlow::Continue(chunks)
@@ -610,7 +603,7 @@ fn compute_profile_chunks_parallel(
                         data,
                         query,
                         Arc::clone(&index),
-                        |local_done, local_total| {
+                        &mut |local_done, local_total| {
                             check_abort()?;
                             let local = scale_progress(local_done, local_total);
                             bump(local, &mut prev);
@@ -716,7 +709,7 @@ impl ProfileRouting {
         data: &PreparedData,
         query: &ProfileQuery,
         index: Arc<Index>,
-        mut progress: impl FnMut(usize, usize) -> ControlFlow<()>,
+        progress: &mut impl FnMut(usize, usize) -> ControlFlow<()>,
     ) -> ControlFlow<(), Self> {
         assert!(
             query.window_start <= query.window_end,
