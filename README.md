@@ -223,10 +223,10 @@ The frontend includes `transit-viz/public/_headers` (COOP/COEP for WASM threads)
 
 ## Performance
 
-The numbers below are from a release build on a Chicago dataset, on a Ryzen 9 5900X. To reproduce:
+The numbers below are from a release build on a Chicago dataset, on a Ryzen 9 5900X, querying all nodes reachable from around Jackson/Dearborn within 45 minutes, over the whole day of 2026-05-03, with a transfer slack of 60 seconds. To reproduce:
 
 ```
-cargo run --release --bin benchmark_smoke -- transit-viz/public/data/chicago.bin 41.8781 -87.6298 20260413 900 60 45 60 10
+cargo run --release --bin benchmark_smoke -- transit-viz/public/data/chicago.bin 41.8781 -87.6298 20260503 000 1620 45 60 10
 ```
 
 ```
@@ -260,16 +260,16 @@ TOTAL in-memory              105.90 MB
 
 === Load Timings ===
 Phase                           Time % of total
-parse nodes                   9.2 ms     5.4%
-parse edges                  14.9 ms     8.7%
+parse nodes                   9.9 ms     5.6%
+parse edges                  16.4 ms     9.3%
 parse stops                   0.9 ms     0.5%
 parse route_names             0.0 ms     0.0%
 parse route_colors            0.0 ms     0.0%
-parse+index patterns        110.8 ms    65.0%
-parse leg_shapes              2.2 ms     1.3%
-build adj list               13.4 ms     7.8%
-build node_grid              19.1 ms    11.2%
-TOTAL                       170.5 ms
+parse+index patterns        115.5 ms    65.4%
+parse leg_shapes              1.5 ms     0.8%
+build adj list               13.1 ms     7.4%
+build node_grid              19.3 ms    10.9%
+TOTAL                       176.7 ms
 
 === Counts ===
 nodes                         514123
@@ -284,26 +284,26 @@ total freq entries                 0
 grid cells                      5935
 
 Source node: 440203
-Window: 09:00–10:00 (60 min), max_time=45 min, slack=60s
-[profile] setup=1.9ms phase1(initial)=2.5ms phase2(transfer)=70.2ms phase3(stats)=3.3ms total=78.0ms initial_transit_entries=51941
-[profile] setup=1.3ms phase1(initial)=3.0ms phase2(transfer)=82.4ms phase3(stats)=4.3ms total=91.1ms initial_transit_entries=54624
-[profile] setup=1.6ms phase1(initial)=3.6ms phase2(transfer)=85.5ms phase3(stats)=4.4ms total=95.1ms initial_transit_entries=60955
-[profile] setup=1.3ms phase1(initial)=3.1ms phase2(transfer)=85.0ms phase3(stats)=6.7ms total=96.1ms initial_transit_entries=57745
-  run 1/10: 0.112 s
-  run 2/10: 0.123 s
-  run 3/10: 0.136 s
-  run 4/10: 0.111 s
-  run 5/10: 0.101 s
-  run 6/10: 0.105 s
-  run 7/10: 0.102 s
-  run 8/10: 0.107 s
-  run 9/10: 0.114 s
-  run 10/10: 0.112 s
+Window: 00:00–27:00 (1620 min), max_time=45 min, slack=60s
+[profile] ...
+[profile] phase1(initial)=46.8ms phase2(transfer)=440.8ms phase3(totals)=15.5ms total=518.2ms initial_transit_entries=154114
+[profile] ...
+[profile/split] index_build=5.9ms compute_isochrone=9.9ms chunks=24
+  run 1/10: 0.634 s
+  run 2/10: 0.542 s
+  run 3/10: 0.521 s
+  run 4/10: 0.510 s
+  run 5/10: 0.507 s
+  run 6/10: 0.536 s
+  run 7/10: 0.496 s
+  run 8/10: 0.488 s
+  run 9/10: 0.634 s
+  run 10/10: 0.589 s
 
-Profile routing (10 runs, 4 threads): avg 0.112 s, min 0.101 s, max 0.136 s
-Nodes reached: 288364 / 514123
-Min travel time: 0 min, avg: 35 min, max: 45 min
-Always reachable (fraction=1): 143279, sometimes: 145085
+Profile routing (10 runs, 24 threads): avg 0.546 s, min 0.488 s, max 0.634 s
+Nodes reached: 309895 / 514123
+Min travel time: 0 min, avg: 37 min, max: 45 min
+Always reachable (fraction=1): 26654, sometimes: 283241
 ```
 
 **Binary sizes** (regenerate with `make sizes`):
