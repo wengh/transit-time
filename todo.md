@@ -214,3 +214,13 @@ Mobile interaction model
 Origin mode tap → sets source, triggers computation, auto-switches to Dest mode
 Dest mode tap → pins destination; tap again to pin new destination
 Remove long-press to set origin
+
+DONE
+
+-------
+
+add a reverse index for transit trips so we can remove `prev` from `Entry` to reduce memory usage.
+to recover an edge, we try the following:
+- find a neighbour with same home departure time and correct walk time => non-initial walk edge
+- search for transit legs arriving at this node, finding a boarding node with a matching home departure time and arrival time <= boarding time - slack, or a initial walk time = current arrival time - current home departure time - transit time => transit leg
+- find a neighbour with initial walk time = arrival time - home departure time - edge distance => initial walk edge
