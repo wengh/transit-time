@@ -1519,7 +1519,7 @@ pub fn run_prep(
                         return TripShapeResult {
                             had_shape: false,
                             legs: None,
-                        }
+                        };
                     }
                 };
                 let shape = match gtfs_data.shapes.get(shape_id) {
@@ -1528,7 +1528,7 @@ pub fn run_prep(
                         return TripShapeResult {
                             had_shape: false,
                             legs: None,
-                        }
+                        };
                     }
                 };
                 let times = match stop_times_by_trip.get(&trip_idx) {
@@ -1537,7 +1537,7 @@ pub fn run_prep(
                         return TripShapeResult {
                             had_shape: false,
                             legs: None,
-                        }
+                        };
                     }
                 };
                 let old_route_idx = match route_id_to_old_idx.get(trip.route_id.as_str()) {
@@ -1546,7 +1546,7 @@ pub fn run_prep(
                         return TripShapeResult {
                             had_shape: false,
                             legs: None,
-                        }
+                        };
                     }
                 };
                 let new_route_idx = match route_remap.get(&old_route_idx) {
@@ -1555,7 +1555,7 @@ pub fn run_prep(
                         return TripShapeResult {
                             had_shape: false,
                             legs: None,
-                        }
+                        };
                     }
                 };
 
@@ -1575,7 +1575,7 @@ pub fn run_prep(
                         return TripShapeResult {
                             had_shape: true,
                             legs: None,
-                        }
+                        };
                     }
                 };
 

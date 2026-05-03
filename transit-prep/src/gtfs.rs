@@ -746,12 +746,11 @@ pub fn build_service_patterns(data: &GtfsData) -> Vec<ServicePattern> {
 
     let mut service_masks: Vec<(u8, &Service)> = Vec::new();
     for service in &data.services {
-        let mut mask =
-            service
-                .days
-                .iter()
-                .enumerate()
-                .fold(0u8, |acc, (i, &d)| if d { acc | (1 << i) } else { acc });
+        let mut mask = service
+            .days
+            .iter()
+            .enumerate()
+            .fold(0u8, |acc, (i, &d)| if d { acc | (1 << i) } else { acc });
         if mask == 0 && !service.added_dates.is_empty() {
             mask = day_mask_from_dates(&service.added_dates);
         }

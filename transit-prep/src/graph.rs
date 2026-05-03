@@ -1,4 +1,4 @@
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
 use rayon::prelude::*;
