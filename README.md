@@ -8,6 +8,10 @@ Note: this project is mostly vibe coded.
 - `transit-router/src/profile.rs` is mostly manually written. All AI changes in this file are thoroughly reviewed.
 - Other parts of the codebase are mostly written by AI. Only the high level design and architecture are driven by human.
 
+### Screenshots
+#### Paths from Millennium Park to University of Chicago
+<img width="1255" height="1250" alt="paths from Millennium Park to University of Chicago" src="https://github.com/user-attachments/assets/63f3b320-c413-475f-86ae-4f8f309cc6dc" />
+
 ## Using the tool
 
 ### Picking a city
