@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef } from 'react';
+import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useRef } from 'react';
 import L from 'leaflet';
 import { useAppState } from '../state/AppContext';
 import { initWebGL, renderIsochrone } from '../utils/webgl';
@@ -14,7 +14,12 @@ import { getSortedTravelTimes } from '../utils/hoverInfo';
 import { resolveMapStyle, DEFAULT_MAP_STYLE } from '../utils/mapStyles';
 import { useIsMobile } from '../utils/useIsMobile';
 
-export default function MapView(): React.ReactNode {
+export interface MapViewHandle {
+  setSource(lat: number, lng: number): Promise<void>;
+  flyTo(lat: number, lng: number): void;
+}
+
+const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.ReactNode {
   const { state, dispatch } = useAppState();
   const mapRef = useRef<L.Map | null>(null);
   const mapContainerRef = useRef<HTMLDivElement>(null);
@@ -29,6 +34,19 @@ export default function MapView(): React.ReactNode {
   const drawRouteLayersRef = useRef<((paths: HoverPath[]) => void) | null>(null);
   const lastHoveredNodeRef = useRef<number | null>(null);
   const renderIsoRef = useRef<(() => void) | null>(null);
+
+  // Ref to the setSource closure (updated each time the map-events effect runs)
+  // so the imperative handle can call it from outside MapView.
+  const setSourceRef = useRef<((lat: number, lng: number) => Promise<void>) | null>(null);
+
+  useImperativeHandle(ref, () => ({
+    setSource: (lat, lng) => setSourceRef.current?.(lat, lng) ?? Promise.resolve(),
+    flyTo: (lat, lng) => {
+      const map = mapRef.current;
+      if (!map) return;
+      map.flyTo([lat, lng], Math.max(map.getZoom(), 14));
+    },
+  }));
 
   // Keep current state in refs for event handlers
   const stateRef = useRef(state);
@@ -297,6 +315,8 @@ export default function MapView(): React.ReactNode {
       clearRouteOverlay();
       dispatch({ type: 'SET_SOURCE', node, latLng });
     }
+
+    setSourceRef.current = setSource;
 
     // Desktop: double-click sets source
     let lastPinTime = 0;
@@ -573,4 +593,6 @@ export default function MapView(): React.ReactNode {
   }, [state.pinnedNode, state.pinnedLatLng, state.hoverData]);
 
   return <div id="map" ref={mapContainerRef} />;
-}
+});
+
+export default MapView;

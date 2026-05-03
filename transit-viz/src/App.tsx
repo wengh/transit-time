@@ -4,8 +4,10 @@ import CitySelect from './components/CitySelect';
 import LoadingOverlay from './components/LoadingOverlay';
 import Controls from './components/Controls';
 import MapView from './components/MapView';
+import type { MapViewHandle } from './components/MapView';
 import Legend from './components/Legend';
 import HoverInfo from './components/HoverInfo';
+import LocationSearch from './components/LocationSearch';
 import MobileTopBar from './components/MobileTopBar';
 import MobileBottomSheet from './components/MobileBottomSheet';
 import MobileSettingsSheet from './components/MobileSettingsSheet';
@@ -245,6 +247,8 @@ function AppInner() {
     return () => document.removeEventListener('keydown', onKeyDown);
   }, [copyInfo]);
 
+  const mapViewRef = useRef<MapViewHandle | null>(null);
+
   const isMobile = useIsMobile();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const handleCopy = () => {
@@ -255,10 +259,13 @@ function AppInner() {
     <>
       <CitySelect />
       <LoadingOverlay />
-      <MapView />
+      <MapView ref={mapViewRef} />
       {isMobile ? (
         <>
-          <MobileTopBar onOpenSettings={() => setSettingsOpen(true)} />
+          <MobileTopBar
+            onOpenSettings={() => setSettingsOpen(true)}
+            mapViewRef={mapViewRef}
+          />
           <MobileBottomSheet />
           {settingsOpen && (
             <MobileSettingsSheet
@@ -270,6 +277,9 @@ function AppInner() {
         </>
       ) : (
         <>
+          <div className="absolute z-[1000] top-2.5 left-2.5">
+            <LocationSearch mapViewRef={mapViewRef} variant="desktop" />
+          </div>
           <Controls
             onRunQuery={handleRunQuery}
             onCopy={handleCopy}

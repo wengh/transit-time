@@ -1,12 +1,16 @@
 import React from 'react';
+import type { RefObject } from 'react';
 import { useAppState } from '../state/AppContext';
 import { deriveStatusText } from '../utils/statusText';
+import LocationSearch from './LocationSearch';
+import type { MapViewHandle } from './MapView';
 
 interface MobileTopBarProps {
   onOpenSettings: () => void;
+  mapViewRef: RefObject<MapViewHandle | null>;
 }
 
-export default function MobileTopBar({ onOpenSettings }: MobileTopBarProps): React.ReactNode {
+export default function MobileTopBar({ onOpenSettings, mapViewRef }: MobileTopBarProps): React.ReactNode {
   const { state, dispatch } = useAppState();
   if (state.loadingState !== 'ready') return null;
 
@@ -82,7 +86,8 @@ export default function MobileTopBar({ onOpenSettings }: MobileTopBarProps): Rea
           </svg>
         </button>
       </div>
-      <div className="text-[12px] text-zinc-400 truncate">{hint}</div>
+      <LocationSearch mapViewRef={mapViewRef} variant="mobile" />
+      <div className="text-[11px] text-zinc-500 truncate">{hint}</div>
     </div>
   );
 }
