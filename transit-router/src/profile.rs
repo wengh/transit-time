@@ -428,10 +428,7 @@ impl ProfileRouter for SplitProfileRouting {
         if chunk_queries.len() == 1 {
             // Forward inner per-tick progress under the same M-scaled contract
             // the multi-chunk paths use, so the caller sees one consistent shape.
-            let routing = ProfileRouting::compute(data, &chunk_queries[0], |done, total| {
-                let scaled = scale_progress(done, total);
-                progress(scaled, PROGRESS_INCREMENTS)
-            })?;
+            let routing = ProfileRouting::compute(data, &chunk_queries[0], progress)?;
             return ControlFlow::Continue(Self {
                 isochrone: Isochrone {
                     ..routing.isochrone().clone()
@@ -440,11 +437,21 @@ impl ProfileRouter for SplitProfileRouting {
             });
         }
 
+        let t_index = Instant::now();
         let index = Arc::new(Index::new(data, query));
+        let index_ms = t_index.elapsed().as_secs_f64() * 1e3;
         let chunks =
             compute_profile_chunks(data, &chunk_queries, Arc::clone(&index), &mut progress)?;
         let num_threads = profile_thread_count().min(chunks.len()).max(1) as u32;
+        let t_merge = Instant::now();
         let isochrone = merge_chunk_isochrones(data, query, &chunks, num_threads);
+        let merge_ms = t_merge.elapsed().as_secs_f64() * 1e3;
+        eprintln!(
+            "[profile/split] index_build={:.1}ms merge_isochrones={:.1}ms chunks={}",
+            index_ms,
+            merge_ms,
+            chunks.len(),
+        );
         ControlFlow::Continue(Self { chunks, isochrone })
     }
 
@@ -727,7 +734,10 @@ impl ProfileRouter for ProfileRouting {
         query: &ProfileQuery,
         progress: impl FnMut(usize, usize) -> ControlFlow<()>,
     ) -> ControlFlow<(), Self> {
+        let t_index = Instant::now();
         let index = Arc::new(Index::new(data, query));
+        let index_ms = t_index.elapsed().as_secs_f64() * 1e3;
+        eprintln!("[profile] index_build={:.1}ms", index_ms);
         Self::compute_with_index(data, query, index, progress)
     }
 
