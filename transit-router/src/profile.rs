@@ -160,18 +160,22 @@ pub trait ProfileRouter: Sized {
 const MIN_SPLIT_CHUNK_SECONDS: u32 = 15 * 60; // 15 minutes
 
 const LAST_ENTRY: u32 = u32::MAX;
-const INVALID_PREV: u32 = u32::MAX;
 const MAX_DELTA: u16 = u16::MAX;
 const WALK_UNREACHABLE: u16 = u16::MAX;
+/// Empty-head marker stored in `NodeFrontier::head.entry.home_departure_delta`.
+/// Real entries always satisfy `home_departure_delta <= window_length`, and
+/// the `compute_with_index` asserts force `window_length < u16::MAX` (via the
+/// `window_length + max_time <= MAX_DELTA` and `max_time >= 1` invariants), so
+/// no real entry collides with this value.
+const EMPTY_HEAD_SENTINEL: u16 = u16::MAX;
 
-/// Sentinel `ArenaEntry` for an empty inline head.
-/// `prev = INVALID_PREV` signals "no head".
-/// The sibling pointer is `LAST_ENTRY` so that walking the chain
-/// of an empty head is a no-op (used by `iter` paths that don't pre-check).
+/// Sentinel `ArenaEntry` for an empty inline head. Signalled by
+/// `home_departure_delta == EMPTY_HEAD_SENTINEL`. The sibling pointer is
+/// `LAST_ENTRY` so that walking the chain of an empty head is a no-op (used by
+/// `iter` paths that don't pre-check).
 const EMPTY_ARENA_ENTRY: ArenaEntry = ArenaEntry {
     entry: Entry {
-        prev: INVALID_PREV,
-        home_departure_delta: 0,
+        home_departure_delta: EMPTY_HEAD_SENTINEL,
         arrival_delta: 0,
     },
     sibling_entry_idx: LAST_ENTRY,
@@ -180,15 +184,10 @@ const EMPTY_ARENA_ENTRY: ArenaEntry = ArenaEntry {
 /// A single entry for a node, representing a Pareto-optimal
 /// (home_departure, arrival) pair.
 ///
-/// Note:
-/// - We can identify the predecessor entry by binary searching in prev node's entries for the one with the same home_departure_delta.
-/// - We can determine whether an entry is a walk edge or a transit leg by checking if there's an edge and the time difference between predecessor entry's arrival and this entry's arrival is equal to the walk time of that edge.
-/// - We can find the transit route by looking at all transit legs departing from predecessor node after predecessor's arrival time, and checking which one reaches this node at the correct arrival time.
+/// The predecessor edge is not stored — it is recovered at reconstruction time
+/// by `recover_edge`, using the per-pattern reverse arrival index in `Index`.
 #[derive(Debug, Copy, Clone)]
 struct Entry {
-    /// Predecessor node id
-    prev: u32,
-
     /// Time leaving the source node (seconds since start of profile window)
     home_departure_delta: u16,
 
@@ -210,27 +209,29 @@ struct ArenaEntry {
 
 /// Per-node frontier state. The head Pareto entry is stored inline as a full
 /// `ArenaEntry` (entry + sibling pointer), uniform with the entries it points
-/// to in the arena. "No head" is encoded by the sentinel `prev == INVALID_PREV`
-/// (guaranteed unused by the `MAX_DELTA` assert in `compute`), not
-/// by an `Option` discriminant — that's what gets us to 12 bytes.
+/// to in the arena. "No head" is encoded by the sentinel
+/// `home_departure_delta == EMPTY_HEAD_SENTINEL` (= `u16::MAX`), not by an
+/// `Option` discriminant — that's what gets us to 8 bytes.
 ///
-/// Layout: `ArenaEntry` (12B = Entry 8B + u32), align 4. Verified by the const
+/// Layout: `ArenaEntry` (8B = Entry 4B + u32), align 4. Verified by the const
 /// assert below.
 #[derive(Debug)]
 struct NodeFrontier {
     /// Most-recent (smallest-arrival) Pareto entry plus its sibling pointer
-    /// into the arena tail. Empty iff `head.entry.prev == INVALID_PREV`.
+    /// into the arena tail. Empty iff
+    /// `head.entry.home_departure_delta == EMPTY_HEAD_SENTINEL`.
     head: ArenaEntry,
 }
 
 impl NodeFrontier {
     #[inline(always)]
     fn has_head(&self) -> bool {
-        self.head.entry.prev != INVALID_PREV
+        self.head.entry.home_departure_delta != EMPTY_HEAD_SENTINEL
     }
 }
 
-const _: () = assert!(std::mem::size_of::<NodeFrontier>() == 12);
+const _: () = assert!(std::mem::size_of::<NodeFrontier>() == 8);
+const _: () = assert!(std::mem::size_of::<Entry>() == 4);
 
 #[derive(Debug)]
 struct Frontier {
@@ -357,6 +358,46 @@ struct Index {
     /// Walk-only travel time from the source to each node. `WALK_UNREACHABLE`
     /// means not reachable within `query.max_time`.
     walk_only_time: Vec<u16>,
+    /// Reverse arrival data per pattern. `pattern_reverse[i] == None` for
+    /// inactive patterns. Used only by `recover_edge` during path reconstruction.
+    pattern_reverse: Vec<Option<PatternReverse>>,
+}
+
+/// Backward chains for a single active pattern, mirroring the forward
+/// `next_event_index`/`next_freq_index` pointers. Built once in `Index::new`
+/// alongside `patterns_at_stop`.
+struct PatternReverse {
+    /// Same length as `pat.stop_index.events_by_stop.data`. For event index
+    /// `i`, holds the index of the event whose `next_event_index == i`, or
+    /// `u32::MAX` if `i` is the first event of its trip (no predecessor).
+    event_prev: Vec<u32>,
+    /// Same length as `pat.frequency_routes`. For freq index `i`, holds the
+    /// index of the freq whose `next_freq_index == i`, or `u32::MAX` if `i`
+    /// is the first leg of its trip.
+    freq_prev: Vec<u32>,
+}
+
+impl PatternReverse {
+    fn build(pat: &crate::data::PatternData) -> Self {
+        let events = &pat.stop_index.events_by_stop.data;
+        let mut event_prev = vec![u32::MAX; events.len()];
+        for (i, e) in events.iter().enumerate() {
+            if e.next_event_index != u32::MAX {
+                event_prev[e.next_event_index as usize] = i as u32;
+            }
+        }
+        let freqs = &pat.frequency_routes;
+        let mut freq_prev = vec![u32::MAX; freqs.len()];
+        for (i, f) in freqs.iter().enumerate() {
+            if f.next_freq_index != u32::MAX {
+                freq_prev[f.next_freq_index as usize] = i as u32;
+            }
+        }
+        Self {
+            event_prev,
+            freq_prev,
+        }
+    }
 }
 
 /// Profile router that transparently splits long departure windows into
@@ -711,8 +752,8 @@ impl ProfileRouting {
             "Time window must have non-negative duration"
         );
         assert!(
-            query.window_end - query.window_start + query.max_time <= MAX_DELTA as u32,
-            "Time values must fit in u16 deltas"
+            query.window_end - query.window_start + query.max_time < MAX_DELTA as u32,
+            "Time values must fit in u16 deltas (strict < to leave u16::MAX as the empty-head sentinel)"
         );
         assert!(
             query.max_time < WALK_UNREACHABLE as u32,
@@ -770,7 +811,6 @@ impl ProfileRouting {
                     initial_transit_entries.push(PendingEntry {
                         node_id: leg.node_id,
                         entry: Entry {
-                            prev: node_id,
                             // Clamp home departure to be within the query window
                             home_departure_delta: window_length.min(leg.board_delta - walk_time),
                             arrival_delta: leg.arrival_delta,
@@ -831,7 +871,6 @@ impl ProfileRouting {
                     }
 
                     let new_entry = Entry {
-                        prev: node_id,
                         home_departure_delta,
                         arrival_delta: new_arrival_delta,
                     };
@@ -889,7 +928,6 @@ impl ProfileRouting {
                             &mut queue,
                             leg.node_id,
                             Entry {
-                                prev: node_id,
                                 home_departure_delta,
                                 arrival_delta: leg.arrival_delta,
                             },
@@ -987,172 +1025,96 @@ impl ProfileRouting {
         let mut curr_node = destination;
         let mut curr = entry;
         while curr_node != source {
-            let prev_node = if let Some(curr) = curr {
-                curr.prev
-            } else {
-                // Walk-only entry, find predecessor from neighbours
-                let curr_walk_time = self.patterns.walk_time(curr_node).unwrap();
-                context.data.adj[curr_node]
-                    .iter()
-                    .find(|&&(neighbor, edge_walk_time)| {
-                        let Some(walk_time) = self.patterns.walk_time(neighbor) else {
-                            return false;
-                        };
-                        walk_time.saturating_add(edge_walk_time) == curr_walk_time
-                    })
-                    .map(|&(neighbor, _)| neighbor)
-                    .unwrap_or_else(|| panic!("No walk predecessor found for node {} in walk-only path reconstruction", curr_node))
-            };
+            let recovery = context.recover_edge(&self.frontier, curr_node, curr);
+            let prev_node = recovery.prev_node;
+            let prev = recovery.prev_entry;
+            let prev_arrival_delta = get_true_arrival_delta(prev_node, &prev);
 
-            // Find predecessor entry
-            let mut prev = if let Some(curr) = curr {
-                // Find the predecessor entry with the same home_departure_delta
-                self.frontier
-                    .iter(prev_node)
-                    .find(|e| e.home_departure_delta == curr.home_departure_delta)
-                    .map(|e| Some(*e))
-                    .unwrap_or(None) // Predecessor is walk-only
-            } else {
-                // Walk-only
-                None
-            };
-
-            // Determine whether this entry is walk or transit
-            let mut prev_arrival_delta = get_true_arrival_delta(prev_node, &prev);
-
-            let is_walk = if let Some(curr) = curr {
-                let edge_weight = context.data.adj[prev_node]
-                    .iter()
-                    .find(|&&(neighbor, _)| neighbor == curr_node)
-                    .map(|&(_, w)| w);
-                match edge_weight {
-                    Some(w) => prev_arrival_delta.saturating_add(w) == curr.arrival_delta,
-                    None => false,
+            match recovery.kind {
+                EdgeKind::Walk => {
+                    if let Some(segment) = segments.last_mut()
+                        && segment.kind == SegmentKind::Walk
+                    {
+                        // Merge into the in-progress walk segment.
+                        segment.start_time = delta_to_time(prev_arrival_delta);
+                        segment.node_sequence.push(curr_node);
+                    } else {
+                        let curr_arrival_time = get_true_arrival_delta(curr_node, &curr);
+                        segments.push(PathSegment {
+                            kind: SegmentKind::Walk,
+                            start_time: delta_to_time(prev_arrival_delta),
+                            end_time: delta_to_time(curr_arrival_time),
+                            wait_time: 0,
+                            start_stop_name: String::new(),
+                            end_stop_name: String::new(),
+                            route_index: None,
+                            route_name: None,
+                            // Walk node_sequence is built in reverse-traversal
+                            // order; flipped back to forward order at end.
+                            node_sequence: vec![curr_node, prev_node],
+                        });
+                    }
                 }
-            } else {
-                true
-            };
-
-            if is_walk {
-                if let Some(segment) = segments.last_mut()
-                    && segment.kind == SegmentKind::Walk
-                {
-                    // Merge into next walk segment
-                    segment.start_time = delta_to_time(prev_arrival_delta);
-                    segment.node_sequence.push(curr_node);
-                } else {
-                    let curr_arrival_time = get_true_arrival_delta(curr_node, &curr);
+                EdgeKind::Transit { leg } => {
+                    let pat = &context.data.patterns[leg.pattern_idx as usize];
+                    let mut node_sequence = Vec::new();
+                    let end_stop = context
+                        .data
+                        .node_to_stop(curr_node)
+                        .expect("curr_node is a stop");
+                    let route_index = match leg.transit_ref {
+                        TransitRef::Scheduled { event_idx } => {
+                            let events = &pat.stop_index.events_by_stop.data;
+                            let mut curr_event_idx = event_idx;
+                            let mut reached_end_stop = false;
+                            let route_index = loop {
+                                let event = &events[curr_event_idx as usize];
+                                if !reached_end_stop {
+                                    node_sequence.push(context.data.stop_to_node(event.stop_index));
+                                }
+                                if event.stop_index == end_stop {
+                                    reached_end_stop = true;
+                                }
+                                if event.next_event_index == u32::MAX {
+                                    break pat.sentinel_routes[&(curr_event_idx as u32)];
+                                }
+                                curr_event_idx = event.next_event_index;
+                            };
+                            assert!(reached_end_stop);
+                            route_index
+                        }
+                        TransitRef::Frequency { freq_idx } => {
+                            let freqs = &pat.frequency_routes;
+                            let mut curr_idx = freq_idx;
+                            loop {
+                                let freq = &freqs[curr_idx as usize];
+                                node_sequence.push(context.data.stop_to_node(freq.stop_index));
+                                if freq.next_stop_index == end_stop {
+                                    // Last hop: alighting stop only appears as
+                                    // `next_stop_index`, never as a subsequent
+                                    // `stop_index`.
+                                    node_sequence
+                                        .push(context.data.stop_to_node(freq.next_stop_index));
+                                    break;
+                                }
+                                curr_idx = freq.next_freq_index;
+                            }
+                            freqs[freq_idx as usize].route_index
+                        }
+                    };
+                    let route_name = context.data.route_names[route_index as usize].clone();
                     segments.push(PathSegment {
-                        kind: SegmentKind::Walk,
-                        start_time: delta_to_time(prev_arrival_delta),
-                        end_time: delta_to_time(curr_arrival_time),
-                        wait_time: 0,
-                        start_stop_name: String::new(),
-                        end_stop_name: String::new(),
-                        route_index: None,
-                        route_name: None,
-                        node_sequence: vec![curr_node, prev_node], // For walk we have the sequence in reverse order so insert is fast. Flip to correct order at the end.
+                        kind: SegmentKind::Transit,
+                        start_time: delta_to_time(leg.board_delta),
+                        end_time: delta_to_time(leg.arrival_delta),
+                        wait_time: leg.board_delta as u32 - prev_arrival_delta as u32,
+                        start_stop_name: context.get_stop_name(prev_node).to_string(),
+                        end_stop_name: context.get_stop_name(curr_node).to_string(),
+                        route_index: Some(route_index as u32),
+                        route_name: Some(route_name),
+                        node_sequence,
                     });
                 }
-            } else {
-                // Is transit
-                let curr = curr.unwrap();
-                let find_leg = |prev_arrival_delta: u16, prev: Option<Entry>| {
-                    // Find the transit leg taken
-                    // Require transfer slack unless this is from initial walk
-                    let min_departure = delta_to_time(prev_arrival_delta)
-                        + if prev.is_none() {
-                            0
-                        } else {
-                            self.isochrone.query.transfer_slack
-                        };
-                    let max_departure = delta_to_time(curr.arrival_delta);
-                    let mut found = None;
-                    let _ = context.expand_transit_legs(
-                        ExpandTransitLegQuery {
-                            node: prev_node,
-                            min_departure,
-                            max_departure,
-                            expand_headways: false,
-                            max_arrival: Some(max_departure),
-                        },
-                        |leg| {
-                            if leg.node_id == curr_node && leg.arrival_delta == curr.arrival_delta {
-                                found = Some(leg);
-                                ControlFlow::Break(())
-                            } else {
-                                ControlFlow::Continue(())
-                            }
-                        },
-                    );
-                    found
-                };
-                let leg = find_leg(prev_arrival_delta, prev).unwrap_or_else(|| {
-                    // Try to fall back assuming that prev is initial walk instead of another transit leg
-                    assert!(prev.is_some(), "Failed to find transit leg");
-                    prev = None;
-                    prev_arrival_delta = get_true_arrival_delta(prev_node, &prev);
-                    find_leg(prev_arrival_delta, None).expect("Failed to find transit leg")
-                });
-
-                // Find the route and the stops
-                let pat = &context.data.patterns[leg.pattern_idx as usize];
-                let mut node_sequence = Vec::new();
-                let end_stop = context
-                    .data
-                    .node_to_stop(curr_node)
-                    .expect("curr_node is a stop");
-                let route_index = match leg.transit_ref {
-                    TransitRef::Scheduled { event_idx } => {
-                        let events = &pat.stop_index.events_by_stop.data;
-                        let mut curr_event_idx = event_idx;
-                        let mut reached_end_stop = false;
-                        let route_index = loop {
-                            let event = &events[curr_event_idx as usize];
-                            if !reached_end_stop {
-                                node_sequence.push(context.data.stop_to_node(event.stop_index));
-                            }
-                            if event.stop_index == end_stop {
-                                reached_end_stop = true;
-                            }
-                            if event.next_event_index == u32::MAX {
-                                // Last event
-                                break pat.sentinel_routes[&(curr_event_idx as u32)];
-                            }
-                            curr_event_idx = event.next_event_index;
-                        };
-                        assert!(reached_end_stop);
-                        route_index
-                    }
-                    TransitRef::Frequency { freq_idx } => {
-                        let freqs = &pat.frequency_routes;
-                        let mut curr_idx = freq_idx;
-                        loop {
-                            let freq = &freqs[curr_idx as usize];
-                            node_sequence.push(context.data.stop_to_node(freq.stop_index));
-                            if freq.next_stop_index == end_stop {
-                                // Last hop: the alighting stop only appears as
-                                // `next_stop_index`, never as a subsequent `stop_index`.
-                                node_sequence.push(context.data.stop_to_node(freq.next_stop_index));
-                                break;
-                            }
-                            curr_idx = freq.next_freq_index;
-                        }
-                        freqs[freq_idx as usize].route_index
-                    }
-                };
-                let route_name = context.data.route_names[route_index as usize].clone();
-                segments.push(PathSegment {
-                    kind: SegmentKind::Transit,
-                    start_time: delta_to_time(leg.board_delta),
-                    end_time: delta_to_time(leg.arrival_delta),
-                    wait_time: leg.board_delta as u32 - prev_arrival_delta as u32,
-                    start_stop_name: context.get_stop_name(prev_node).to_string(),
-                    end_stop_name: context.get_stop_name(curr_node).to_string(),
-                    route_index: Some(route_index as u32),
-                    route_name: Some(route_name),
-                    node_sequence,
-                });
             }
 
             curr_node = prev_node;
@@ -1251,10 +1213,16 @@ impl Index {
                 }
             }
         }
+        let mut pattern_reverse: Vec<Option<PatternReverse>> =
+            (0..data.patterns.len()).map(|_| None).collect();
+        for &pat_idx in &active_patterns {
+            pattern_reverse[pat_idx] = Some(PatternReverse::build(&data.patterns[pat_idx]));
+        }
         let walk_only_time = compute_walk_only_times(data, query);
         Self {
             patterns_at_stop,
             walk_only_time,
+            pattern_reverse,
         }
     }
 
@@ -1387,8 +1355,8 @@ impl<'a> ProfileQueryContext<'a> {
 
     /// For each transit vehicle departing `node` within `[min_departure, max_departure]`,
     /// follow the trip forward and emit one [`TransitLeg`] per downstream stop, with
-    /// `arrival_delta` filled in. `entry.prev` is set to `node` (the boarding stop) for
-    /// path reconstruction. Covers both scheduled and frequency-based routes.
+    /// `arrival_delta` filled in. The boarding stop (`node`) is implicit in `transit_ref`
+    /// for path reconstruction. Covers both scheduled and frequency-based routes.
     fn expand_transit_legs<F>(&self, query: ExpandTransitLegQuery, mut visit: F) -> ControlFlow<()>
     where
         F: FnMut(TransitLeg) -> ControlFlow<()>,
@@ -1511,4 +1479,250 @@ impl<'a> ProfileQueryContext<'a> {
         }
         ControlFlow::Continue(())
     }
+
+    /// Recover the predecessor edge for `(curr_node, curr)` during path
+    /// reconstruction. With `prev` no longer stored on `Entry`, we search:
+    ///   1. walk neighbour with an Entry at the same `home_departure_delta`
+    ///      whose arrival + edge_walk matches (non-initial walk edge);
+    ///   2. transit legs arriving at `curr_node` at `curr.arrival_delta`,
+    ///      walking the trip's reverse chain to find a boarding stop with
+    ///      either an Entry at `H` (transfer) or `walk_only_time` consistent
+    ///      with initial-walk boarding;
+    ///   3. (when `curr` is `None`) walk-only neighbour whose
+    ///      `walk_only_time + edge_walk` matches.
+    fn recover_edge(
+        &self,
+        frontier: &Frontier,
+        curr_node: u32,
+        curr: Option<Entry>,
+    ) -> EdgeRecovery {
+        let data = self.data;
+        let index = self.index;
+
+        // ── Case 3: walk-only tail ──────────────────────────────────────────
+        let Some(curr) = curr else {
+            let curr_walk_time = index
+                .walk_time(curr_node)
+                .expect("walk-only-tail recovery on a node without walk_only_time");
+            let &(prev_node, _) = data.adj[curr_node]
+                .iter()
+                .find(|&&(neighbor, edge_walk_time)| {
+                    let Some(walk_time) = index.walk_time(neighbor) else {
+                        return false;
+                    };
+                    walk_time.saturating_add(edge_walk_time) == curr_walk_time
+                })
+                .unwrap_or_else(|| {
+                    panic!(
+                        "No walk predecessor for walk-only node {} (walk_time={})",
+                        curr_node, curr_walk_time
+                    )
+                });
+            return EdgeRecovery {
+                prev_node,
+                prev_entry: None,
+                kind: EdgeKind::Walk,
+            };
+        };
+
+        let h = curr.home_departure_delta;
+        let a = curr.arrival_delta;
+
+        // ── Case 1: non-initial walk edge ──────────────────────────────────
+        for &(neighbor, edge_walk_time) in &data.adj[curr_node] {
+            if let Some(prev_entry) = frontier
+                .iter(neighbor)
+                .find(|e| e.home_departure_delta == h)
+                .copied()
+                && prev_entry.arrival_delta.saturating_add(edge_walk_time) == a
+            {
+                return EdgeRecovery {
+                    prev_node: neighbor,
+                    prev_entry: Some(prev_entry),
+                    kind: EdgeKind::Walk,
+                };
+            }
+        }
+
+        // ── Case 2: transit leg ────────────────────────────────────────────
+        if let Some(rec) = self.recover_transit_leg(frontier, curr_node, h, a) {
+            return rec;
+        }
+
+        panic!(
+            "Failed to recover edge for node {} (H={}, A={})",
+            curr_node, h, a
+        );
+    }
+
+    fn recover_transit_leg(
+        &self,
+        frontier: &Frontier,
+        curr_node: u32,
+        h: u16,
+        a: u16,
+    ) -> Option<EdgeRecovery> {
+        let data = self.data;
+        let index = self.index;
+        let query = self.query;
+        let window_start = query.window_start;
+        let transfer_slack = query.transfer_slack;
+        let target_arrival_abs = window_start + a as u32;
+        let curr_stop = data.node_to_stop(curr_node)?;
+
+        // Decide whether `B` boarded at `board_time` is a valid predecessor.
+        // Returns `Some(Some(entry))` for transfer (Case 2a), `Some(None)`
+        // for initial-walk boarding (Case 2b), or `None` if neither holds.
+        let check_boarding = |board_node: u32, board_time: u32| -> Option<Option<Entry>> {
+            // Case 2(a): transfer — `B` already has an Entry at H, with enough
+            // slack between its arrival and the boarding event.
+            if let Some(b_entry) = frontier
+                .iter(board_node)
+                .find(|e| e.home_departure_delta == h)
+                .copied()
+            {
+                let b_arrival_abs = window_start + b_entry.arrival_delta as u32;
+                if b_arrival_abs + transfer_slack <= board_time {
+                    return Some(Some(b_entry));
+                }
+            }
+            // Case 2(b): initial-walk boarding — `B` reached purely by walking
+            // from source. Feasibility (not exact reproduction): leaving home
+            // at `window_start + H`, walking `walk_only(B)` seconds, and
+            // waiting if needed all fits inside the leg's boarding time. The
+            // displayed `home_departure` stays at `H`; any slack becomes wait.
+            if let Some(b_walk) = index.walk_time(board_node) {
+                if board_time < window_start {
+                    return None;
+                }
+                let board_delta = board_time - window_start;
+                if b_walk as u32 + h as u32 <= board_delta {
+                    return Some(None);
+                }
+            }
+            None
+        };
+
+        // ── Scheduled events ───────────────────────────────────────────────
+        for &pat_idx in &index.patterns_at_stop[curr_stop as usize] {
+            let pat = &data.patterns[pat_idx as usize];
+            let pat_rev = index.pattern_reverse[pat_idx as usize]
+                .as_ref()
+                .expect("active pattern has reverse data");
+            let events_data = &pat.stop_index.events_by_stop.data;
+            let off_lo = pat.stop_index.events_by_stop.offsets[curr_stop as usize] as usize;
+            let off_hi = pat.stop_index.events_by_stop.offsets[curr_stop as usize + 1] as usize;
+            for arr_idx in off_lo..off_hi {
+                let prev_idx = pat_rev.event_prev[arr_idx];
+                if prev_idx == u32::MAX {
+                    continue; // Trip starts here — not an arrival.
+                }
+                let prev_event = &events_data[prev_idx as usize];
+                let arrival_time = prev_event.time_offset + prev_event.travel_time;
+                if arrival_time != target_arrival_abs {
+                    continue;
+                }
+                // Walk backward from the arrival's predecessor through the
+                // trip chain. Each visited event is a candidate boarding.
+                let mut k_idx = prev_idx;
+                loop {
+                    let k_event = &events_data[k_idx as usize];
+                    let board_node = data.stop_to_node(k_event.stop_index);
+                    let board_time = k_event.time_offset;
+                    if let Some(prev_entry) = check_boarding(board_node, board_time) {
+                        let leg = TransitLeg {
+                            node_id: curr_node,
+                            board_delta: (board_time - window_start) as u16,
+                            arrival_delta: a,
+                            pattern_idx: pat_idx as u16,
+                            transit_ref: TransitRef::Scheduled { event_idx: k_idx },
+                        };
+                        return Some(EdgeRecovery {
+                            prev_node: board_node,
+                            prev_entry,
+                            kind: EdgeKind::Transit { leg },
+                        });
+                    }
+                    let earlier = pat_rev.event_prev[k_idx as usize];
+                    if earlier == u32::MAX {
+                        break;
+                    }
+                    k_idx = earlier;
+                }
+            }
+        }
+
+        // ── Frequency-based legs ───────────────────────────────────────────
+        for &pat_idx in &index.patterns_at_stop[curr_stop as usize] {
+            let pat = &data.patterns[pat_idx as usize];
+            let pat_rev = index.pattern_reverse[pat_idx as usize]
+                .as_ref()
+                .expect("active pattern has reverse data");
+            let freqs = &pat.frequency_routes;
+            for (i, fi) in freqs.iter().enumerate() {
+                if fi.next_stop_index != curr_stop || fi.travel_time == 0 {
+                    continue;
+                }
+                let mut chain_idx = i as u32;
+                let mut cumulative_after: u32 = fi.travel_time;
+                loop {
+                    let curr_freq = &freqs[chain_idx as usize];
+                    if curr_freq.travel_time == 0 {
+                        break;
+                    }
+                    if (target_arrival_abs as u64) < cumulative_after as u64 {
+                        break;
+                    }
+                    let board_time = target_arrival_abs - cumulative_after;
+                    let valid = board_time >= curr_freq.start_time
+                        && board_time < curr_freq.end_time
+                        && (board_time - curr_freq.start_time) % curr_freq.headway_secs == 0;
+                    if valid {
+                        let board_node = data.stop_to_node(curr_freq.stop_index);
+                        if let Some(prev_entry) = check_boarding(board_node, board_time) {
+                            let leg = TransitLeg {
+                                node_id: curr_node,
+                                board_delta: (board_time - window_start) as u16,
+                                arrival_delta: a,
+                                pattern_idx: pat_idx as u16,
+                                transit_ref: TransitRef::Frequency {
+                                    freq_idx: chain_idx,
+                                },
+                            };
+                            return Some(EdgeRecovery {
+                                prev_node: board_node,
+                                prev_entry,
+                                kind: EdgeKind::Transit { leg },
+                            });
+                        }
+                    }
+                    let earlier = pat_rev.freq_prev[chain_idx as usize];
+                    if earlier == u32::MAX {
+                        break;
+                    }
+                    let prev_freq = &freqs[earlier as usize];
+                    if prev_freq.travel_time == 0 {
+                        break;
+                    }
+                    cumulative_after = cumulative_after.saturating_add(prev_freq.travel_time);
+                    chain_idx = earlier;
+                }
+            }
+        }
+
+        None
+    }
+}
+
+#[derive(Debug)]
+struct EdgeRecovery {
+    prev_node: u32,
+    prev_entry: Option<Entry>,
+    kind: EdgeKind,
+}
+
+#[derive(Debug)]
+enum EdgeKind {
+    Walk,
+    Transit { leg: TransitLeg },
 }
