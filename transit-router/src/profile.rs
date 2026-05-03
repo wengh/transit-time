@@ -3,10 +3,12 @@
 //!
 //! # Public interface
 //!
-//! [`ProfileRouter`] is the contract. [`ProfileRouting`] is the single-window
-//! engine; [`SplitProfileRouting`] wraps it for long windows. Callers hold
-//! `impl ProfileRouter` or a concrete implementation; internal representation
-//! is free to change.
+//! [`ProfileRouter`] is the contract. [`SplitProfileRouting`] is the only
+//! implementation: it splits the departure window into chunks, runs each
+//! chunk through the internal [`ProfileRouting`] engine (in parallel when
+//! rayon is available), and stitches the per-chunk frontiers into a single
+//! [`Isochrone`]. Callers hold `impl ProfileRouter` or `SplitProfileRouting`
+//! directly; internal representation is free to change.
 
 use std::{
     cmp::Reverse,
@@ -160,14 +162,12 @@ pub trait ProfileRouter: Sized {
 const MIN_SPLIT_CHUNK_SECONDS: u32 = 15 * 60; // 15 minutes
 
 const LAST_ENTRY: u32 = u32::MAX;
-const MAX_DELTA: u16 = u16::MAX;
+/// Sentinel for Index::walk_only_time to indicate that a node is not reachable within `query.max_time` by walk.
 const WALK_UNREACHABLE: u16 = u16::MAX;
 /// Empty-head marker stored in `NodeFrontier::head.entry.home_departure_delta`.
-/// Real entries always satisfy `home_departure_delta <= window_length`, and
-/// the `compute_with_index` asserts force `window_length < u16::MAX` (via the
-/// `window_length + max_time <= MAX_DELTA` and `max_time >= 1` invariants), so
-/// no real entry collides with this value.
 const EMPTY_HEAD_SENTINEL: u16 = u16::MAX;
+/// Max time delta that represents a real value
+const MAX_DELTA: u16 = u16::MAX - 1;
 
 /// Sentinel `ArenaEntry` for an empty inline head. Signalled by
 /// `home_departure_delta == EMPTY_HEAD_SENTINEL`. The sibling pointer is
@@ -423,33 +423,22 @@ impl ProfileRouter for SplitProfileRouting {
             query.max_time < WALK_UNREACHABLE as u32,
             "max_time must fit below the walk-unreachable sentinel"
         );
+        assert!(query.max_time >= 1, "max_time must be at least 1 second");
 
         let chunk_queries = split_profile_query(query);
-        if chunk_queries.len() == 1 {
-            // Forward inner per-tick progress under the same M-scaled contract
-            // the multi-chunk paths use, so the caller sees one consistent shape.
-            let routing = ProfileRouting::compute(data, &chunk_queries[0], progress)?;
-            return ControlFlow::Continue(Self {
-                isochrone: Isochrone {
-                    ..routing.isochrone().clone()
-                },
-                chunks: vec![routing],
-            });
-        }
-
         let t_index = Instant::now();
         let index = Arc::new(Index::new(data, query));
         let index_ms = t_index.elapsed().as_secs_f64() * 1e3;
         let chunks =
             compute_profile_chunks(data, &chunk_queries, Arc::clone(&index), &mut progress)?;
         let num_threads = profile_thread_count().min(chunks.len()).max(1) as u32;
-        let t_merge = Instant::now();
-        let isochrone = merge_chunk_isochrones(data, query, &chunks, num_threads);
-        let merge_ms = t_merge.elapsed().as_secs_f64() * 1e3;
+        let t_isochrone = Instant::now();
+        let isochrone = compute_isochrone_chunks(data, query, &chunks, num_threads);
+        let isochrone_ms = t_isochrone.elapsed().as_secs_f64() * 1e3;
         eprintln!(
-            "[profile/split] index_build={:.1}ms merge_isochrones={:.1}ms chunks={}",
+            "[profile/split] index_build={:.1}ms compute_isochrone={:.1}ms chunks={}",
             index_ms,
-            merge_ms,
+            isochrone_ms,
             chunks.len(),
         );
         ControlFlow::Continue(Self { chunks, isochrone })
@@ -623,7 +612,7 @@ fn compute_profile_chunks_parallel(
                     };
                     let result = ProfileRouting::compute_with_index(
                         data,
-                        &query,
+                        query,
                         Arc::clone(&index),
                         |local_done, local_total| {
                             check_abort()?;
@@ -671,7 +660,7 @@ fn scale_progress(done: usize, total: usize) -> usize {
     }
 }
 
-fn merge_chunk_isochrones(
+fn compute_isochrone_chunks(
     data: &PreparedData,
     query: &ProfileQuery,
     chunks: &[ProfileRouting],
@@ -681,12 +670,12 @@ fn merge_chunk_isochrones(
         .iter()
         .map(|chunk| ProfileQueryContext {
             data,
-            query: &chunk.isochrone.query,
+            query: &chunk.query,
             index: &chunk.patterns,
         })
         .collect();
     let total_window_len = query.window_end - query.window_start + 1;
-    let stats = crate::maybe_par_collect(0..data.num_nodes, |node_id| {
+    let stats = maybe_par_collect(0..data.num_nodes, |node_id| {
         let mut total = DestinationTotals {
             numerator: 0,
             denominator: 0,
@@ -720,34 +709,10 @@ fn destination_totals_to_stats(totals: DestinationTotals, window_length: u32) ->
     }
 }
 
-/// Opaque routing state. Internal representation is not part of the public
-/// interface — swap freely as long as [`ProfileRouter`] is satisfied.
 pub struct ProfileRouting {
     frontier: Frontier,
-    isochrone: Isochrone,
+    query: ProfileQuery,
     patterns: Arc<Index>,
-}
-
-impl ProfileRouter for ProfileRouting {
-    fn compute(
-        data: &PreparedData,
-        query: &ProfileQuery,
-        progress: impl FnMut(usize, usize) -> ControlFlow<()>,
-    ) -> ControlFlow<(), Self> {
-        let t_index = Instant::now();
-        let index = Arc::new(Index::new(data, query));
-        let index_ms = t_index.elapsed().as_secs_f64() * 1e3;
-        eprintln!("[profile] index_build={:.1}ms", index_ms);
-        Self::compute_with_index(data, query, index, progress)
-    }
-
-    fn isochrone(&self) -> &Isochrone {
-        &self.isochrone
-    }
-
-    fn optimal_paths(&self, data: &PreparedData, destination: u32) -> Vec<Path> {
-        ProfileRouting::optimal_paths(self, data, destination)
-    }
 }
 
 impl ProfileRouting {
@@ -762,18 +727,17 @@ impl ProfileRouting {
             "Time window must have non-negative duration"
         );
         assert!(
-            query.window_end - query.window_start + query.max_time < MAX_DELTA as u32,
-            "Time values must fit in u16 deltas (strict < to leave u16::MAX as the empty-head sentinel)"
+            query.window_end - query.window_start + query.max_time <= MAX_DELTA as u32,
+            "Time values must fit in u16 deltas"
         );
         assert!(
-            query.max_time < WALK_UNREACHABLE as u32,
-            "max_time must fit below the walk-unreachable sentinel"
+            query.max_time <= MAX_DELTA as u32,
+            "max_time must fit in u16 deltas"
         );
 
         let t_total = Instant::now();
 
         let n = data.num_nodes;
-        let t_setup = Instant::now();
         let context = ProfileQueryContext {
             data,
             query,
@@ -788,7 +752,6 @@ impl ProfileRouting {
                 .collect(),
             arena: Vec::new(),
         };
-        let setup_ms = t_setup.elapsed().as_secs_f64() * 1e3;
 
         let t_phase1 = Instant::now();
 
@@ -956,41 +919,23 @@ impl ProfileRouting {
         progress(total_entries, total_entries)?;
 
         let phase2_ms = t_phase2.elapsed().as_secs_f64() * 1e3;
-        let t_phase3 = Instant::now();
-
-        // ── Phase 3: compute isochrone stats ───────────────────────────────
-        let stats = crate::maybe_par_collect(0..n, |node_id| {
-            context.compute_destination_stats(&frontier, node_id as u32)
-        });
-        let isochrone = Isochrone {
-            mean_travel_time: stats.iter().map(|s| s.mean_travel_time).collect(),
-            reachable_fraction: stats.iter().map(|s| s.reachable_fraction).collect(),
-            num_threads: 1,
-            query: *query,
-        };
-
-        let phase3_ms = t_phase3.elapsed().as_secs_f64() * 1e3;
         let total_ms = t_total.elapsed().as_secs_f64() * 1e3;
         eprintln!(
-            "[profile] setup={:.1}ms phase1(initial)={:.1}ms phase2(transfer)={:.1}ms phase3(stats)={:.1}ms total={:.1}ms initial_transit_entries={}",
-            setup_ms, phase1_ms, phase2_ms, phase3_ms, total_ms, initial_transit_count,
+            "[profile] phase1(initial)={:.1}ms phase2(transfer)={:.1}ms total={:.1}ms initial_transit_entries={}",
+            phase1_ms, phase2_ms, total_ms, initial_transit_count,
         );
 
         ControlFlow::Continue(Self {
             frontier,
-            isochrone,
+            query: *query,
             patterns: index,
         })
-    }
-
-    fn isochrone(&self) -> &Isochrone {
-        &self.isochrone
     }
 
     fn optimal_paths(&self, data: &PreparedData, destination: u32) -> Vec<Path> {
         let context = ProfileQueryContext {
             data,
-            query: &self.isochrone.query,
+            query: &self.query,
             index: &self.patterns,
         };
         let entries: Vec<Option<Entry>> = self
@@ -999,13 +944,11 @@ impl ProfileRouting {
             .map(|entry| Some(*entry))
             .chain(self.patterns.walk_time(destination).map(|_| None))
             .collect();
-        crate::maybe_par_collect(entries, |entry| {
+        maybe_par_collect(entries, |entry| {
             self.reconstruct_path(&context, destination, entry)
         })
     }
-}
 
-impl ProfileRouting {
     fn reconstruct_path(
         &self,
         context: &ProfileQueryContext,
@@ -1019,7 +962,7 @@ impl ProfileRouting {
         };
 
         // Helper functions
-        let delta_to_time = |delta: u16| delta as u32 + self.isochrone.query.window_start;
+        let delta_to_time = |delta: u16| delta as u32 + self.query.window_start;
         let get_true_arrival_delta = |node: u32, entry: &Option<Entry>| {
             if let Some(entry) = entry {
                 entry.arrival_delta
@@ -1031,7 +974,7 @@ impl ProfileRouting {
 
         let mut segments: Vec<PathSegment> = Vec::new();
 
-        let source = self.isochrone.query.source_node;
+        let source = self.query.source_node;
         let mut curr_node = destination;
         let mut curr = entry;
         while curr_node != source {
@@ -1210,6 +1153,7 @@ impl Index {
             query.max_time < WALK_UNREACHABLE as u32,
             "max_time must fit below the walk-unreachable sentinel"
         );
+        assert!(query.max_time >= 1, "max_time must be at least 1 second");
         let active_patterns = crate::router::patterns_for_date(data, query.date);
         let num_stops = data.stops.len();
         let mut patterns_at_stop: Vec<Vec<u32>> = vec![Vec::new(); num_stops];
@@ -1283,14 +1227,9 @@ impl<'a> ProfileQueryContext<'a> {
         self.data.stops[stop_idx as usize].name.as_str()
     }
 
-    fn compute_destination_stats(&self, frontier: &Frontier, node_id: u32) -> DestinationStats {
-        destination_totals_to_stats(
-            self.compute_destination_totals(frontier, node_id),
-            self.query.window_end - self.query.window_start + 1,
-        )
-    }
-
+    #[inline(always)]
     fn compute_destination_totals(&self, frontier: &Frontier, node_id: u32) -> DestinationTotals {
+        // This function is called on a very hot loop
         let node_frontier = &frontier.nodes[node_id as usize];
         let walk_time = self.index.walk_time(node_id);
 
@@ -1324,7 +1263,7 @@ impl<'a> ProfileQueryContext<'a> {
         //
         // prev_departure starts at -1 (exclusive lower bound) so the first
         // segment correctly includes t = 0.
-        let mut numerator: u64 = 0;
+        let mut numerator: u32 = 0; // u32 is safe since the full area of the plot is at most window_size (u16) * max_time (u16)
         let mut denominator: u32 = 0;
         let mut prev_departure: i32 = -1;
 
@@ -1345,20 +1284,20 @@ impl<'a> ProfileQueryContext<'a> {
             denominator += reachable;
             // Sum of travel(t) over the reachable t's:
             //   reachable * travel_min + (0 + 1 + … + reachable − 1)
-            numerator += reachable as u64 * travel as u64;
-            numerator += (reachable as u64 * (reachable - 1) as u64) / 2;
+            numerator += reachable * travel;
+            numerator += (reachable * (reachable - 1)) / 2;
 
             prev_departure = departure as i32;
         }
 
         if let Some(walk) = walk_time {
             // Walk fills every t not claimed by a transit entry above.
-            numerator += walk as u64 * (window_length - denominator) as u64;
+            numerator += walk as u32 * (window_length - denominator);
             denominator = window_length;
         }
 
         DestinationTotals {
-            numerator,
+            numerator: numerator as u64,
             denominator,
         }
     }

@@ -226,3 +226,16 @@ to recover an edge, we try the following:
 - find a neighbour with initial walk time = arrival time - home departure time - edge distance => initial walk edge
 
 DONE
+
+-------
+
+split into up to 2-3x thread count chunks for profile routing parallelism to account for uneven distribution
+
+-------
+
+remove isochrone from chunk routing
+
+-------
+
+bug: in mobile safari the browser's own ui is white when in dark mode
+fix mobile ui theme and make plot theme responsive

@@ -11,7 +11,7 @@ use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 use std::time::{Duration, Instant};
-use transit_router::profile::{ProfileQuery, ProfileRouter as _, ProfileRouting};
+use transit_router::profile::{ProfileQuery, ProfileRouter as _, SplitProfileRouting};
 
 fn main() {
     let bin = PathBuf::from(
@@ -45,15 +45,12 @@ fn main() {
         max_time: 45 * 60,
     };
 
-    let routing =
-        match ProfileRouting::compute(
-            &prepared,
-            &query,
-            |_, _| std::ops::ControlFlow::Continue(()),
-        ) {
-            std::ops::ControlFlow::Continue(r) => r,
-            std::ops::ControlFlow::Break(()) => unreachable!("repro progress never cancels"),
-        };
+    let routing = match SplitProfileRouting::compute(&prepared, &query, |_, _| {
+        std::ops::ControlFlow::Continue(())
+    }) {
+        std::ops::ControlFlow::Continue(r) => r,
+        std::ops::ControlFlow::Break(()) => unreachable!("repro progress never cancels"),
+    };
 
     let target: Option<u32> = std::env::args().nth(2).and_then(|s| s.parse().ok());
     if let Some(dst) = target {
@@ -132,7 +129,7 @@ enum DestinationOutcome {
 
 fn reconstruct_destination(
     prepared: &transit_router::data::PreparedData,
-    routing: &ProfileRouting,
+    routing: &SplitProfileRouting,
     dst: u32,
 ) -> DestinationOutcome {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
