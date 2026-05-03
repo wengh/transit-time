@@ -26,7 +26,7 @@ use rayon::prelude::*;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
 
-use crate::{data::PreparedData, maybe_par_collect};
+use crate::{data::PreparedData, maybe_par_collect, maybe_par_unzip};
 use serde::Serialize;
 
 /// Zero-cost no-op Instant for wasm32 where std::time::Instant panics.
@@ -347,7 +347,7 @@ struct DestinationStats {
 
 #[derive(Debug, Copy, Clone)]
 struct DestinationTotals {
-    numerator: u64,
+    numerator: u32,
     denominator: u32,
 }
 
@@ -655,40 +655,35 @@ fn compute_isochrone_chunks(
     chunks: &[ProfileRouting],
     num_threads: u32,
 ) -> Isochrone {
-    let contexts: Vec<_> = chunks
-        .iter()
-        .map(|chunk| ProfileQueryContext {
-            data,
-            query: &chunk.query,
-            index: &chunk.patterns,
-        })
-        .collect();
     let total_window_len = query.window_end - query.window_start + 1;
-    let stats = maybe_par_collect(0..data.num_nodes, |node_id| {
-        let mut total = DestinationTotals {
-            numerator: 0,
-            denominator: 0,
-        };
-        for (chunk, context) in chunks.iter().zip(contexts.iter()) {
-            let chunk_total = context.compute_destination_totals(&chunk.frontier, node_id as u32);
-            total.numerator += chunk_total.numerator;
-            total.denominator += chunk_total.denominator;
+    let (mean_travel_time, reachable_fraction) = maybe_par_unzip(0..data.num_nodes, |node_id| {
+        let mut numerator: u64 = 0;
+        let mut denominator: u32 = 0;
+        for chunk in chunks {
+            let chunk_total = chunk.destination_totals[node_id];
+            numerator += chunk_total.numerator as u64;
+            denominator += chunk_total.denominator;
         }
-        destination_totals_to_stats(total, total_window_len)
+        let stats = destination_totals_to_stats(numerator, denominator as u64, total_window_len);
+        (stats.mean_travel_time, stats.reachable_fraction)
     });
 
     Isochrone {
-        mean_travel_time: stats.iter().map(|s| s.mean_travel_time).collect(),
-        reachable_fraction: stats.iter().map(|s| s.reachable_fraction).collect(),
+        mean_travel_time: mean_travel_time,
+        reachable_fraction: reachable_fraction,
         num_threads,
         query: *query,
     }
 }
 
-fn destination_totals_to_stats(totals: DestinationTotals, window_length: u32) -> DestinationStats {
-    let fraction_q = (totals.denominator as u64 * u16::MAX as u64 / window_length as u64) as u16;
-    let mean = if totals.denominator > 0 {
-        (totals.numerator / totals.denominator as u64).min(u16::MAX as u64) as u16
+fn destination_totals_to_stats(
+    numerator: u64,
+    denominator: u64,
+    window_length: u32,
+) -> DestinationStats {
+    let fraction_q = (denominator * u16::MAX as u64 / window_length as u64) as u16;
+    let mean = if denominator > 0 {
+        (numerator / denominator as u64).min(u16::MAX as u64) as u16
     } else {
         0
     };
@@ -702,6 +697,8 @@ pub struct ProfileRouting {
     frontier: Frontier,
     query: ProfileQuery,
     patterns: Arc<Index>,
+    /// Can be set to empty once no longer needed
+    destination_totals: Vec<DestinationTotals>,
 }
 
 impl ProfileRouting {
@@ -908,16 +905,26 @@ impl ProfileRouting {
         progress(total_entries, total_entries)?;
 
         let phase2_ms = t_phase2.elapsed().as_secs_f64() * 1e3;
+        let t_phase3 = Instant::now();
+
+        // ── Phase 3: destination totals ───────────────────────────────
+
+        let destination_totals = maybe_par_collect(0..data.num_nodes as u32, |node_id| {
+            context.compute_destination_totals(&frontier, node_id)
+        });
+
+        let phase3_ms = t_phase3.elapsed().as_secs_f64() * 1e3;
         let total_ms = t_total.elapsed().as_secs_f64() * 1e3;
         eprintln!(
-            "[profile] phase1(initial)={:.1}ms phase2(transfer)={:.1}ms total={:.1}ms initial_transit_entries={}",
-            phase1_ms, phase2_ms, total_ms, initial_transit_count,
+            "[profile] phase1(initial)={:.1}ms phase2(transfer)={:.1}ms phase3(totals)={:.1}ms total={:.1}ms initial_transit_entries={}",
+            phase1_ms, phase2_ms, phase3_ms, total_ms, initial_transit_count,
         );
 
         ControlFlow::Continue(Self {
             frontier,
             query: *query,
             patterns: index,
+            destination_totals,
         })
     }
 
@@ -1226,7 +1233,7 @@ impl<'a> ProfileQueryContext<'a> {
             if let Some(walk_time) = walk_time {
                 let window_length = self.query.window_end - self.query.window_start + 1;
                 return DestinationTotals {
-                    numerator: walk_time as u64 * window_length as u64,
+                    numerator: walk_time as u32 * window_length,
                     denominator: window_length,
                 };
             } else {
@@ -1286,7 +1293,7 @@ impl<'a> ProfileQueryContext<'a> {
         }
 
         DestinationTotals {
-            numerator: numerator as u64,
+            numerator: numerator,
             denominator,
         }
     }

@@ -46,6 +46,21 @@ where
     }
 }
 
+/// Map `f` over `iter`, using rayon if available.
+pub fn maybe_par_unzip<I, R1, R2, F>(iter: I, f: F) -> (Vec<R1>, Vec<R2>)
+where
+    I: IntoParallelIterator + IntoIterator<Item = <I as IntoParallelIterator>::Item>,
+    R1: Send,
+    R2: Send,
+    F: Fn(<I as IntoParallelIterator>::Item) -> (R1, R2) + Sync + Send,
+{
+    if crate::rayon_available() {
+        iter.into_par_iter().map(&f).unzip()
+    } else {
+        iter.into_iter().map(f).unzip()
+    }
+}
+
 // === WASM wrappers ===
 
 /// Thin WASM adapter over [`profile::SplitProfileRouting`]. All logic lives inside
