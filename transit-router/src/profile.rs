@@ -161,6 +161,8 @@ pub trait ProfileRouter: Sized {
 
 const MIN_SPLIT_CHUNK_SECONDS: u32 = 15 * 60; // 15 minutes
 
+const CHUNKS_PER_THREAD: usize = 1; // Having more chunks than CPU thread count might help load balance against skew (e.g. less transit at night) but also causes more overhead.
+
 const LAST_ENTRY: u32 = u32::MAX;
 /// Sentinel for Index::walk_only_time to indicate that a node is not reachable within `query.max_time` by walk.
 const WALK_UNREACHABLE: u16 = u16::MAX;
@@ -486,19 +488,13 @@ impl ProfileRouter for SplitProfileRouting {
 }
 
 fn split_profile_query(query: &ProfileQuery) -> Vec<ProfileQuery> {
-    split_profile_query_for_threads(query, profile_thread_count())
-}
-
-fn split_profile_query_for_threads(
-    query: &ProfileQuery,
-    desired_parallelism: usize,
-) -> Vec<ProfileQuery> {
     let max_chunk_points = MAX_DELTA as u32 - query.max_time + 1;
     let window_points = query.window_end - query.window_start + 1;
     let min_required_chunks = window_points.div_ceil(max_chunk_points) as usize;
     let max_chunks_by_min_size = (window_points / MIN_SPLIT_CHUNK_SECONDS).max(1) as usize;
     let max_allowed_chunks = max_chunks_by_min_size.max(min_required_chunks);
-    let chunk_count = desired_parallelism
+    let desired_num_chunks = profile_thread_count() * CHUNKS_PER_THREAD;
+    let chunk_count = desired_num_chunks
         .max(1)
         .clamp(min_required_chunks, max_allowed_chunks)
         .min(window_points as usize);
