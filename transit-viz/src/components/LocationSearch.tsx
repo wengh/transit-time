@@ -15,11 +15,18 @@ interface LocationSearchProps {
   variant: 'desktop' | 'mobile';
 }
 
-export default function LocationSearch({
-  mapViewRef,
-  variant,
-}: LocationSearchProps): React.ReactNode {
-  const { state } = useAppState();
+// ── Shared search input ────────────────────────────────────────────────────────
+
+interface SearchInputProps {
+  placeholder: string;
+  onSelect: (lat: number, lng: number) => void;
+  bbox: [number, number, number, number] | null;
+  variant: 'desktop' | 'mobile';
+  /** Extra Tailwind classes on the outer wrapper div */
+  className?: string;
+}
+
+function SearchInput({ placeholder, onSelect, bbox, variant, className = '' }: SearchInputProps) {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<NominatimResult[]>([]);
   const [isOpen, setIsOpen] = useState(false);
@@ -30,12 +37,10 @@ export default function LocationSearch({
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
-  const { currentCity, loadingState } = state;
-
   // Debounced Nominatim search
   useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
-    if (!query.trim() || !currentCity) {
+    if (!query.trim() || !bbox) {
       setResults([]);
       setIsOpen(false);
       return;
@@ -48,7 +53,7 @@ export default function LocationSearch({
 
       setIsLoading(true);
       try {
-        const [minLng, minLat, maxLng, maxLat] = currentCity.bbox;
+        const [minLng, minLat, maxLng, maxLat] = bbox;
         // Nominatim viewbox: left,top,right,bottom = minLng,maxLat,maxLng,minLat
         const viewbox = `${minLng},${maxLat},${maxLng},${minLat}`;
         const url = new URL('https://nominatim.openstreetmap.org/search');
@@ -79,7 +84,7 @@ export default function LocationSearch({
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
-  }, [query, currentCity]);
+  }, [query, bbox]);
 
   // Close dropdown on outside click
   useEffect(() => {
@@ -92,18 +97,15 @@ export default function LocationSearch({
     return () => document.removeEventListener('pointerdown', onPointerDown);
   }, []);
 
-  // Reset on city change
+  // Reset when city (bbox) changes
   useEffect(() => {
     setQuery('');
     setResults([]);
     setIsOpen(false);
-  }, [currentCity]);
+  }, [bbox]);
 
-  function selectResult(result: NominatimResult) {
-    const lat = parseFloat(result.lat);
-    const lng = parseFloat(result.lon);
-    mapViewRef.current?.flyTo(lat, lng);
-    mapViewRef.current?.setSource(lat, lng);
+  function select(result: NominatimResult) {
+    onSelect(parseFloat(result.lat), parseFloat(result.lon));
     setQuery('');
     setResults([]);
     setIsOpen(false);
@@ -121,52 +123,49 @@ export default function LocationSearch({
     } else if (e.key === 'Enter') {
       e.preventDefault();
       const idx = activeIdx >= 0 ? activeIdx : 0;
-      if (results[idx]) selectResult(results[idx]);
+      if (results[idx]) select(results[idx]);
     } else if (e.key === 'Escape') {
       setIsOpen(false);
       setActiveIdx(-1);
     }
   }
 
-  if (loadingState !== 'ready') return null;
+  const isDesktop = variant === 'desktop';
+  const iconSize = isDesktop ? 14 : 12;
 
-  const inputCls =
-    variant === 'desktop'
-      ? [
-          'w-full bg-white/95 dark:bg-zinc-900/95 text-zinc-900 dark:text-zinc-100',
-          'placeholder-zinc-400 dark:placeholder-zinc-500',
-          'border border-zinc-200 dark:border-zinc-700 rounded-lg',
-          'pl-8 pr-3 py-1.5 text-[13px]',
-          'focus:outline-none focus:ring-2 focus:ring-blue-500/50',
-          'shadow-[0_2px_8px_rgba(0,0,0,0.35)]',
-        ].join(' ')
-      : [
-          'w-full bg-zinc-800 text-zinc-100',
-          'placeholder-zinc-500',
-          'border border-zinc-700 rounded-md',
-          'pl-7 pr-2.5 py-1 text-[12px]',
-          'focus:outline-none focus:ring-1 focus:ring-blue-500/60',
-        ].join(' ');
+  const inputCls = isDesktop
+    ? [
+        'w-full bg-transparent text-zinc-900 dark:text-zinc-100',
+        'placeholder-zinc-400 dark:placeholder-zinc-500',
+        'pl-8 pr-3 py-1.5 text-[13px]',
+        'focus:outline-none',
+      ].join(' ')
+    : [
+        'w-full bg-zinc-800 text-zinc-100',
+        'placeholder-zinc-500',
+        'border border-zinc-700 rounded-md',
+        'pl-7 pr-2.5 py-1 text-[12px]',
+        'focus:outline-none focus:ring-1 focus:ring-blue-500/60',
+      ].join(' ');
 
-  const dropdownCls =
-    variant === 'desktop'
-      ? [
-          'absolute left-0 right-0 top-full mt-1 z-10',
-          'bg-white dark:bg-zinc-900',
-          'border border-zinc-200 dark:border-zinc-700 rounded-lg',
-          'shadow-[0_4px_16px_rgba(0,0,0,0.4)]',
-          'overflow-hidden',
-        ].join(' ')
-      : [
-          'absolute left-0 right-0 top-full mt-0.5 z-[1200]',
-          'bg-zinc-900',
-          'border border-zinc-700 rounded-md',
-          'shadow-[0_4px_16px_rgba(0,0,0,0.6)]',
-          'overflow-hidden',
-        ].join(' ');
+  const dropdownCls = isDesktop
+    ? [
+        'absolute left-0 right-0 top-full z-10',
+        'bg-white dark:bg-zinc-900',
+        'border border-zinc-200 dark:border-zinc-700 rounded-lg',
+        'shadow-[0_4px_16px_rgba(0,0,0,0.4)]',
+        'overflow-hidden mt-1',
+      ].join(' ')
+    : [
+        'absolute left-0 right-0 top-full mt-0.5 z-[1200]',
+        'bg-zinc-900',
+        'border border-zinc-700 rounded-md',
+        'shadow-[0_4px_16px_rgba(0,0,0,0.6)]',
+        'overflow-hidden',
+      ].join(' ');
 
   const resultCls = (active: boolean) =>
-    variant === 'desktop'
+    isDesktop
       ? [
           'w-full text-left px-3 py-2 text-[12px] leading-snug truncate',
           'text-zinc-800 dark:text-zinc-200',
@@ -178,13 +177,8 @@ export default function LocationSearch({
           active ? 'bg-zinc-700' : 'hover:bg-zinc-800',
         ].join(' ');
 
-  const iconSize = variant === 'desktop' ? 14 : 12;
-
   return (
-    <div
-      ref={containerRef}
-      className={variant === 'desktop' ? 'relative w-[240px]' : 'relative w-full'}
-    >
+    <div ref={containerRef} className={`relative ${className}`}>
       <div className="relative">
         <svg
           viewBox="0 0 24 24"
@@ -197,9 +191,7 @@ export default function LocationSearch({
           strokeLinejoin="round"
           className={[
             'absolute top-1/2 -translate-y-1/2 pointer-events-none',
-            variant === 'desktop'
-              ? 'left-2.5 text-zinc-400'
-              : 'left-2 text-zinc-500',
+            isDesktop ? 'left-2.5 text-zinc-400' : 'left-2 text-zinc-500',
           ].join(' ')}
           aria-hidden="true"
         >
@@ -215,9 +207,9 @@ export default function LocationSearch({
           onFocus={() => {
             if (results.length > 0) setIsOpen(true);
           }}
-          placeholder="Search location…"
+          placeholder={placeholder}
           className={inputCls}
-          aria-label="Search for a location"
+          aria-label={placeholder}
           aria-autocomplete="list"
           aria-expanded={isOpen}
           autoComplete="off"
@@ -227,7 +219,7 @@ export default function LocationSearch({
           <span
             className={[
               'absolute top-1/2 -translate-y-1/2 pointer-events-none',
-              variant === 'desktop' ? 'right-2.5' : 'right-2',
+              isDesktop ? 'right-2.5' : 'right-2',
             ].join(' ')}
             aria-hidden="true"
           >
@@ -257,7 +249,7 @@ export default function LocationSearch({
               className={resultCls(i === activeIdx)}
               onPointerDown={(e) => {
                 e.preventDefault();
-                selectResult(r);
+                select(r);
               }}
               onMouseEnter={() => setActiveIdx(i)}
             >
@@ -267,5 +259,68 @@ export default function LocationSearch({
         </div>
       )}
     </div>
+  );
+}
+
+// ── Main LocationSearch wrapper ────────────────────────────────────────────────
+
+export default function LocationSearch({
+  mapViewRef,
+  variant,
+}: LocationSearchProps): React.ReactNode {
+  const { state } = useAppState();
+  const { currentCity, loadingState, interactionMode } = state;
+
+  if (loadingState !== 'ready') return null;
+
+  const bbox = currentCity?.bbox ?? null;
+
+  function handleOriginSelect(lat: number, lng: number) {
+    mapViewRef.current?.flyTo(lat, lng);
+    mapViewRef.current?.setSource(lat, lng);
+  }
+
+  function handleDestSelect(lat: number, lng: number) {
+    mapViewRef.current?.flyTo(lat, lng);
+    mapViewRef.current?.setDestination(lat, lng);
+  }
+
+  if (variant === 'desktop') {
+    return (
+      <div
+        className={[
+          'w-[240px]',
+          'bg-white/95 dark:bg-zinc-900/95',
+          'border border-zinc-200 dark:border-zinc-700 rounded-lg',
+          'shadow-[0_2px_12px_rgba(0,0,0,0.4)]',
+          'overflow-visible',
+        ].join(' ')}
+      >
+        <SearchInput
+          placeholder="From…"
+          onSelect={handleOriginSelect}
+          bbox={bbox}
+          variant="desktop"
+        />
+        <div className="border-t border-zinc-100 dark:border-zinc-800 mx-2" />
+        <SearchInput
+          placeholder="To…"
+          onSelect={handleDestSelect}
+          bbox={bbox}
+          variant="desktop"
+        />
+      </div>
+    );
+  }
+
+  // Mobile: single input, action follows the Origin/Dest toggle
+  return (
+    <SearchInput
+      placeholder={interactionMode === 'dest' ? 'Search destination…' : 'Search origin…'}
+      onSelect={interactionMode === 'dest' ? handleDestSelect : handleOriginSelect}
+      bbox={bbox}
+      variant="mobile"
+      className="w-full"
+    />
   );
 }

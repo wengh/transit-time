@@ -277,8 +277,31 @@ function AppInner() {
         </>
       ) : (
         <>
-          <div className="absolute z-[1000] top-2.5 left-2.5">
+          <div className="absolute z-[1000] top-2.5 left-2.5 flex flex-col gap-2">
             <LocationSearch mapViewRef={mapViewRef} variant="desktop" />
+            <div className="flex flex-col rounded-lg overflow-hidden shadow-[0_2px_8px_rgba(0,0,0,0.35)] border border-zinc-200 dark:border-zinc-700 w-fit">
+              {[
+                { label: '+', title: 'Zoom in',  action: () => mapViewRef.current?.zoomIn() },
+                { label: '−', title: 'Zoom out', action: () => mapViewRef.current?.zoomOut() },
+              ].map(({ label, title, action }, i) => (
+                <button
+                  key={label}
+                  title={title}
+                  aria-label={title}
+                  onClick={action}
+                  className={[
+                    'w-8 h-8 flex items-center justify-center',
+                    'bg-white/95 dark:bg-zinc-900/95',
+                    'text-zinc-700 dark:text-zinc-200 text-lg font-light leading-none',
+                    'hover:bg-zinc-100 dark:hover:bg-zinc-800',
+                    'active:bg-zinc-200 dark:active:bg-zinc-700',
+                    i === 0 ? 'border-b border-zinc-200 dark:border-zinc-700' : '',
+                  ].join(' ')}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
           </div>
           <Controls
             onRunQuery={handleRunQuery}

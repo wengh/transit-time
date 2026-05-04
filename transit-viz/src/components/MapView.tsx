@@ -16,7 +16,10 @@ import { useIsMobile } from '../utils/useIsMobile';
 
 export interface MapViewHandle {
   setSource(lat: number, lng: number): Promise<void>;
+  setDestination(lat: number, lng: number): Promise<void>;
   flyTo(lat: number, lng: number): void;
+  zoomIn(): void;
+  zoomOut(): void;
 }
 
 const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.ReactNode {
@@ -35,17 +38,21 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
   const lastHoveredNodeRef = useRef<number | null>(null);
   const renderIsoRef = useRef<(() => void) | null>(null);
 
-  // Ref to the setSource closure (updated each time the map-events effect runs)
-  // so the imperative handle can call it from outside MapView.
+  // Refs to closures (updated each time the map-events effect runs)
+  // so the imperative handle can call them from outside MapView.
   const setSourceRef = useRef<((lat: number, lng: number) => Promise<void>) | null>(null);
+  const setDestinationRef = useRef<((lat: number, lng: number) => Promise<void>) | null>(null);
 
   useImperativeHandle(ref, () => ({
     setSource: (lat, lng) => setSourceRef.current?.(lat, lng) ?? Promise.resolve(),
+    setDestination: (lat, lng) => setDestinationRef.current?.(lat, lng) ?? Promise.resolve(),
     flyTo: (lat, lng) => {
       const map = mapRef.current;
       if (!map) return;
       map.flyTo([lat, lng], Math.max(map.getZoom(), 14));
     },
+    zoomIn: () => mapRef.current?.zoomIn(),
+    zoomOut: () => mapRef.current?.zoomOut(),
   }));
 
   // Keep current state in refs for event handlers
@@ -84,7 +91,10 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
     // Desktop uses double-click to set the source, so leaflet's default
     // double-click-to-zoom would conflict. On mobile that gesture is unused,
     // so let leaflet keep its default zoom behavior.
-    const map = L.map('map', { doubleClickZoom: isMobileRef.current }).setView([40, -90], 4);
+    const map = L.map('map', {
+      doubleClickZoom: isMobileRef.current,
+      zoomControl: false,
+    }).setView([40, -90], 4);
     const initialStyle = resolveMapStyle(DEFAULT_MAP_STYLE);
     tileLayerRef.current = L.tileLayer(initialStyle.url, {
       attribution: initialStyle.attribution,
@@ -317,6 +327,14 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
     }
 
     setSourceRef.current = setSource;
+
+    async function setDestination(lat: number, lng: number) {
+      const s = stateRef.current;
+      if (s.loadingState !== 'ready') return;
+      const node = await snapToNode(lat, lng);
+      if (node !== null) showDestination(node, true);
+    }
+    setDestinationRef.current = setDestination;
 
     // Desktop: double-click sets source
     let lastPinTime = 0;
