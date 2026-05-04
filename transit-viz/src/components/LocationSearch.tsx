@@ -269,7 +269,7 @@ export default function LocationSearch({
   variant,
 }: LocationSearchProps): React.ReactNode {
   const { state } = useAppState();
-  const { currentCity, loadingState, interactionMode } = state;
+  const { currentCity, loadingState, interactionMode, sourceNode } = state;
 
   if (loadingState !== 'ready') return null;
 
@@ -302,13 +302,17 @@ export default function LocationSearch({
           bbox={bbox}
           variant="desktop"
         />
-        <div className="border-t border-zinc-100 dark:border-zinc-800 mx-2" />
-        <SearchInput
-          placeholder="To…"
-          onSelect={handleDestSelect}
-          bbox={bbox}
-          variant="desktop"
-        />
+        {sourceNode !== null && (
+          <>
+            <div className="border-t border-zinc-100 dark:border-zinc-800 mx-2" />
+            <SearchInput
+              placeholder="To…"
+              onSelect={handleDestSelect}
+              bbox={bbox}
+              variant="desktop"
+            />
+          </>
+        )}
       </div>
     );
   }
