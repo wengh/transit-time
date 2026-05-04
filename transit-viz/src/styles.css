@@ -1,5 +1,26 @@
 @import 'tailwindcss';
 
+/* ── Color scheme + base bg ──────────────────────────────────────────────
+   `color-scheme` tells the UA the page supports both schemes (affects native
+   scrollbars, form controls, and — critically on iOS Safari — the URL bar
+   tint). Setting an explicit body background that matches the meta
+   `theme-color` is also required: iOS Safari samples the body's computed
+   background when picking chrome colors and falls back to the UA default
+   (white) if the body is unstyled, which overrides theme-color in practice. */
+:root {
+  color-scheme: light dark;
+}
+html,
+body {
+  background: #ffffff;
+}
+@media (prefers-color-scheme: dark) {
+  html,
+  body {
+    background: #121214;
+  }
+}
+
 /* ── Mobile settings sheet animations ────────────────────────────────── */
 @keyframes mobileFadeIn {
   from {
