@@ -107,8 +107,18 @@ const LIGHT_THEME: ChartTheme = {
   selectionRing: '#374151',
 };
 
-function getChartTheme(): ChartTheme {
-  return window.matchMedia('(prefers-color-scheme: dark)').matches ? DARK_THEME : LIGHT_THEME;
+// Subscribes to OS-level color-scheme changes so canvas raster contents (which
+// don't auto-restyle like CSS) can be redrawn. Returns the current dark flag;
+// updating it bumps any effect that lists it as a dep.
+function usePrefersDark(): boolean {
+  const [dark, setDark] = useState(() => window.matchMedia('(prefers-color-scheme: dark)').matches);
+  useEffect(() => {
+    const mq = window.matchMedia('(prefers-color-scheme: dark)');
+    const onChange = (e: MediaQueryListEvent) => setDark(e.matches);
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
+  return dark;
 }
 
 function yTickStep(yMaxSec: number): number {
@@ -442,6 +452,7 @@ export function TripChart({ aspectRatio = '1/1' }: TripChartProps = {}): React.R
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const chartInfoRef = useRef<ChartInfo | null>(null);
   const { hoverData, maxTimeMin, pinnedNode, selectedSampleIdx, lockedSampleIdx } = state;
+  const prefersDark = usePrefersDark();
 
   useEffect(() => {
     if (!canvasRef.current || !hoverData) return;
@@ -452,8 +463,8 @@ export function TripChart({ aspectRatio = '1/1' }: TripChartProps = {}): React.R
       maxTimeMin * 60
     );
     chartInfoRef.current = info;
-    drawChart(canvasRef.current, info, selectedSampleIdx, getChartTheme());
-  }, [hoverData, maxTimeMin, state.windowStart, state.windowEnd, selectedSampleIdx]);
+    drawChart(canvasRef.current, info, selectedSampleIdx, prefersDark ? DARK_THEME : LIGHT_THEME);
+  }, [hoverData, maxTimeMin, state.windowStart, state.windowEnd, selectedSampleIdx, prefersDark]);
 
   const handleMouseMove = useCallback(
     (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -498,6 +509,7 @@ export default function HoverInfo({ isFront, onActivate }: HoverInfoProps): Reac
   const [hidden, setHidden] = useState(false);
 
   const { hoverData, maxTimeMin, pinnedNode, selectedSampleIdx, lockedSampleIdx } = state;
+  const prefersDark = usePrefersDark();
 
   // Recompute chart info and redraw whenever relevant state changes. The chart
   // highlights `selectedSampleIdx` (cursor) or `lockedSampleIdx` (pinned click).
@@ -510,8 +522,8 @@ export default function HoverInfo({ isFront, onActivate }: HoverInfoProps): Reac
       maxTimeMin * 60
     );
     chartInfoRef.current = info;
-    drawChart(canvasRef.current, info, selectedSampleIdx, getChartTheme());
-  }, [hoverData, maxTimeMin, state.windowStart, state.windowEnd, selectedSampleIdx]);
+    drawChart(canvasRef.current, info, selectedSampleIdx, prefersDark ? DARK_THEME : LIGHT_THEME);
+  }, [hoverData, maxTimeMin, state.windowStart, state.windowEnd, selectedSampleIdx, prefersDark]);
 
   const handleMouseMove = useCallback(
     (e: React.MouseEvent<HTMLCanvasElement>) => {

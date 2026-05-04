@@ -33,10 +33,11 @@ export default function MobileSettingsSheet({
     >
       <div className="absolute inset-0 bg-black/50 animate-fadeIn" onClick={onClose} />
       <div
-        className="relative bg-zinc-900 text-zinc-100 rounded-t-2xl
+        className="relative bg-white dark:bg-zinc-900
+          text-zinc-900 dark:text-zinc-100 rounded-t-2xl
           max-h-[85vh] overflow-y-auto px-4 pt-3
           pb-[max(env(safe-area-inset-bottom),1rem)]
-          shadow-[0_-4px_16px_rgba(0,0,0,0.6)]
+          shadow-[0_-4px_16px_rgba(0,0,0,0.2)] dark:shadow-[0_-4px_16px_rgba(0,0,0,0.6)]
           animate-slideUp"
         onClick={(e) => e.stopPropagation()}
       >
@@ -48,7 +49,9 @@ export default function MobileSettingsSheet({
             aria-label="Close settings"
             onClick={onClose}
             className="w-8 h-8 flex items-center justify-center rounded-full
-              text-zinc-300 hover:bg-zinc-800 active:bg-zinc-700"
+              text-zinc-600 dark:text-zinc-300
+              hover:bg-zinc-100 dark:hover:bg-zinc-800
+              active:bg-zinc-200 dark:active:bg-zinc-700"
           >
             <svg
               viewBox="0 0 24 24"
@@ -68,7 +71,7 @@ export default function MobileSettingsSheet({
 
         <ControlsBody onRunQuery={onRunQuery} onCopy={onCopy} compact onChangeCity={onClose} />
 
-        <div className="mt-3 pt-3 border-t border-zinc-700">
+        <div className="mt-3 pt-3 border-t border-zinc-200 dark:border-zinc-700">
           <LegendContent maxMin={state.maxTimeMin} />
         </div>
       </div>

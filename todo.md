@@ -235,7 +235,21 @@ split into up to 2-3x thread count chunks for profile routing parallelism to acc
 
 remove isochrone from chunk routing
 
+DONE
+
 -------
 
-bug: in mobile safari the browser's own ui is white when in dark mode
-fix mobile ui theme and make plot theme responsive
+bugs:
+- in mobile the ui elements are dark even when in light mode
+- in mobile safari the browser's own ui is white when in dark mode
+- plot is not responsive to theme changes
+
+DONE
+
+-------
+
+show interactive base map and controls before data file finishes loading
+
+-------
+
+in desktop mode add a button next to hint button of the plot to expand the details panel to take the whole screen width

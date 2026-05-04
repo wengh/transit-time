@@ -24,28 +24,28 @@ export default function MobileTopBar({
     dispatch({ type: 'SET_INTERACTION_MODE', mode });
   }
 
-  // Visual styling: pill segmented control. Active segment uses zinc-100 on a
-  // dark backdrop; inactive is muted text on transparent. Reads well over both
-  // light and dark map tiles thanks to the blurred bar background.
+  // Pill segmented control. Active segment is a high-contrast chip on the bar;
+  // inactive is muted text. Pair light defaults with dark: overrides so the bar
+  // tracks the system color scheme.
   const segBase = 'flex-1 px-3 py-1.5 text-[13px] font-medium transition-colors select-none';
-  const segActive = 'bg-zinc-100 text-zinc-900';
-  const segInactive = 'text-zinc-300';
+  const segActive = 'bg-zinc-900 text-zinc-100 dark:bg-zinc-100 dark:text-zinc-900';
+  const segInactive = 'text-zinc-600 dark:text-zinc-300';
 
   return (
     <div
       className="fixed top-0 left-0 right-0 z-[1100]
-        bg-[rgba(18,18,20,0.95)] backdrop-blur-md
-        border-b border-zinc-800
+        bg-[rgba(255,255,255,0.95)] dark:bg-[rgba(18,18,20,0.95)] backdrop-blur-md
+        border-b border-zinc-200 dark:border-zinc-800
         px-3 pt-[max(env(safe-area-inset-top),0.5rem)] pb-2
         flex flex-col gap-1.5"
     >
       <div className="flex items-center gap-3">
-        <div className="text-zinc-100 text-[14px] font-semibold truncate flex-1 min-w-0">
+        <div className="text-zinc-900 dark:text-zinc-100 text-[14px] font-semibold truncate flex-1 min-w-0">
           {currentCity?.name ?? ''}
         </div>
         <div
           role="tablist"
-          className="flex rounded-full overflow-hidden bg-zinc-800 border border-zinc-700"
+          className="flex rounded-full overflow-hidden bg-zinc-200 dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-700"
         >
           <button
             role="tab"
@@ -72,7 +72,9 @@ export default function MobileTopBar({
           aria-label="Settings"
           onClick={onOpenSettings}
           className="w-9 h-9 flex items-center justify-center rounded-full
-            text-zinc-200 hover:bg-zinc-800 active:bg-zinc-700"
+            text-zinc-700 dark:text-zinc-200
+            hover:bg-zinc-100 dark:hover:bg-zinc-800
+            active:bg-zinc-200 dark:active:bg-zinc-700"
         >
           <svg
             viewBox="0 0 24 24"
@@ -90,7 +92,7 @@ export default function MobileTopBar({
         </button>
       </div>
       <LocationSearch mapViewRef={mapViewRef} variant="mobile" />
-      <div className="text-[11px] text-zinc-500 truncate">{hint}</div>
+      <div className="text-[11px] text-zinc-500 dark:text-zinc-500 truncate">{hint}</div>
     </div>
   );
 }

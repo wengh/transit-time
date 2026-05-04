@@ -31,9 +31,10 @@ export default function MobileBottomSheet(): React.ReactNode {
   return (
     <div
       className={`fixed left-0 right-0 bottom-0 z-[1100]
-        bg-[rgba(18,18,20,0.97)] backdrop-blur-md
-        border-t border-zinc-800 text-zinc-100
-        rounded-t-xl shadow-[0_-4px_16px_rgba(0,0,0,0.5)]
+        bg-[rgba(255,255,255,0.97)] dark:bg-[rgba(18,18,20,0.97)] backdrop-blur-md
+        border-t border-zinc-200 dark:border-zinc-800
+        text-zinc-900 dark:text-zinc-100
+        rounded-t-xl shadow-[0_-4px_16px_rgba(0,0,0,0.15)] dark:shadow-[0_-4px_16px_rgba(0,0,0,0.5)]
         transition-[max-height] duration-200 ease-out
         flex flex-col overflow-hidden
         pb-[max(env(safe-area-inset-bottom),0.5rem)]`}
@@ -45,7 +46,7 @@ export default function MobileBottomSheet(): React.ReactNode {
         className="flex flex-col items-stretch text-left px-3 pt-1.5 pb-1
           flex-shrink-0 select-none"
       >
-        <div className="self-center w-9 h-1 rounded-full bg-zinc-600 mb-1.5" />
+        <div className="self-center w-9 h-1 rounded-full bg-zinc-300 dark:bg-zinc-600 mb-1.5" />
         <div className="flex items-center gap-2">
           <div className="text-[13px] flex-1 min-w-0 truncate">{titleText}</div>
           <span
@@ -55,8 +56,9 @@ export default function MobileBottomSheet(): React.ReactNode {
             onKeyDown={(e) => {
               if (e.key === 'Enter' || e.key === ' ') unpin(e as any);
             }}
-            className="text-[12px] text-zinc-400 px-2 py-0.5 rounded
-              hover:bg-zinc-800 active:bg-zinc-700 cursor-pointer"
+            className="text-[12px] text-zinc-500 dark:text-zinc-400 px-2 py-0.5 rounded
+              hover:bg-zinc-100 dark:hover:bg-zinc-800
+              active:bg-zinc-200 dark:active:bg-zinc-700 cursor-pointer"
           >
             Clear
           </span>
