@@ -107,6 +107,21 @@ const LIGHT_THEME: ChartTheme = {
   selectionRing: '#374151',
 };
 
+// Returns a counter that increments whenever `ref.current` is resized. List it
+// as a useEffect dep to re-fire (e.g. redraw a canvas) on layout changes —
+// window resize, panel expand/collapse, parent flex reflow, etc.
+function useResizeTick(ref: React.RefObject<Element | null>): number {
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const obs = new ResizeObserver(() => setTick((t) => t + 1));
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [ref]);
+  return tick;
+}
+
 // Subscribes to OS-level color-scheme changes so canvas raster contents (which
 // don't auto-restyle like CSS) can be redrawn. Returns the current dark flag;
 // updating it bumps any effect that lists it as a dep.
@@ -139,10 +154,16 @@ function drawChart(
   const size = Math.round(rect.width);
   const height = Math.round(rect.height);
   if (size === 0 || height === 0) return;
-  canvas.width = size;
-  canvas.height = height;
+  // High-DPI: allocate the backing store at physical pixel density and scale
+  // the drawing context, so 1px in our coords maps to 1 CSS px (= dpr device
+  // pixels). Without this, lines and text are bilinearly upscaled by the
+  // browser on retina displays — the classic "blurry canvas" look.
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = Math.round(size * dpr);
+  canvas.height = Math.round(height * dpr);
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
   const { tips, walkTime, walkPathIdx, windowStart, windowEnd, yMax } = info;
   const W = size,
@@ -187,10 +208,15 @@ function drawChart(
   ctx.strokeStyle = theme.grid;
   ctx.lineWidth = 1;
   const windowDurMin = (windowEnd - windowStart) / 60;
-  // Pick x-axis tick step: aim for 4-7 ticks
-  let xStepMin = 15;
-  for (const s of [5, 10, 15, 30, 60, 120, 180, 240]) {
-    if (windowDurMin / s <= 8) {
+  // Pick x-axis tick step. Density adapts to plot width: ~40px per HH:MM label
+  // (5 chars at 9-11px font), ~28px for "+NN" offset labels. Both leave enough
+  // gap to avoid touching at the typical font size, while still letting the
+  // expanded full-width plot show many more ticks than the collapsed panel.
+  const minTickSpacingPx = windowDurMin > 120 ? 40 : 28;
+  const maxTicks = Math.max(2, Math.floor(plotW / minTickSpacingPx));
+  let xStepMin = 720;
+  for (const s of [1, 2, 5, 10, 15, 30, 60, 120, 180, 240, 360, 480, 720]) {
+    if (windowDurMin / s <= maxTicks) {
       xStepMin = s;
       break;
     }
@@ -222,7 +248,9 @@ function drawChart(
 
   // X-axis labels
   ctx.fillStyle = theme.label;
-  ctx.font = `${Math.max(9, Math.round(size / 28))}px sans-serif`;
+  // Base label size on the shorter dimension so a wide-but-short chart (when
+  // the panel is expanded to full width) doesn't get giant 60px-ish labels.
+  ctx.font = `${Math.max(9, Math.round(Math.min(W, H) / 28))}px sans-serif`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'alphabetic';
   for (let min = 0; min <= windowDurMin; min += xStepMin) {
@@ -337,7 +365,9 @@ function ChartHintButton(): React.ReactNode {
   const [open, setOpen] = useState(false);
   const id = useId();
   return (
-    <div className="absolute top-2.5 right-0 z-[5]">
+    // `flex` (not just `block`) so the wrapper hugs the 18px button instead of
+    // inheriting the parent's line-height, which adds phantom vertical space.
+    <div className="relative flex">
       <button
         aria-label="How to read this chart"
         aria-expanded={open}
@@ -354,11 +384,12 @@ function ChartHintButton(): React.ReactNode {
         <div
           id={id}
           role="tooltip"
-          className="absolute top-[22px] right-0 z-10
-            bg-zinc-800 dark:bg-zinc-800 border border-zinc-700 dark:border-zinc-700
+          className="absolute bottom-[22px] right-0 z-10
+            bg-white dark:bg-zinc-800
+            border border-zinc-300 dark:border-zinc-700
             rounded-md p-2 w-[220px] text-[11px] leading-relaxed
-            text-zinc-300 dark:text-zinc-300
-            shadow-[0_2px_8px_rgba(0,0,0,.4)]"
+            text-zinc-700 dark:text-zinc-300
+            shadow-[0_2px_8px_rgba(0,0,0,.15)] dark:shadow-[0_2px_8px_rgba(0,0,0,.4)]"
         >
           <strong className="block mb-1">How to read this chart</strong>
           <p className="m-0 mb-1">
@@ -437,22 +468,27 @@ export function deriveTitleText(
 }
 
 interface TripChartProps {
-  // CSS aspect-ratio for the canvas. Default '1/1' matches the desktop
-  // HoverInfo card; the mobile bottom drawer passes '5/2' for a wide-short
-  // shape that fits a phone viewport.
+  // CSS aspect-ratio for the canvas. Default '1/1'; the mobile bottom drawer
+  // passes '5/2' for a wide-short shape that fits a phone viewport. Ignored
+  // when `height` is set.
   aspectRatio?: string;
+  // Fixed CSS height (e.g. '280px'). When set, takes precedence over
+  // `aspectRatio` — used by the desktop HoverInfo panel so toggling its
+  // expand/collapse state changes only the chart's width, not its height.
+  height?: string;
 }
 
 // Sawtooth chart canvas + selection wiring. No outer chrome — callers decide
 // the wrapping container and padding. The chart reads `state.hoverData`,
 // `state.selectedSampleIdx`, `state.lockedSampleIdx`, `state.windowStart`,
 // `state.windowEnd`, `state.maxTimeMin` directly.
-export function TripChart({ aspectRatio = '1/1' }: TripChartProps = {}): React.ReactNode {
+export function TripChart({ aspectRatio = '1/1', height }: TripChartProps = {}): React.ReactNode {
   const { state, dispatch } = useAppState();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const chartInfoRef = useRef<ChartInfo | null>(null);
   const { hoverData, maxTimeMin, pinnedNode, selectedSampleIdx, lockedSampleIdx } = state;
   const prefersDark = usePrefersDark();
+  const sizeTick = useResizeTick(canvasRef);
 
   useEffect(() => {
     if (!canvasRef.current || !hoverData) return;
@@ -464,7 +500,15 @@ export function TripChart({ aspectRatio = '1/1' }: TripChartProps = {}): React.R
     );
     chartInfoRef.current = info;
     drawChart(canvasRef.current, info, selectedSampleIdx, prefersDark ? DARK_THEME : LIGHT_THEME);
-  }, [hoverData, maxTimeMin, state.windowStart, state.windowEnd, selectedSampleIdx, prefersDark]);
+  }, [
+    hoverData,
+    maxTimeMin,
+    state.windowStart,
+    state.windowEnd,
+    selectedSampleIdx,
+    prefersDark,
+    sizeTick,
+  ]);
 
   const handleMouseMove = useCallback(
     (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -494,7 +538,12 @@ export function TripChart({ aspectRatio = '1/1' }: TripChartProps = {}): React.R
   return (
     <canvas
       ref={canvasRef}
-      style={{ width: '100%', display: 'block', cursor: 'crosshair', aspectRatio }}
+      style={{
+        width: '100%',
+        display: 'block',
+        cursor: 'crosshair',
+        ...(height ? { height } : { aspectRatio }),
+      }}
       onMouseMove={handleMouseMove}
       onMouseLeave={handleMouseLeave}
       onClick={handleClick}
@@ -503,52 +552,13 @@ export function TripChart({ aspectRatio = '1/1' }: TripChartProps = {}): React.R
 }
 
 export default function HoverInfo({ isFront, onActivate }: HoverInfoProps): React.ReactNode {
-  const { state, dispatch } = useAppState();
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const chartInfoRef = useRef<ChartInfo | null>(null);
+  const { state } = useAppState();
   const [hidden, setHidden] = useState(false);
+  // Desktop-only "wide mode": panel spans the full viewport width while the
+  // chart keeps a fixed height, giving the sawtooth more horizontal room.
+  const [expanded, setExpanded] = useState(false);
 
-  const { hoverData, maxTimeMin, pinnedNode, selectedSampleIdx, lockedSampleIdx } = state;
-  const prefersDark = usePrefersDark();
-
-  // Recompute chart info and redraw whenever relevant state changes. The chart
-  // highlights `selectedSampleIdx` (cursor) or `lockedSampleIdx` (pinned click).
-  useEffect(() => {
-    if (!canvasRef.current || !hoverData) return;
-    const info = computeChartInfo(
-      hoverData.allPaths,
-      state.windowStart,
-      state.windowEnd,
-      maxTimeMin * 60
-    );
-    chartInfoRef.current = info;
-    drawChart(canvasRef.current, info, selectedSampleIdx, prefersDark ? DARK_THEME : LIGHT_THEME);
-  }, [hoverData, maxTimeMin, state.windowStart, state.windowEnd, selectedSampleIdx, prefersDark]);
-
-  const handleMouseMove = useCallback(
-    (e: React.MouseEvent<HTMLCanvasElement>) => {
-      if (lockedSampleIdx !== null || pinnedNode === null || !chartInfoRef.current) return;
-      const rect = (e.currentTarget as HTMLCanvasElement).getBoundingClientRect();
-      const idx = pathIdxAtCanvasX(e.clientX - rect.left, rect.width, chartInfoRef.current);
-      dispatch({ type: 'SELECT_SAMPLE', idx });
-    },
-    [lockedSampleIdx, pinnedNode, dispatch]
-  );
-
-  const handleMouseLeave = useCallback(() => {
-    if (lockedSampleIdx !== null || pinnedNode === null) return;
-    dispatch({ type: 'SELECT_SAMPLE', idx: null });
-  }, [lockedSampleIdx, pinnedNode, dispatch]);
-
-  const handleClick = useCallback(
-    (e: React.MouseEvent<HTMLCanvasElement>) => {
-      if (pinnedNode === null || !chartInfoRef.current) return;
-      const rect = (e.currentTarget as HTMLCanvasElement).getBoundingClientRect();
-      const idx = pathIdxAtCanvasX(e.clientX - rect.left, rect.width, chartInfoRef.current);
-      dispatch({ type: 'LOCK_SAMPLE', idx: lockedSampleIdx === idx ? null : idx });
-    },
-    [lockedSampleIdx, pinnedNode, dispatch]
-  );
+  const { hoverData, selectedSampleIdx } = state;
 
   if (!hoverData) return null;
 
@@ -633,8 +643,8 @@ export default function HoverInfo({ isFront, onActivate }: HoverInfoProps): Reac
         bg-zinc-900 dark:bg-zinc-900
         [@media(prefers-color-scheme:light)]:bg-white
         p-3 rounded-lg shadow-[0_2px_12px_rgba(0,0,0,0.5)]
-        min-w-[220px] max-w-[320px]
-        flex flex-col
+        min-w-[220px] flex flex-col
+        ${expanded ? 'sm:left-2.5 sm:right-2.5 sm:max-w-none' : 'max-w-[320px]'}
         max-sm:bottom-auto max-sm:top-2.5 max-sm:left-2.5 max-sm:right-2.5
         max-sm:max-w-none max-sm:max-h-[calc(100vh-90px)] max-sm:overflow-y-auto`}
     >
@@ -666,14 +676,30 @@ export default function HoverInfo({ isFront, onActivate }: HoverInfoProps): Reac
           pt-2 mt-1.5
           max-sm:[&_canvas]:[aspect-ratio:5/2]"
       >
-        <ChartHintButton />
-        <canvas
-          ref={canvasRef}
-          style={{ width: '100%', display: 'block', cursor: 'crosshair', aspectRatio: '1/1' }}
-          onMouseMove={handleMouseMove}
-          onMouseLeave={handleMouseLeave}
-          onClick={handleClick}
-        />
+        {/* Bottom-right of the plot, sitting just above the x-axis. The
+            chart's PAD.bottom is 22px (axis-label gutter), so a 26px bottom
+            offset clears the axis line by ~4px. PAD.right is 8px → right-2
+            aligns the group's right edge with the plot's right edge. */}
+        <div className="absolute bottom-[26px] right-2 z-[5] flex items-center gap-1">
+          <button
+            type="button"
+            aria-label={expanded ? 'Shrink chart width' : 'Expand chart to full width'}
+            aria-pressed={expanded}
+            title={expanded ? 'Shrink chart width' : 'Expand chart to full width'}
+            onClick={() => setExpanded((v) => !v)}
+            className="hidden sm:block
+              flex-shrink-0 w-[18px] h-[18px] text-[11px] leading-[16px] cursor-pointer
+              rounded-full p-0
+              bg-transparent border border-zinc-600 text-zinc-500
+              dark:border-zinc-600 dark:text-zinc-500"
+          >
+            ⛶
+          </button>
+          <ChartHintButton />
+        </div>
+        {/* Fixed height (vs aspect-ratio) so toggling expand only changes the
+            panel's width, not its height. */}
+        <TripChart height="280px" />
       </div>
     </div>
   );

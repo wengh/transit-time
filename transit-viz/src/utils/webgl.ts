@@ -97,9 +97,13 @@ export function renderIsochrone(
 
   const { canvas, gl, program, posBuffer, colorBuffer } = glState;
 
-  canvas.width = w;
-  canvas.height = h;
-  gl.viewport(0, 0, w, h);
+  // High-DPI: render at physical pixel density so the isochrone's edge stays
+  // sharp on retina screens. Cap at 2× — the perceptual gain past 2x doesn't
+  // justify the 9× fragment cost on DPR=3 mobile GPUs.
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  canvas.width = Math.ceil(w * dpr);
+  canvas.height = Math.ceil(h * dpr);
+  gl.viewport(0, 0, canvas.width, canvas.height);
   gl.clearColor(0, 0, 0, 0);
   gl.clear(gl.COLOR_BUFFER_BIT);
   gl.enable(gl.BLEND);
@@ -165,7 +169,9 @@ export function renderIsochrone(
   gl.enableVertexAttribArray(colorLoc);
   gl.vertexAttribPointer(colorLoc, 4, gl.UNSIGNED_BYTE, true, 0, 0);
 
-  gl.uniform1f(gl.getUniformLocation(program, 'u_pointSize'), dotSize);
+  // gl_PointSize is in viewport (= physical) pixels. Scale by dpr so a dot
+  // visually occupies the same number of CSS pixels as it would at DPR=1.
+  gl.uniform1f(gl.getUniformLocation(program, 'u_pointSize'), dotSize * dpr);
   gl.drawArrays(gl.POINTS, 0, count);
   gl.flush();
 

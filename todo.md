@@ -253,3 +253,5 @@ show interactive base map and controls before data file finishes loading
 -------
 
 in desktop mode add a button next to hint button of the plot to expand the details panel to take the whole screen width
+
+DONE
