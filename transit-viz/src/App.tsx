@@ -262,10 +262,7 @@ function AppInner() {
       <MapView ref={mapViewRef} />
       {isMobile ? (
         <>
-          <MobileTopBar
-            onOpenSettings={() => setSettingsOpen(true)}
-            mapViewRef={mapViewRef}
-          />
+          <MobileTopBar onOpenSettings={() => setSettingsOpen(true)} mapViewRef={mapViewRef} />
           <MobileBottomSheet />
           {settingsOpen && (
             <MobileSettingsSheet
@@ -281,7 +278,7 @@ function AppInner() {
             <LocationSearch mapViewRef={mapViewRef} variant="desktop" />
             <div className="flex flex-col rounded-lg overflow-hidden shadow-[0_2px_8px_rgba(0,0,0,0.35)] border border-zinc-200 dark:border-zinc-700 w-fit">
               {[
-                { label: '+', title: 'Zoom in',  action: () => mapViewRef.current?.zoomIn() },
+                { label: '+', title: 'Zoom in', action: () => mapViewRef.current?.zoomIn() },
                 { label: '−', title: 'Zoom out', action: () => mapViewRef.current?.zoomOut() },
               ].map(({ label, title, action }, i) => (
                 <button

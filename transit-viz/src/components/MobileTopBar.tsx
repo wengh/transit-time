@@ -10,7 +10,10 @@ interface MobileTopBarProps {
   mapViewRef: RefObject<MapViewHandle | null>;
 }
 
-export default function MobileTopBar({ onOpenSettings, mapViewRef }: MobileTopBarProps): React.ReactNode {
+export default function MobileTopBar({
+  onOpenSettings,
+  mapViewRef,
+}: MobileTopBarProps): React.ReactNode {
   const { state, dispatch } = useAppState();
   if (state.loadingState !== 'ready') return null;
 
