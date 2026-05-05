@@ -585,53 +585,8 @@ export default function HoverInfo({ isFront, onActivate }: HoverInfoProps): Reac
       </button>
     );
   }
-  const { allPaths } = hoverData;
-
-  // Representative path shown in the details list.
-  // When a specific Pareto path is selected in the chart, show its detail; the
-  // first wait is stripped so the user sees the actual in-vehicle trip time
-  // from the chosen departure rather than "time since earliest viable leave".
-  const displayPath =
-    selectedSampleIdx !== null
-      ? allPaths[selectedSampleIdx]
-        ? { ...allPaths[selectedSampleIdx] }
-        : null
-      : getMedianPath(allPaths);
-
-  if (selectedSampleIdx !== null && displayPath) {
-    const firstTransitIndex = displayPath.segments.findIndex((s) => s.edgeType === 1);
-    if (firstTransitIndex !== -1) {
-      const firstTransit = displayPath.segments[firstTransitIndex];
-      const waitTime = firstTransit.waitTime;
-      displayPath.segments = displayPath.segments.map((s, i) =>
-        i === firstTransitIndex ? { ...s, waitTime: 0 } : s
-      );
-      if (displayPath.totalTime !== null) displayPath.totalTime -= waitTime;
-      displayPath.departureTime += waitTime;
-    }
-  }
-
-  // Title: per-selection detail if the user clicked/hovered a specific path,
-  // otherwise the Rust-side per-node analytic summary over the whole window.
-  let titleText: string;
-  if (selectedSampleIdx !== null) {
-    if (displayPath?.totalTime != null) {
-      const depStr = formatTime(displayPath.departureTime);
-      titleText = `Travel time: ${Math.round(displayPath.totalTime / 60)} min  (depart ${depStr})`;
-    } else {
-      titleText = 'Unreachable';
-    }
-  } else {
-    const avgSec = hoverData.avgTravelTime;
-    const frac = hoverData.reachableFraction ?? 0;
-    if (avgSec === null || frac <= 0) {
-      titleText = 'Unreachable';
-    } else {
-      const avgMin = Math.round(avgSec / 60);
-      const pct = Math.round(frac * 100);
-      titleText = `Avg travel time: ${avgMin} min (${pct}% reachable)`;
-    }
-  }
+  const displayPath = deriveDisplayPath(hoverData, selectedSampleIdx);
+  const titleText = deriveTitleText(hoverData, selectedSampleIdx, displayPath);
 
   return (
     <div
