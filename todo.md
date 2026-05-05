@@ -248,10 +248,21 @@ DONE
 
 -------
 
-show interactive base map and controls before data file finishes loading
+show interactive base map and controls before data file finishes loading.
+show the loading in status only. when a source is placed (or loaded from url query) while loading, show a loading overlay and disable placing source/destination but still allow using map
 
 -------
 
 in desktop mode add a button next to hint button of the plot to expand the details panel to take the whole screen width
+
+DONE
+
+-------
+
+why is the first query ~3x slower than subsequent queries? investigate
+
+UPDATE: likely because of WASM tier-up
+
+fix: run a tiny synthetic warmup as part of loading, from node 0 (which is a stop node)
 
 DONE

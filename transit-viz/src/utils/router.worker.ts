@@ -78,6 +78,8 @@ async function handleLoadRouter(id: number, cityFile: string) {
   const dataBytes = new Uint8Array(await new Response(decompressedStream).arrayBuffer());
   router = new TransitRouter(dataBytes);
 
+  warmupTierUp(router);
+
   const allCoords = router.all_node_coords();
   const nodeCoords = new Float32Array(allCoords);
   // Collect route colors once
@@ -92,6 +94,45 @@ async function handleLoadRouter(id: number, cityFile: string) {
     stopCount: router.num_stops(),
     routeColors,
   };
+}
+
+// Run a tiny synthetic profile query so V8 marks the hot WASM functions
+// (compute_with_index, relax, Frontier ops, Pareto merge) hot enough that
+// TurboFan re-compiles them before the user's first real query lands.
+// Without this the first real query runs entirely under Liftoff and is
+// ~3x slower; V8 doesn't OSR long-running WASM calls.
+function warmupTierUp(r: TransitRouter) {
+  const now = new Date();
+  const date = now.getFullYear() * 10000 + (now.getMonth() + 1) * 100 + now.getDate();
+  const start = 12 * 3600;
+  // Stops are SFC-sorted, so the median-index stop is roughly central
+  // geographically — much more likely to have nearby transit than node 0
+  // (which lands at a corner of the bounding box).
+  const sourceNode = r.stop_node(Math.floor(r.num_stops() / 2));
+  const lat = r.node_lat(sourceNode);
+  const lon = r.node_lon(sourceNode);
+  const WARMUP_BUDGET_MS = 200;
+  const t0 = performance.now();
+  const p = r.compute_profile(
+    sourceNode,
+    start,
+    start + 10 * 60,
+    date,
+    60,
+    60 * 60,
+    () => performance.now() - t0 > WARMUP_BUDGET_MS
+  );
+  const elapsed = performance.now() - t0;
+  console.log(
+    'Warmed up WASM tier-up with synthetic query from node',
+    sourceNode,
+    `(${lat.toFixed(5)}, ${lon.toFixed(5)})`,
+    p
+      ? `— got ${p.reachable_fractions().filter((f) => f > 0).length} reachable nodes`
+      : '— cancelled (budget exceeded)',
+    `in ${elapsed.toFixed(0)}ms`
+  );
+  p?.free();
 }
 
 let cancelFlag: Int32Array | null = null;
