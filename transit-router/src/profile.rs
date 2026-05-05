@@ -1080,7 +1080,7 @@ impl ProfileRouting {
 
         if let Some(first) = segments.first() {
             assert!(
-                first.start_time == delta_to_time(home_departure_delta),
+                first.start_time - first.wait_time == delta_to_time(home_departure_delta),
                 "First segment start time {} does not match home departure time {}",
                 first.start_time,
                 delta_to_time(home_departure_delta)
