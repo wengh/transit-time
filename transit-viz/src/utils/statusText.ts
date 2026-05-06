@@ -20,9 +20,18 @@ export function deriveStatusText(state: AppState, opts: Options = {}): string {
     nodeCount,
     stopCount,
     interactionMode,
+    loadingState,
+    loadingProgress,
+    currentCity,
   } = state;
 
   if (showCopiedMessage) return 'Copied!';
+  if (loadingState === 'loading') {
+    return `Loading ${currentCity?.name ?? 'city'}… ${loadingProgress}%`;
+  }
+  if (loadingState === 'initializing') {
+    return `Initializing router for ${currentCity?.name ?? 'city'}…`;
+  }
   if (computeStatus === 'computing') {
     return computeProgress
       ? `Computing... ${Math.round((computeProgress.done / computeProgress.total) * 100)}%`

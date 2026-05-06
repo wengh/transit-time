@@ -26,52 +26,76 @@ function AppInner() {
   stateRef.current = state;
 
   const [frontPanel, setFrontPanel] = useState<'controls' | 'hoverInfo'>('hoverInfo');
+  const mapViewRef = useRef<MapViewHandle | null>(null);
 
-  const pendingDestRef = useRef<{ latlng: [number, number]; trip: number | null } | null>(null);
+  // Guard against React 18 StrictMode's intentional double-mount in dev: it
+  // would otherwise spawn two parallel loadCity calls. The second one's
+  // CITY_LOADED dispatch arrives *after* the first query completes and wipes
+  // sourceNode/travelTimes (since the reducer resets per-city state on load),
+  // leaving the user with a stale, empty isochrone and no way to hover.
+  const urlRestoredRef = useRef(false);
 
-  // Auto-load city from URL on mount, restoring state from hash
+  // Auto-load city from URL on mount, restoring state from hash. Source/dest
+  // intents from the hash are queued *immediately* (before awaiting loadCity)
+  // so the loading overlay shows up alongside the loading status; consumption
+  // effects below drain them once the data is ready.
   useEffect(() => {
+    if (urlRestoredRef.current) return;
+    urlRestoredRef.current = true;
     const city = getCityFromUrl();
-    if (city) {
-      (async () => {
-        const hash = getHashParams();
-        try {
-          const { nodeCoords } = await loadCity(city, dispatch, true);
-          // Restore controls
-          if (hash.style) dispatch({ type: 'SET_MAP_STYLE', style: hash.style });
-          if (hash.date) dispatch({ type: 'SET_DATE', value: hash.date });
-          if (hash.time !== undefined) {
-            const dur = hash.dur ?? 3600;
-            dispatch({ type: 'SET_WINDOW', windowStart: hash.time, windowEnd: hash.time + dur });
-          }
-          if (hash.maxtime !== undefined) dispatch({ type: 'SET_MAX_TIME', value: hash.maxtime });
-          if (hash.slack !== undefined) dispatch({ type: 'SET_SLACK', value: hash.slack });
-          // Restore source (triggers query)
-          if (hash.src) {
-            const [lat, lng] = hash.src;
-            const node = await snapToNode(lat, lng);
-            if (node !== null) {
-              const latLng: [number, number] = [nodeCoords[node * 2], nodeCoords[node * 2 + 1]];
-              dispatch({ type: 'SET_SOURCE', node, latLng });
-              if (hash.dst) pendingDestRef.current = { latlng: hash.dst, trip: hash.trip ?? null };
-            }
-          }
-        } catch (e) {
-          dispatch({ type: 'LOAD_ERROR' });
-          history.replaceState(null, '', import.meta.env.BASE_URL);
-          alert(`Failed to load ${city.name}: ${String(e)}`);
-        }
-      })();
+    if (!city) return;
+    const hash = getHashParams();
+
+    // Restore controls synchronously — these are pure state updates that
+    // don't depend on loaded data, so they apply to any queued query.
+    if (hash.style) dispatch({ type: 'SET_MAP_STYLE', style: hash.style });
+    if (hash.date) dispatch({ type: 'SET_DATE', value: hash.date });
+    if (hash.time !== undefined) {
+      const dur = hash.dur ?? 3600;
+      dispatch({ type: 'SET_WINDOW', windowStart: hash.time, windowEnd: hash.time + dur });
     }
+    if (hash.maxtime !== undefined) dispatch({ type: 'SET_MAX_TIME', value: hash.maxtime });
+    if (hash.slack !== undefined) dispatch({ type: 'SET_SLACK', value: hash.slack });
+
+    // Queue placement intents — these flow through the same path as in-load
+    // map clicks. The dest is only meaningful with a source.
+    if (hash.src) {
+      dispatch({ type: 'QUEUE_PENDING_SOURCE', latLng: hash.src });
+      if (hash.dst) {
+        dispatch({ type: 'QUEUE_PENDING_DEST', latLng: hash.dst, trip: hash.trip ?? null });
+      }
+    }
+
+    (async () => {
+      try {
+        await loadCity(city, dispatch, true);
+      } catch (e) {
+        dispatch({ type: 'LOAD_ERROR' });
+        history.replaceState(null, '', import.meta.env.BASE_URL);
+        alert(`Failed to load ${city.name}: ${String(e)}`);
+      }
+    })();
   }, [dispatch]);
 
-  // Restore pinned destination (and locked trip) after query completes
+  // Drain pendingSource once the city data is ready. setSource snaps to a
+  // node, dispatches SET_SOURCE, and the existing source-change effect runs
+  // the query with whatever parameters are currently in state.
   useEffect(() => {
-    if (state.computeStatus !== 'done' || !pendingDestRef.current) return;
+    if (state.loadingState !== 'ready' || !state.pendingSource) return;
+    const [lat, lng] = state.pendingSource.latLng;
+    dispatch({ type: 'CONSUME_PENDING_SOURCE' });
+    mapViewRef.current?.setSource(lat, lng);
+  }, [state.loadingState, state.pendingSource, dispatch]);
+
+  // Restore pinned destination (and locked trip) after the first query
+  // completes. Reads the queued intent from state so URL-restore and
+  // in-load click both flow through the same path.
+  useEffect(() => {
+    if (state.computeStatus !== 'done' || !state.pendingDest) return;
     const { nodeCoords } = state;
     if (!nodeCoords) return;
-    const { latlng, trip } = pendingDestRef.current;
-    pendingDestRef.current = null;
+    const { latLng: latlng, trip } = state.pendingDest;
+    dispatch({ type: 'CONSUME_PENDING_DEST' });
     (async () => {
       const [lat, lng] = latlng;
       const node = await snapToNode(lat, lng);
@@ -96,7 +120,7 @@ function AppInner() {
         dispatch({ type: 'LOCK_SAMPLE', idx: trip });
       }
     })();
-  }, [state.computeStatus, dispatch]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [state.computeStatus, state.pendingDest, dispatch]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Sync state to URL hash (only when source is selected)
   useEffect(() => {
@@ -246,8 +270,6 @@ function AppInner() {
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
   }, [copyInfo]);
-
-  const mapViewRef = useRef<MapViewHandle | null>(null);
 
   const isMobile = useIsMobile();
   const [settingsOpen, setSettingsOpen] = useState(false);

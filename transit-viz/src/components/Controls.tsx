@@ -19,7 +19,9 @@ export default function Controls({
 }: ControlsProps): React.ReactNode {
   const { state } = useAppState();
 
-  if (state.loadingState !== 'ready') return null;
+  // Render as soon as a city is chosen (even while data is still loading) so
+  // the user can adjust parameters that will apply to a queued query.
+  if (!state.currentCity) return null;
 
   return (
     <div

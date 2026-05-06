@@ -15,7 +15,10 @@ export default function MobileTopBar({
   mapViewRef,
 }: MobileTopBarProps): React.ReactNode {
   const { state, dispatch } = useAppState();
-  if (state.loadingState !== 'ready') return null;
+  // Show the bar as soon as a city has been chosen so the user has a status
+  // line and Origin/Dest toggle while the data is still loading; taps placed
+  // during load are queued by MapView's onClick handler.
+  if (!state.currentCity) return null;
 
   const { interactionMode, currentCity } = state;
   const hint = deriveStatusText(state, { mobile: true });

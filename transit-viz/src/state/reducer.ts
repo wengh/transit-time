@@ -51,6 +51,13 @@ export interface AppState {
   // 'dest' = next map tap pins (or repins) the destination. Auto-switches
   // to 'dest' after the source is set; sticky thereafter.
   interactionMode: 'origin' | 'dest';
+
+  // Placement intents captured while the city data is still loading. Drained
+  // by App.tsx once loadingState becomes 'ready' (and, for pendingDest, after
+  // the first query completes). Each click while loading replaces the prior
+  // pending intent so "last click wins".
+  pendingSource: { latLng: [number, number] } | null;
+  pendingDest: { latLng: [number, number]; trip: number | null } | null;
 }
 
 export interface HoverData {
@@ -102,7 +109,11 @@ export type Action =
   | { type: 'LOCK_SAMPLE'; idx: number | null }
   | { type: 'SHOW_COPIED_MESSAGE' }
   | { type: 'HIDE_COPIED_MESSAGE' }
-  | { type: 'SET_INTERACTION_MODE'; mode: 'origin' | 'dest' };
+  | { type: 'SET_INTERACTION_MODE'; mode: 'origin' | 'dest' }
+  | { type: 'QUEUE_PENDING_SOURCE'; latLng: [number, number] }
+  | { type: 'QUEUE_PENDING_DEST'; latLng: [number, number]; trip: number | null }
+  | { type: 'CONSUME_PENDING_SOURCE' }
+  | { type: 'CONSUME_PENDING_DEST' };
 
 export const initialState: AppState = {
   // City loading
@@ -148,6 +159,10 @@ export const initialState: AppState = {
 
   // Mobile interaction mode (no-op on desktop)
   interactionMode: 'origin',
+
+  // Pending placements (no intent queued by default)
+  pendingSource: null,
+  pendingDest: null,
 };
 
 export function reducer(state: AppState, action: Action): AppState {
@@ -176,7 +191,13 @@ export function reducer(state: AppState, action: Action): AppState {
         computeProgress: null,
       };
     case 'LOAD_ERROR':
-      return { ...state, loadingState: 'idle', currentCity: null };
+      return {
+        ...state,
+        loadingState: 'idle',
+        currentCity: null,
+        pendingSource: null,
+        pendingDest: null,
+      };
     case 'CHANGE_CITY':
       return {
         ...state,
@@ -190,6 +211,8 @@ export function reducer(state: AppState, action: Action): AppState {
         pinnedNode: null,
         pinnedLatLng: null,
         hoverData: null,
+        pendingSource: null,
+        pendingDest: null,
       };
     case 'SET_SOURCE':
       return {
@@ -272,5 +295,13 @@ export function reducer(state: AppState, action: Action): AppState {
       return { ...state, showCopiedMessage: false };
     case 'SET_INTERACTION_MODE':
       return { ...state, interactionMode: action.mode };
+    case 'QUEUE_PENDING_SOURCE':
+      return { ...state, pendingSource: { latLng: action.latLng } };
+    case 'QUEUE_PENDING_DEST':
+      return { ...state, pendingDest: { latLng: action.latLng, trip: action.trip } };
+    case 'CONSUME_PENDING_SOURCE':
+      return { ...state, pendingSource: null };
+    case 'CONSUME_PENDING_DEST':
+      return { ...state, pendingDest: null };
   }
 }

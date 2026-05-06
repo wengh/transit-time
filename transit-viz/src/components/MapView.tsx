@@ -30,6 +30,10 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
   const isoOverlayRef = useRef<L.Layer | null>(null);
   const sourceMarkerRef = useRef<L.Marker | null>(null);
   const destMarkerRef = useRef<L.CircleMarker | null>(null);
+  // Faint marker placed at the click location while the city data is still
+  // loading. Replaced/moved on each new pending click; removed once the real
+  // (snapped) source marker takes its place.
+  const provisionalSourceRef = useRef<L.Marker | null>(null);
   const bboxRectRef = useRef<L.Rectangle | null>(null);
   const tileLayerRef = useRef<L.TileLayer | null>(null);
   const routePolylinesRef = useRef<L.Path[]>([]);
@@ -303,7 +307,12 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
 
     async function setSource(lat: number, lng: number) {
       const s = stateRef.current;
-      if (s.loadingState !== 'ready') return;
+      if (s.loadingState !== 'ready') {
+        // City data still loading. Queue the click and let App.tsx replay it
+        // through this same function once loadingState flips to 'ready'.
+        dispatch({ type: 'QUEUE_PENDING_SOURCE', latLng: [lat, lng] });
+        return;
+      }
       // Cancel any in-flight query *before* awaiting the worker round-trip
       // for snapToNode — otherwise that message queues behind the running
       // compute and the cancel flag isn't flipped until the compute finishes.
@@ -330,7 +339,11 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
 
     async function setDestination(lat: number, lng: number) {
       const s = stateRef.current;
-      if (s.loadingState !== 'ready') return;
+      if (s.loadingState !== 'ready') {
+        // Queue and let App.tsx drain after the first query completes.
+        dispatch({ type: 'QUEUE_PENDING_DEST', latLng: [lat, lng], trip: null });
+        return;
+      }
       const node = await snapToNode(lat, lng);
       if (node !== null) showDestination(node, true);
     }
@@ -339,9 +352,9 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
     // Desktop: double-click sets source
     let lastPinTime = 0;
     function onDblClick(e: L.LeafletMouseEvent) {
-      if (stateRef.current.loadingState !== 'ready') return;
       // Mobile uses the Origin/Dest toggle in the top bar instead.
       if (isMobileRef.current) return;
+      // setSource itself queues if loading isn't ready yet.
       setSource(e.latlng.lat, e.latlng.lng);
     }
 
@@ -350,7 +363,24 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
     // 'origin' sets the source, 'dest' pins (or repins) the destination.
     async function onClick(e: L.LeafletMouseEvent) {
       const s = stateRef.current;
-      if (s.loadingState !== 'ready') return;
+
+      if (s.loadingState !== 'ready') {
+        // While loading, mobile taps queue an intent. Desktop single-clicks
+        // pre-source are a no-op even when ready (only dblclick sets origin),
+        // so nothing to queue here.
+        if (isMobileRef.current) {
+          if (s.interactionMode === 'origin') {
+            dispatch({ type: 'QUEUE_PENDING_SOURCE', latLng: [e.latlng.lat, e.latlng.lng] });
+          } else {
+            dispatch({
+              type: 'QUEUE_PENDING_DEST',
+              latLng: [e.latlng.lat, e.latlng.lng],
+              trip: null,
+            });
+          }
+        }
+        return;
+      }
 
       if (isMobileRef.current) {
         if (s.interactionMode === 'origin') {
@@ -510,11 +540,13 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
     };
   }, [dispatch]);
 
-  // Reposition map on city change
+  // Reposition map on city change. Runs as soon as the city is known so the
+  // base map is centered + bbox-framed during the data download/init, not
+  // after — users can pan/zoom while the .bin loads.
   useEffect(() => {
     const map = mapRef.current;
     const city = state.currentCity;
-    if (!map || !city || state.loadingState !== 'ready') return;
+    if (!map || !city) return;
 
     const hashParams = getHashParams();
     if (hashParams.center && hashParams.zoom !== undefined) {
@@ -555,7 +587,9 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
     }
     routePolylinesRef.current.forEach((p) => p.remove());
     routePolylinesRef.current = [];
-  }, [state.currentCity, state.loadingState]);
+    // Only refit on city change. Refitting on every loadingState transition
+    // would yank the map back from any panning the user did during load.
+  }, [state.currentCity]);
 
   // Re-render isochrone when travel times or max time changes
   useEffect(() => {
@@ -609,6 +643,30 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
       drawRouteLayersRef.current(hoverData.allPaths.filter((p) => p.segments.length > 0));
     }
   }, [state.pinnedNode, state.pinnedLatLng, state.hoverData]);
+
+  // Provisional source marker. Visible only while a click is queued during
+  // load; removed as soon as a real source marker replaces it (or pending
+  // clears on city change / load error / consumption).
+  useEffect(() => {
+    if (!mapRef.current) return;
+    const pending = state.pendingSource;
+    if (!pending || state.sourceNode !== null) {
+      if (provisionalSourceRef.current) {
+        provisionalSourceRef.current.remove();
+        provisionalSourceRef.current = null;
+      }
+      return;
+    }
+    if (provisionalSourceRef.current) {
+      provisionalSourceRef.current.setLatLng(pending.latLng);
+    } else {
+      provisionalSourceRef.current = L.marker(pending.latLng, {
+        opacity: 0.45,
+        title: 'Origin (queued)',
+        interactive: false,
+      }).addTo(mapRef.current);
+    }
+  }, [state.pendingSource, state.sourceNode]);
 
   return <div id="map" ref={mapContainerRef} />;
 });
