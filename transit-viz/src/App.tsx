@@ -14,8 +14,8 @@ import MobileSettingsSheet from './components/MobileSettingsSheet';
 import { useIsMobile } from './utils/useIsMobile';
 import { loadCity } from './utils/cityLoader';
 import { getCityFromUrl } from './cities';
-import { runQuery, getProfileHoverData, snapToNode } from './utils/router';
-import { getMedianPath, flattenDisplayLines, getSortedTravelTimes } from './utils/hoverInfo';
+import { runQuery, snapToNode } from './utils/router';
+import { buildHoverData, getMedianPath, flattenDisplayLines } from './utils/hoverInfo';
 import type { RunQueryParams } from './utils/router';
 import { getHashParams, setHashParams } from './utils/urlHash';
 import './styles.css';
@@ -106,22 +106,15 @@ function AppInner() {
       const node = await snapToNode(lat, lng);
       if (node === null) return;
       const latLng: [number, number] = [nodeCoords[node * 2], nodeCoords[node * 2 + 1]];
-      const { paths: allPaths, representativeIndex } = await getProfileHoverData(node);
-      const travelTimes = getSortedTravelTimes(allPaths);
-      // Mirror MapView.showDestination: pull the analytic summary out of the
-      // Rust-side per-node arrays rather than re-aggregating from `allPaths`.
       const s = stateRef.current;
-      const tt = s.travelTimes ? s.travelTimes[node] : NaN;
-      const avgTravelTime = isFinite(tt) ? tt : null;
-      const reachableFraction =
-        s.sampleCounts && s.totalSamples > 0 ? s.sampleCounts[node] / s.totalSamples : null;
+      const hoverData = await buildHoverData(node, s.travelTimes, s.sampleCounts, s.totalSamples);
       dispatch({
         type: 'PIN_DESTINATION',
         node,
         latLng,
-        hoverData: { allPaths, representativeIndex, travelTimes, avgTravelTime, reachableFraction },
+        hoverData,
       });
-      if (trip !== null && trip < allPaths.length) {
+      if (trip !== null && trip < hoverData.allPaths.length) {
         dispatch({ type: 'LOCK_SAMPLE', idx: trip });
       }
     })();
@@ -176,7 +169,7 @@ function AppInner() {
       runQuery(params, (done, total) => {
         dispatch({ type: 'COMPUTE_PROGRESS', done, total });
       })
-        .then((result) => {
+        .then(async (result) => {
           dispatch({
             type: 'QUERY_DONE',
             travelTimes: result.travelTimes,
@@ -187,6 +180,30 @@ function AppInner() {
           });
           // Don't unpin here — parameter-only changes should keep the destination
           // pin and sample selection. Pin teardown happens in `SET_SOURCE`.
+
+          // Refresh pinned destination data when a new query completes (e.g. parameter change).
+          const currentS = stateRef.current;
+          if (currentS.pinnedNode !== null) {
+            const node = currentS.pinnedNode;
+            const hoverData = await buildHoverData(
+              node,
+              result.travelTimes,
+              result.sampleCounts,
+              result.totalSamples
+            );
+
+            // Abort if another query started or the user unpinned/changed the node
+            // while we were waiting for the worker round-trip.
+            const latestS = stateRef.current;
+            if (latestS.computeStatus !== 'done' || latestS.pinnedNode !== node) return;
+
+            dispatch({
+              type: 'SET_HOVER_DATA',
+              hoverData,
+            });
+            // Clear any locked sample since the array of paths has likely changed
+            dispatch({ type: 'LOCK_SAMPLE', idx: null });
+          }
         })
         .catch((e) => {
           if (String(e).includes('cancelled')) return; // query was superseded

@@ -2,15 +2,10 @@ import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useRef 
 import L from 'leaflet';
 import { useAppState } from '../state/AppContext';
 import { initWebGL, renderIsochrone } from '../utils/webgl';
-import {
-  cancelInflightQuery,
-  getProfileHoverData,
-  snapToNode,
-  type HoverPath,
-} from '../utils/router';
+import { cancelInflightQuery, snapToNode, type HoverPath } from '../utils/router';
 import { ROUTE_COLORS } from '../utils/colors';
 import { getHashParams, setHashParams } from '../utils/urlHash';
-import { getSortedTravelTimes } from '../utils/hoverInfo';
+import { buildHoverData } from '../utils/hoverInfo';
 import { resolveMapStyle, DEFAULT_MAP_STYLE } from '../utils/mapStyles';
 import { useIsMobile } from '../utils/useIsMobile';
 
@@ -268,30 +263,14 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
         return;
       }
 
-      const { paths: allPaths, representativeIndex } = await getProfileHoverData(node);
-
       // Re-verify state after async work. If the source changed or was
       // cleared, this destination data is stale.
       const s = stateRef.current;
       if (!s.travelTimes || s.sourceNode !== sAtStart.sourceNode) return;
 
-      const travelTimes = getSortedTravelTimes(allPaths);
+      const hoverData = await buildHoverData(node, s.travelTimes, s.sampleCounts, s.totalSamples);
 
-      drawRouteSegments(allPaths.filter((p) => p.segments.length > 0));
-
-      // Analytic per-node summary comes straight from the Rust profile router —
-      // avoids re-aggregating from the (Pareto-filtered) `allPaths`, which no
-      // longer corresponds to discrete sample counts.
-      const avgTravelTime = isFinite(tt) ? tt : null;
-      const reachableFraction =
-        s.sampleCounts && s.totalSamples > 0 ? s.sampleCounts[node] / s.totalSamples : null;
-      const hoverData = {
-        allPaths,
-        representativeIndex,
-        travelTimes,
-        avgTravelTime,
-        reachableFraction,
-      };
+      drawRouteSegments(hoverData.allPaths.filter((p) => p.segments.length > 0));
 
       const latLng = getNodeLatLng(node);
       if (!latLng) return;
