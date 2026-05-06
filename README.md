@@ -10,7 +10,7 @@ Note: this project is mostly vibe coded.
 
 ### Screenshots
 #### Paths from Millennium Park to University of Chicago
-<img width="1255" height="1250" alt="paths from Millennium Park to University of Chicago" src="https://github.com/user-attachments/assets/63f3b320-c413-475f-86ae-4f8f309cc6dc" />
+[<img width="1488" height="1310" alt="image" src="https://github.com/user-attachments/assets/9f3bb44a-cdec-4955-af91-b5d6793fb92e" />](https://transit-time.pages.dev/?city=chicago#src=41.88269%2C-87.62346&dst=41.78786%2C-87.59856&style=default&date=2026-05-05&time=0&dur=90000&maxtime=60&slack=60&zoom=12&center=41.77827%2C-87.59296)
 
 ## Using the tool
 
