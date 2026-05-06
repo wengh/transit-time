@@ -3,6 +3,8 @@ pub mod path_display;
 pub mod profile;
 pub mod router;
 
+use std::collections::HashMap;
+
 use data::PreparedData;
 use profile::ProfileRouter as _;
 use rayon::iter::IntoParallelIterator;
@@ -102,16 +104,79 @@ impl WasmProfileRouting {
     /// calls `JSON.parse` once per hover. Requires a `TransitRouter` for access
     /// to the underlying `PreparedData` (names, colours).
     ///
-    /// Emits `Vec<PathView>` — each element flattens a `Path` and adds the
-    /// display strings and dominant route colour computed from that path.
+    /// Emits a JSON object containing `{ paths: Vec<PathView>, representativeIndex: Option<usize> }`.
     pub fn optimal_paths(&self, router: &TransitRouter, destination: u32) -> String {
         let paths = self.inner.optimal_paths(&router.data, destination);
         let views: Vec<path_display::PathView> = paths
             .iter()
             .map(|p| path_display::PathView::new(&router.data, p))
             .collect();
-        serde_json::to_string(&views).unwrap_or_else(|_| "[]".to_string())
+
+        let representative_index = compute_representative_index(&paths, self.window_start());
+
+        #[derive(serde::Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct OptimalPathsResponse<'a> {
+            paths: Vec<path_display::PathView<'a>>,
+            representative_index: Option<usize>,
+        }
+
+        let response = OptimalPathsResponse {
+            paths: views,
+            representative_index,
+        };
+
+        serde_json::to_string(&response)
+            .unwrap_or_else(|_| "{\"paths\":[],\"representativeIndex\":null}".to_string())
     }
+}
+
+/// Computes the mode of the Pareto frontier paths,
+/// using the transit routes as signature and weighted by responsible departure time length.
+/// Returns the path with median total time among the family of paths.
+fn compute_representative_index(paths: &[profile::Path], window_start: u32) -> Option<usize> {
+    if paths.is_empty() {
+        return None;
+    }
+
+    struct Family {
+        paths: Vec<usize>,
+        weight: u32,
+    }
+
+    let mut families: HashMap<Vec<u32>, Family> = HashMap::new();
+
+    for (i, path) in paths.iter().enumerate() {
+        let signature = path
+            .segments
+            .iter()
+            .filter_map(|s| s.route_index)
+            .collect::<Vec<_>>();
+
+        let prev_departure = if i == 0 {
+            window_start
+        } else {
+            paths[i - 1].home_departure
+        };
+
+        let weight = path.home_departure.saturating_sub(prev_departure);
+        let family = families.entry(signature).or_insert(Family {
+            paths: Vec::new(),
+            weight: 0,
+        });
+        family.weight += weight;
+        family.paths.push(i);
+    }
+
+    let mut mode_indices = families
+        .into_iter()
+        .max_by_key(|(_, family)| (family.weight, family.paths[0]))
+        .unwrap()
+        .1
+        .paths;
+
+    mode_indices.sort_by_key(|&idx| paths[idx].total_time);
+    Some(mode_indices[mode_indices.len() / 2])
 }
 
 #[wasm_bindgen]

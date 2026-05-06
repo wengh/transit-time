@@ -77,14 +77,19 @@ function AppInner() {
     })();
   }, [dispatch]);
 
-  // Drain pendingSource once the city data is ready. setSource snaps to a
-  // node, dispatches SET_SOURCE, and the existing source-change effect runs
-  // the query with whatever parameters are currently in state.
+  // Drain pendingSource once the city data is ready. We deliberately do NOT
+  // dispatch CONSUME_PENDING_SOURCE up front — clearing it now would hide the
+  // overlay for the renders between SET_SOURCE and COMPUTING. Instead, the
+  // COMPUTING reducer clears pendingSource when the query starts, giving a
+  // continuous overlay (pending → computing). The fallback dispatch below
+  // handles the rare case where setSource bails (e.g. snap returned null).
   useEffect(() => {
     if (state.loadingState !== 'ready' || !state.pendingSource) return;
     const [lat, lng] = state.pendingSource.latLng;
-    dispatch({ type: 'CONSUME_PENDING_SOURCE' });
-    mapViewRef.current?.setSource(lat, lng);
+    (async () => {
+      const ok = (await mapViewRef.current?.setSource(lat, lng)) ?? false;
+      if (!ok) dispatch({ type: 'CONSUME_PENDING_SOURCE' });
+    })();
   }, [state.loadingState, state.pendingSource, dispatch]);
 
   // Restore pinned destination (and locked trip) after the first query
@@ -101,7 +106,7 @@ function AppInner() {
       const node = await snapToNode(lat, lng);
       if (node === null) return;
       const latLng: [number, number] = [nodeCoords[node * 2], nodeCoords[node * 2 + 1]];
-      const allPaths = await getProfileHoverData(node);
+      const { paths: allPaths, representativeIndex } = await getProfileHoverData(node);
       const travelTimes = getSortedTravelTimes(allPaths);
       // Mirror MapView.showDestination: pull the analytic summary out of the
       // Rust-side per-node arrays rather than re-aggregating from `allPaths`.
@@ -114,7 +119,7 @@ function AppInner() {
         type: 'PIN_DESTINATION',
         node,
         latLng,
-        hoverData: { allPaths, travelTimes, avgTravelTime, reachableFraction },
+        hoverData: { allPaths, representativeIndex, travelTimes, avgTravelTime, reachableFraction },
       });
       if (trip !== null && trip < allPaths.length) {
         dispatch({ type: 'LOCK_SAMPLE', idx: trip });

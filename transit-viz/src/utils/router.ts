@@ -159,7 +159,12 @@ export function cancelInflightQuery() {
   }
 }
 
-export async function getProfileHoverData(node: number): Promise<HoverPath[]> {
+export interface HoverDataResult {
+  paths: HoverPath[];
+  representativeIndex: number | null;
+}
+
+export async function getProfileHoverData(node: number): Promise<HoverDataResult> {
   return call({ type: 'getHoverData', node });
 }
 

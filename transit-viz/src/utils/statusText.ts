@@ -13,30 +13,15 @@ export function deriveStatusText(state: AppState, opts: Options = {}): string {
   const {
     showCopiedMessage,
     computeStatus,
-    computeProgress,
     computeTimeMs,
     computeNumThreads,
     sourceNode,
     nodeCount,
     stopCount,
     interactionMode,
-    loadingState,
-    loadingProgress,
-    currentCity,
   } = state;
 
   if (showCopiedMessage) return 'Copied!';
-  if (loadingState === 'loading') {
-    return `Loading ${currentCity?.name ?? 'city'}… ${loadingProgress}%`;
-  }
-  if (loadingState === 'initializing') {
-    return `Initializing router for ${currentCity?.name ?? 'city'}…`;
-  }
-  if (computeStatus === 'computing') {
-    return computeProgress
-      ? `Computing... ${Math.round((computeProgress.done / computeProgress.total) * 100)}%`
-      : 'Computing...';
-  }
   if (computeStatus === 'done') {
     return `Done. Spent ${Math.round(computeTimeMs)} ms using ${computeNumThreads} thread${
       computeNumThreads === 1 ? '' : 's'

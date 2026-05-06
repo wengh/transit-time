@@ -423,13 +423,15 @@ export function deriveDisplayPath(
   hoverData: HoverData,
   selectedSampleIdx: number | null
 ): HoverPath | null {
-  const { allPaths } = hoverData;
+  const { allPaths, representativeIndex } = hoverData;
   const path =
     selectedSampleIdx !== null
       ? allPaths[selectedSampleIdx]
         ? { ...allPaths[selectedSampleIdx] }
         : null
-      : getMedianPath(allPaths);
+      : representativeIndex !== null && allPaths[representativeIndex]
+        ? { ...allPaths[representativeIndex] }
+        : getMedianPath(allPaths);
 
   // When a specific Pareto path is selected, strip the first wait so the user
   // sees the in-vehicle trip time from the chosen departure rather than

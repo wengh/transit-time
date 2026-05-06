@@ -22,10 +22,14 @@ export default function LoadingOverlay(): React.ReactNode {
   } = state;
 
   const isLoading = loadingState === 'loading' || loadingState === 'initializing';
-  const hasPending = pendingSource !== null || pendingDest !== null;
-  const showLoading = isLoading && hasPending;
   const showComputing = computeStatus === 'computing';
-  if (!showLoading && !showComputing) return null;
+  // Showing on `pendingSource` (rather than just `isLoading && hasPending`)
+  // bridges the brief gap between CITY_LOADED and COMPUTING — pendingSource
+  // stays set across snap → SET_SOURCE and is cleared by the COMPUTING
+  // reducer, so the overlay flips directly from "pending" to "computing"
+  // without a one-render flash of nothing.
+  const hasPendingDuringLoad = isLoading && pendingDest !== null;
+  if (!pendingSource && !showComputing && !hasPendingDuringLoad) return null;
 
   let text: string;
   if (showComputing) {
@@ -35,8 +39,12 @@ export default function LoadingOverlay(): React.ReactNode {
     text = pct !== null ? `Computing… ${pct}%` : 'Computing…';
   } else if (loadingState === 'initializing') {
     text = `Initializing router for ${currentCity?.name ?? ''}…`;
-  } else {
+  } else if (loadingState === 'loading') {
     text = `Loading ${currentCity?.name ?? ''}… ${loadingProgress}%`;
+  } else {
+    // loadingState === 'ready' but pendingSource still set: we're between
+    // CITY_LOADED and COMPUTING — about to compute.
+    text = 'Computing…';
   }
 
   return (
@@ -48,7 +56,7 @@ export default function LoadingOverlay(): React.ReactNode {
     >
       <div
         id="loading-text"
-        className="pointer-events-auto px-4 py-2 rounded-full
+        className="px-4 py-2 rounded-full
           bg-zinc-900/95 dark:bg-zinc-900/95
           [@media(prefers-color-scheme:light)]:bg-white/95
           text-sm text-zinc-100 dark:text-zinc-100

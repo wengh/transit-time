@@ -15,7 +15,11 @@ import { resolveMapStyle, DEFAULT_MAP_STYLE } from '../utils/mapStyles';
 import { useIsMobile } from '../utils/useIsMobile';
 
 export interface MapViewHandle {
-  setSource(lat: number, lng: number): Promise<void>;
+  // Returns true if SET_SOURCE was dispatched (snap succeeded and the query
+  // is about to run); false if the call queued the click instead, or bailed
+  // because snapToNode returned null. The pending-source consumption effect
+  // uses this to know whether to dispatch a fallback CONSUME_PENDING_SOURCE.
+  setSource(lat: number, lng: number): Promise<boolean>;
   setDestination(lat: number, lng: number): Promise<void>;
   flyTo(lat: number, lng: number): void;
   zoomIn(): void;
@@ -44,11 +48,11 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
 
   // Refs to closures (updated each time the map-events effect runs)
   // so the imperative handle can call them from outside MapView.
-  const setSourceRef = useRef<((lat: number, lng: number) => Promise<void>) | null>(null);
+  const setSourceRef = useRef<((lat: number, lng: number) => Promise<boolean>) | null>(null);
   const setDestinationRef = useRef<((lat: number, lng: number) => Promise<void>) | null>(null);
 
   useImperativeHandle(ref, () => ({
-    setSource: (lat, lng) => setSourceRef.current?.(lat, lng) ?? Promise.resolve(),
+    setSource: (lat, lng) => setSourceRef.current?.(lat, lng) ?? Promise.resolve(false),
     setDestination: (lat, lng) => setDestinationRef.current?.(lat, lng) ?? Promise.resolve(),
     flyTo: (lat, lng) => {
       const map = mapRef.current;
@@ -264,7 +268,7 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
         return;
       }
 
-      const allPaths = await getProfileHoverData(node);
+      const { paths: allPaths, representativeIndex } = await getProfileHoverData(node);
 
       // Re-verify state after async work. If the source changed or was
       // cleared, this destination data is stale.
@@ -281,7 +285,13 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
       const avgTravelTime = isFinite(tt) ? tt : null;
       const reachableFraction =
         s.sampleCounts && s.totalSamples > 0 ? s.sampleCounts[node] / s.totalSamples : null;
-      const hoverData = { allPaths, travelTimes, avgTravelTime, reachableFraction };
+      const hoverData = {
+        allPaths,
+        representativeIndex,
+        travelTimes,
+        avgTravelTime,
+        reachableFraction,
+      };
 
       const latLng = getNodeLatLng(node);
       if (!latLng) return;
@@ -305,22 +315,22 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
       }
     }
 
-    async function setSource(lat: number, lng: number) {
+    async function setSource(lat: number, lng: number): Promise<boolean> {
       const s = stateRef.current;
       if (s.loadingState !== 'ready') {
         // City data still loading. Queue the click and let App.tsx replay it
         // through this same function once loadingState flips to 'ready'.
         dispatch({ type: 'QUEUE_PENDING_SOURCE', latLng: [lat, lng] });
-        return;
+        return false;
       }
       // Cancel any in-flight query *before* awaiting the worker round-trip
       // for snapToNode — otherwise that message queues behind the running
       // compute and the cancel flag isn't flipped until the compute finishes.
       cancelInflightQuery();
       const node = await snapToNode(lat, lng);
-      if (node === null) return;
+      if (node === null) return false;
       const latLng = getNodeLatLng(node);
-      if (!latLng) return;
+      if (!latLng) return false;
       if (sourceMarkerRef.current) {
         sourceMarkerRef.current.setLatLng(latLng);
       } else {
@@ -333,6 +343,7 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
       }
       clearRouteOverlay();
       dispatch({ type: 'SET_SOURCE', node, latLng });
+      return true;
     }
 
     setSourceRef.current = setSource;

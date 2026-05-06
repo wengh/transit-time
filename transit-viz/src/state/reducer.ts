@@ -62,6 +62,7 @@ export interface AppState {
 
 export interface HoverData {
   allPaths: HoverPath[];
+  representativeIndex: number | null;
   travelTimes: number[];
   // Per-node analytic summary from the Rust profile router. Populated from
   // `state.travelTimes[node]` and `state.sampleCounts[node] / state.totalSamples`.
@@ -242,7 +243,16 @@ export function reducer(state: AppState, action: Action): AppState {
     case 'SET_PATTERN_COUNT':
       return { ...state, patternCount: action.count };
     case 'COMPUTING':
-      return { ...state, computeStatus: 'computing', computeProgress: null };
+      // Clear pendingSource here (rather than synchronously in the consumption
+      // effect) so the overlay's "pendingSource set" branch hands off
+      // continuously to the "computing" branch — without this, the overlay
+      // flickers off for one render between SET_SOURCE and COMPUTING.
+      return {
+        ...state,
+        computeStatus: 'computing',
+        computeProgress: null,
+        pendingSource: null,
+      };
     case 'COMPUTE_PROGRESS':
       return { ...state, computeProgress: { done: action.done, total: action.total } };
     case 'QUERY_DONE':

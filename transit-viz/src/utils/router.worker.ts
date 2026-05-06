@@ -204,11 +204,11 @@ interface RustPathView {
 }
 
 function handleGetHoverData(node: number) {
-  if (!router || !profile) return [];
-  if ((profile as any).__wbg_ptr === 0) return [];
+  if (!router || !profile) return { paths: [], representativeIndex: null };
+  if ((profile as any).__wbg_ptr === 0) return { paths: [], representativeIndex: null };
   const json = profile.optimal_paths(router, node);
-  const views: RustPathView[] = JSON.parse(json);
-  return views.map((p) => {
+  const data: { paths: RustPathView[]; representativeIndex: number | null } = JSON.parse(json);
+  const paths = data.paths.map((p) => {
     const segments = p.segments.map((seg) => {
       const nodes = new Uint32Array(seg.nodeSequence);
       const flat = router!.segment_shape(
@@ -239,6 +239,7 @@ function handleGetHoverData(node: number) {
       display: p.display,
     };
   });
+  return { paths, representativeIndex: data.representativeIndex };
 }
 
 function freeCurrentProfile() {
