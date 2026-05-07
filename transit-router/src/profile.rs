@@ -763,8 +763,8 @@ impl ProfileRouting {
                     node: node_id,
                     min_departure: query.window_start + walk_time as u32,
                     max_departure: query.window_end + query.max_time,
+                    // Expand headways during the flexible departure window but not past it.
                     expand_headways: true,
-                    max_arrival: None,
                 },
                 |leg| {
                     initial_transit_entries.push(PendingEntry {
@@ -878,7 +878,6 @@ impl ProfileRouting {
                         min_departure: min_departure_time,
                         max_departure: max_departure_time,
                         expand_headways: false,
-                        max_arrival: None,
                     },
                     |leg| {
                         relax(
@@ -1134,7 +1133,6 @@ struct ExpandTransitLegQuery {
     min_departure: u32,
     max_departure: u32,
     expand_headways: bool,
-    max_arrival: Option<u32>,
 }
 
 struct ProfileQueryContext<'a> {
@@ -1311,13 +1309,12 @@ impl<'a> ProfileQueryContext<'a> {
             min_departure,
             max_departure,
             expand_headways,
-            max_arrival,
         } = query;
 
         let Some(stop_idx) = self.data.node_to_stop(node) else {
             return ControlFlow::Continue(());
         };
-        let max_arrival = max_arrival.unwrap_or(self.query.window_end + self.query.max_time);
+        let max_arrival = self.query.window_end + self.query.max_time;
 
         for &pat_idx in &self.index.patterns_at_stop[stop_idx as usize] {
             let pat = &self.data.patterns[pat_idx as usize];

@@ -251,6 +251,8 @@ DONE
 show interactive base map and controls before data file finishes loading.
 show the loading in status only. when a source is placed (or loaded from url query) while loading, show a loading overlay and disable placing source/destination but still allow using map
 
+DONE
+
 -------
 
 in desktop mode add a button next to hint button of the plot to expand the details panel to take the whole screen width
@@ -266,3 +268,11 @@ UPDATE: likely because of WASM tier-up
 fix: run a tiny synthetic warmup as part of loading, from node 0 (which is a stop node)
 
 DONE
+
+-------
+
+limit the resolution of home departures to e.g. 60 s, so running the dijkstra search for all home departures within the 60 s chunk together to make it potentially faster and have less profile entries
+
+-------
+
+use profile-guided optimization with tools such as `cargo-pgo`. run using a representative example query (e.g. the query from samply.sh on Monday this week)
