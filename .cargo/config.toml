@@ -16,4 +16,10 @@ rustflags = [
     "link-arg=--export=__tls_align",
     "-C",
     "link-arg=--export=__tls_base",
+    # Recent wasm-ld no longer auto-exports __heap_base/__data_end;
+    # wasm-bindgen-rayon's threading shim needs __heap_base.
+    "-C",
+    "link-arg=--export=__heap_base",
+    "-C",
+    "link-arg=--export=__data_end",
 ]

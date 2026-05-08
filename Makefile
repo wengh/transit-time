@@ -13,7 +13,7 @@ PROFDATA := target/pgo-data/merged.profdata
 # in .cargo/config.toml — keep these in sync. Cargo's rustflags arrays from
 # different config sources don't merge (first source wins), so the PGO build
 # must inline the full set via `--config`.
-WASM_RUSTFLAGS_PGO := "-C","target-feature=+atomics,+bulk-memory,+mutable-globals,+simd128","-C","link-arg=--shared-memory","-C","link-arg=--max-memory=4294967296","-C","link-arg=--import-memory","-C","link-arg=--export=__wasm_init_tls","-C","link-arg=--export=__tls_size","-C","link-arg=--export=__tls_align","-C","link-arg=--export=__tls_base","-C","profile-use=$(abspath $(PROFDATA))","-C","llvm-args=-pgo-warn-missing-function=false"
+WASM_RUSTFLAGS_PGO := "-C","target-feature=+atomics,+bulk-memory,+mutable-globals,+simd128","-C","link-arg=--shared-memory","-C","link-arg=--max-memory=4294967296","-C","link-arg=--import-memory","-C","link-arg=--export=__wasm_init_tls","-C","link-arg=--export=__tls_size","-C","link-arg=--export=__tls_align","-C","link-arg=--export=__tls_base","-C","link-arg=--export=__heap_base","-C","link-arg=--export=__data_end","-C","profile-use=$(abspath $(PROFDATA))","-C","llvm-args=-pgo-warn-missing-function=false"
 
 # Build PGO-optimized WASM. Requires transit-viz/public/data/chicago.bin
 # (run `make data CITY=chicago` first if missing). Trains a native profile
