@@ -5,10 +5,8 @@
 # Used by `make wasm-pgo`. Standalone usage:
 #   ./scripts/pgo-train.sh target/pgo-data/merged.profdata
 #
-# Empirically (see git history), one routing query is enough — rayon spawns
-# 24 worker threads, each emitting its own .profraw, so a single query
-# already produces ~20 profile streams covering every hot branch in the
-# routing inner loop. Adding more cities or runs did not improve the
+# Empirically, one routing query is enough.
+# Adding more cities or runs did not improve the
 # resulting WASM speedup beyond noise.
 #
 # Requires: rustup component add llvm-tools-preview
