@@ -275,4 +275,6 @@ limit the resolution of home departures to e.g. 60 s, so running the dijkstra se
 
 -------
 
-use profile-guided optimization with tools such as `cargo-pgo`. run using a representative example query (e.g. the query from samply.sh on Monday this week)
+use profile-guided optimization. run using a representative example query (e.g. the query from samply.sh on Monday this week)
+
+DONE

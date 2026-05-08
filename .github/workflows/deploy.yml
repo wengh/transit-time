@@ -25,12 +25,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # ── Rust / WASM ────────────────────────────────────────────────────────
+      # ── Rust toolchain ─────────────────────────────────────────────────────
+      # llvm-tools-preview ships llvm-profdata, required by `make wasm-pgo`
+      # to merge .profraw output from the native PGO training run.
       - name: Install Rust nightly
         uses: dtolnay/rust-toolchain@nightly
         with:
           targets: wasm32-unknown-unknown
-          components: rust-src
+          components: rust-src, llvm-tools-preview
 
       - name: Install wasm-pack
         run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
@@ -45,19 +47,11 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-
 
-      - name: Cache WASM output
-        uses: actions/cache@v4
-        id: wasm-cache
-        with:
-          path: transit-viz/pkg/
-          key: ${{ runner.os }}-wasm-${{ hashFiles('transit-router/src/**', 'transit-router/Cargo.toml', '.cargo/config.toml') }}
-
-      - name: Build WASM
-        if: steps.wasm-cache.outputs.cache-hit != 'true'
-        run: make wasm
-
       # ── Data (.bin files) ──────────────────────────────────────────────────
-      # Cache:
+      # Built before WASM because `make wasm-pgo` trains a native profile
+      # against transit-viz/public/data/chicago.bin.
+      #
+      # Cache layers:
       #   1. sha1 sidecars (tiny, always restored — used to check feed freshness)
       #   2. raw GTFS/OSM downloads (large, only restored when a rebuild is needed)
       #   3. compiled .bin files (fast to restore, avoid full rebuild)
@@ -102,6 +96,21 @@ jobs:
         env:
           TRANSITLAND_API_KEY: ${{ secrets.TRANSITLAND_API_KEY }}
         run: make data-all
+
+      # ── WASM (PGO-optimized) ───────────────────────────────────────────────
+      # `make wasm` trains a native profile against chicago.bin (built above)
+      # and then builds WASM with -Cprofile-use. Cache key includes Makefile
+      # and scripts/pgo-train.sh because the build behavior depends on both.
+      - name: Cache WASM output
+        uses: actions/cache@v4
+        id: wasm-cache
+        with:
+          path: transit-viz/pkg/
+          key: ${{ runner.os }}-wasm-${{ hashFiles('transit-router/src/**', 'transit-router/Cargo.toml', '.cargo/config.toml', 'Makefile', 'scripts/pgo-train.sh') }}
+
+      - name: Build WASM
+        if: steps.wasm-cache.outputs.cache-hit != 'true'
+        run: make wasm
 
       # ── Frontend ───────────────────────────────────────────────────────────
       - name: Setup Node.js

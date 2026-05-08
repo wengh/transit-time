@@ -115,13 +115,17 @@ The city `.bin` file is fetched and streamed through the browser's native gzip d
 **Prerequisites:**
 - Rust (nightly toolchain, for the WASM build)
 - [wasm-pack](https://rustwasm.github.io/wasm-pack/)
+- `llvm-tools-preview` Rust component: `rustup component add llvm-tools-preview`
 - Node.js and npm
 - A [Transitland API key](https://www.transit.land/) in `.env` as `TRANSITLAND_API_KEY` (needed for building city data that uses Transitland feeds)
 
 **Build the WASM module** (only needed when the routing logic changes):
 ```
+make data CITY=chicago    # one-time, used as the PGO training city
 make wasm
 ```
+
+`make wasm` runs Profile-Guided Optimization: it trains a native profile by running `benchmark_smoke` against `transit-viz/public/data/chicago.bin`, then builds the WASM module with `-Cprofile-use`. PGO yields ~17% faster routing than a plain build. The Chicago data binary is required.
 
 **Build city data files** (checks for stale feeds, downloads updates, rebuilds affected cities):
 ```
@@ -206,8 +210,8 @@ The GitHub Actions workflow (`.github/workflows/deploy.yml`) runs on every push 
 
 The deploy job has four phases:
 
-1. **WASM** — builds the routing engine with `make wasm` (nightly Rust + wasm-pack). The output is cached by source hash of `transit-router/` and rebuilt only on changes.
-2. **Data** — runs `transit-prep pipeline --check-only` to query Transitland for updated SHA1 hashes (without downloading anything). If any feed is stale or a `.bin` file is missing, the job restores the raw GTFS/OSM download cache and runs `make data-all` to rebuild affected cities. If everything is current it skips this step entirely.
+1. **Data** — runs `transit-prep pipeline --check-only` to query Transitland for updated SHA1 hashes (without downloading anything). If any feed is stale or a `.bin` file is missing, the job restores the raw GTFS/OSM download cache and runs `make data-all` to rebuild affected cities. If everything is current it skips this step entirely.
+2. **WASM** — builds the routing engine with `make wasm` (nightly Rust + wasm-pack + native PGO training on the just-built `chicago.bin`). The output is cached by source hash of `transit-router/`, the Makefile, and `scripts/pgo-train.sh`; rebuilt only on changes.
 3. **Frontend** — installs npm dependencies and runs `npm run build` to produce the static site in `transit-viz/dist/`.
 4. **Deploy** — publishes `transit-viz/dist/` to Cloudflare Pages via `wrangler pages deploy`.
 
@@ -316,21 +320,21 @@ Always reachable (fraction=1): 26654, sometimes: 283241
 | Calgary | 3.0M |
 | Chicago | 8.2M |
 | Hong Kong | 8.7M |
-| Los Angeles | 9.8M |
+| Los Angeles | 9.7M |
 | Madrid | 8.3M |
 | Mexico City | 1.5M |
-| Montreal | 19.6M |
+| Montreal | 22.5M |
 | Moscow | 4.9M |
-| New York City | 18.2M |
+| New York City | 18.1M |
 | Ottawa | 8.0M |
-| Paris | 17.4M |
+| Paris | 17.5M |
 | Philadelphia | 4.3M |
-| San Francisco Bay Area | 10.3M |
+| San Francisco Bay Area | 10.2M |
 | Seattle | 5.4M |
-| Toronto | 14.4M |
+| Toronto | 14.5M |
 | Vancouver | 5.4M |
 | Washington | 11.3M |
 | Waterloo | 1.4M |
 <!-- END sizes -->
 
-**WASM module** (`ls -lh transit-viz/pkg/transit_router_bg.wasm`): ~250 KB
+**WASM module** (`ls -lh transit-viz/pkg/transit_router_bg.wasm`): ~330 KB

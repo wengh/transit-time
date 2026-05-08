@@ -7,11 +7,24 @@ CITIES ?= $(cities)
 # Source files for change detection
 ROUTER_SRC := $(shell find transit-router/src -name '*.rs')
 WASM_OUT := transit-viz/pkg/transit_router_bg.wasm
+PROFDATA := target/pgo-data/merged.profdata
 
-# Build WASM (only when router source changes)
+# WASM rustflags for the PGO build. Mirrors target.wasm32-unknown-unknown.rustflags
+# in .cargo/config.toml — keep these in sync. Cargo's rustflags arrays from
+# different config sources don't merge (first source wins), so the PGO build
+# must inline the full set via `--config`.
+WASM_RUSTFLAGS_PGO := "-C","target-feature=+atomics,+bulk-memory,+mutable-globals,+simd128","-C","link-arg=--shared-memory","-C","link-arg=--max-memory=4294967296","-C","link-arg=--import-memory","-C","link-arg=--export=__wasm_init_tls","-C","link-arg=--export=__tls_size","-C","link-arg=--export=__tls_align","-C","link-arg=--export=__tls_base","-C","profile-use=$(abspath $(PROFDATA))","-C","llvm-args=-pgo-warn-missing-function=false"
+
+# Build PGO-optimized WASM. Requires transit-viz/public/data/chicago.bin
+# (run `make data CITY=chicago` first if missing). Trains a native profile
+# by running benchmark_smoke against Chicago, then builds WASM with
+# -Cprofile-use. ~17% faster routing than a plain build.
 wasm: $(WASM_OUT)
-$(WASM_OUT): $(ROUTER_SRC) transit-router/Cargo.toml .cargo/config.toml
-	RUSTUP_TOOLCHAIN=nightly wasm-pack build transit-router --target web --out-dir ../transit-viz/pkg -- -Z build-std=panic_abort,std
+$(WASM_OUT): $(ROUTER_SRC) transit-router/Cargo.toml .cargo/config.toml Makefile $(PROFDATA)
+	RUSTUP_TOOLCHAIN=nightly wasm-pack build transit-router --target web --out-dir ../transit-viz/pkg -- -Z build-std=panic_abort,std --config 'target.wasm32-unknown-unknown.rustflags=[$(WASM_RUSTFLAGS_PGO)]'
+
+$(PROFDATA): $(ROUTER_SRC) transit-router/Cargo.toml scripts/pgo-train.sh
+	./scripts/pgo-train.sh $@
 
 # Build all data via pipeline (checks feeds, downloads stale, rebuilds affected)
 data-all:
@@ -59,4 +72,5 @@ sizes:
 clean:
 	cargo clean
 	rm -rf transit-viz/pkg
+	rm -rf target/pgo-data target/pgo-instrument
 	rm -f transit-viz/public/data/*.bin
