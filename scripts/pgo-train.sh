@@ -2,7 +2,7 @@
 # Trains a PGO profile by running benchmark_smoke against a representative
 # routing query, then merges the .profraw output to the path given as $1.
 #
-# Used by `make wasm-pgo`. Standalone usage:
+# Used by `make wasm` and `make flamegraph`. Standalone usage:
 #   ./scripts/pgo-train.sh target/pgo-data/merged.profdata
 #
 # Empirically, one routing query is enough.
@@ -18,8 +18,8 @@ TRAIN_CITY="${TRAIN_CITY:-transit-viz/public/data/chicago.bin}"
 TRAIN_LAT="${TRAIN_LAT:-41.8781}"
 TRAIN_LON="${TRAIN_LON:--87.6298}"
 TRAIN_DATE="${TRAIN_DATE:-$(date +%Y%m%d)}"
-TRAIN_HHMM="${TRAIN_HHMM:-0}"
-TRAIN_WINDOW_MIN="${TRAIN_WINDOW_MIN:-1620}"
+TRAIN_HHMM="${TRAIN_HHMM:-900}"
+TRAIN_WINDOW_MIN="${TRAIN_WINDOW_MIN:-60}"
 TRAIN_MAX_MIN="${TRAIN_MAX_MIN:-90}"
 TRAIN_SLACK_S="${TRAIN_SLACK_S:-60}"
 

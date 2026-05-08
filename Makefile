@@ -62,8 +62,10 @@ dev: $(WASM_OUT)
 	fi
 	cd transit-viz && npm install --silent && npm run dev -- --port 5173
 
-# CPU flamegraph of profile routing (override via env: OUT, CITY, LAT, LON, RUNS, etc.)
-flamegraph:
+# CPU flamegraph of profile routing (override via env: OUT, CITY, LAT, LON, RUNS, NO_PGO, etc.)
+# When NO_PGO is unset, depends on $(PROFDATA) so source changes retrain
+# before sampling; with NO_PGO=1 the dep is skipped (no wasted training).
+flamegraph: $(if $(NO_PGO),,$(PROFDATA))
 	./scripts/samply.sh
 
 sizes:
@@ -72,5 +74,5 @@ sizes:
 clean:
 	cargo clean
 	rm -rf transit-viz/pkg
-	rm -rf target/pgo-data target/pgo-instrument
+	rm -rf target/pgo-data target/pgo-instrument target/pgo-samply
 	rm -f transit-viz/public/data/*.bin
