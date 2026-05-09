@@ -97,6 +97,13 @@ jobs:
           TRANSITLAND_API_KEY: ${{ secrets.TRANSITLAND_API_KEY }}
         run: make data-all
 
+      # ── Tests ──────────────────────────────────────────────────────────────
+      # Property tests for the router. Run after data is available (the
+      # router test fixture is `chicago.bin`) and before WASM so a router
+      # regression fails fast without burning the PGO training cycle.
+      - name: Run router tests
+        run: make test
+
       # ── WASM (PGO-optimized) ───────────────────────────────────────────────
       # `make wasm` trains a native profile against chicago.bin (built above)
       # and then builds WASM with -Cprofile-use. Cache key includes Makefile

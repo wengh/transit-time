@@ -282,3 +282,15 @@ DONE
 -------
 
 add some property testing...
+
+expose a function for iterating u32 (departure time, arrival time) entries for a given destination. also expose a single window entry point. use these helpers when useful.
+implement:
+1: check both statistics and exact entries
+2: also check that all entries in T profile are also in T+delta profile and that all entries only in T+delta profile have travel time > T
+3
+4: use the single window entry point
+5: also check node sequence consistency
+6 & 7: just pick the sample with the most entries and compute exact integration (by iterating over every x) and check equality
+skip 8
+
+also do have a preprocess pass that computes number of events in the window for every single transit stop. when selecting a source, select "anchor" first using a temperature approach (say temperature = 0.9) with this number as weight, then select a node randomly within 15 minutes walk from this "anchor"

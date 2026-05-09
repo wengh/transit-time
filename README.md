@@ -150,6 +150,20 @@ cd transit-viz && npm run build
 ```
 The output in `transit-viz/dist/` is a fully static site that can be deployed anywhere.
 
+### Testing
+
+The router has a property-test suite under `transit-router/tests/`. To run:
+
+```
+make test
+```
+
+This builds `transit-viz/public/data/chicago.bin` if missing (the same fixture the WASM PGO build trains against, so a cached `chicago.bin` is reused) and runs `cargo test --release -p transit-router`.
+
+The tests are deliberately written as **behavior-level invariants and metamorphic relations** rather than golden-output snapshots — for example, "doubling the time budget cannot remove a Pareto-optimal entry," "split-window and single-window engines must produce identical entries," or "summing a destination's optimal paths' arrival times must match the published mean travel time." This keeps the suite stable across internal refactors of the frontier arena, chunk merging, or path reconstruction.
+
+Each property runs `ROUTER_TEST_ITERS` times (default 10) against a different source picked by temperature-weighted anchor sampling over busy stops + uniform pick within a 15-minute walk. Each run picks a fresh random seed and logs it as `[router_tests] random seed <n>; reproduce with ROUTER_TEST_SEED=<n>`, so a CI failure can be reproduced locally by pinning that seed.
+
 ### Formatting
 
 `cargo fmt` formats Rust; `prettier` formats the frontend (TS/TSX/CSS/HTML/JSON/MD inside `transit-viz/`).

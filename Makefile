@@ -1,4 +1,4 @@
-.PHONY: dev wasm clean data-all data data-some flamegraph sizes
+.PHONY: dev wasm clean data-all data data-some flamegraph sizes test
 
 # Normalize: accept either lowercase (city=, cities=) or uppercase (CITY=, CITIES=)
 CITY   ?= $(city)
@@ -70,6 +70,17 @@ flamegraph: $(if $(NO_PGO),,$(PROFDATA))
 
 sizes:
 	./scripts/sizes.py
+
+# Run router property tests. Requires transit-viz/public/data/chicago.bin
+# (built automatically if missing via `make data CITY=chicago`; this is the
+# same fixture the WASM PGO build trains against, so a cached chicago.bin
+# is reused across `make test` and `make wasm`).
+# Override the source-selection seed via ROUTER_TEST_SEED=<u64>.
+test: transit-viz/public/data/chicago.bin
+	cargo test --release -p transit-router --tests
+
+transit-viz/public/data/chicago.bin:
+	$(MAKE) data CITY=chicago
 
 clean:
 	cargo clean

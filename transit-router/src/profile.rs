@@ -3,11 +3,13 @@
 //!
 //! # Public interface
 //!
-//! [`ProfileRouter`] is the contract. [`SplitProfileRouting`] is the only
-//! implementation: it splits the departure window into chunks, runs each
-//! chunk through the internal [`ProfileRouting`] engine (in parallel when
-//! rayon is available), and stitches the per-chunk frontiers into a single
-//! [`Isochrone`]. Callers hold `impl ProfileRouter` or `SplitProfileRouting`
+//! [`ProfileRouter`] is the contract. [`SplitProfileRouting`] is the
+//! production entry point: it splits the departure window into chunks, runs
+//! each chunk through the internal [`ProfileRouting`] engine (in parallel
+//! when rayon is available), and stitches the per-chunk frontiers into a
+//! single [`Isochrone`]. [`SinglePassProfileRouting`] runs the same engine
+//! over the whole window in one shot and is exposed for cross-checks and
+//! parity tests. Callers hold `impl ProfileRouter` or a concrete struct
 //! directly; internal representation is free to change.
 
 use std::{
@@ -116,9 +118,13 @@ pub struct PathSegment {
     pub route_index: Option<u32>,
     /// `None` for walks. Human label (e.g. "Blue Line").
     pub route_name: Option<String>,
-    /// Node indices. Walk: `[start, end]` (len 2). Transit: `[boarding,
-    /// intermediate…, final_alight]` (len ≥ 2). The first node is always the
-    /// boarding/walk-start; the last the alight/walk-end.
+    /// Node indices forming the segment's path through the graph (len ≥ 2).
+    /// Walk: `[start, intermediate…, end]` — single-edge walks have len 2,
+    /// multi-edge walks include every intermediate node. Transit:
+    /// `[boarding, intermediate_stops…, final_alight]`. The first node is
+    /// always the boarding/walk-start; the last the alight/walk-end, so
+    /// adjacent segments chain: `seg[i].node_sequence.last() ==
+    /// seg[i+1].node_sequence.first()`.
     pub node_sequence: Vec<u32>,
 }
 
@@ -153,6 +159,15 @@ pub trait ProfileRouter: Sized {
     /// All Pareto-optimal paths to `destination`, sorted ascending by
     /// `home_departure`. Stop and route names resolved from `data`.
     fn optimal_paths(&self, data: &PreparedData, destination: u32) -> Vec<Path>;
+
+    /// Iterate the Pareto-optimal `(home_departure, arrival_time)` frontier
+    /// for `destination` over journeys with `arrival - home_departure ≤
+    /// max_time`, in ascending `home_departure` order. Both values are
+    /// absolute seconds-of-day. Empty if `destination` is unreachable within
+    /// the budget. Walking-only reachability (a constant-time fallback at
+    /// every home-departure) is *not* yielded as a discrete entry; consumers
+    /// that need it should compute it independently from the walk graph.
+    fn entries<'a>(&'a self, destination: u32) -> Box<dyn Iterator<Item = (u32, u32)> + 'a>;
 }
 
 // ============================================================================
@@ -484,6 +499,39 @@ impl ProfileRouter for SplitProfileRouting {
         }
         paths.sort_by_key(|p| (p.home_departure, p.arrival_time));
         paths
+    }
+
+    fn entries<'a>(&'a self, destination: u32) -> Box<dyn Iterator<Item = (u32, u32)> + 'a> {
+        // Concatenate per-chunk entries in chunk order (which is ascending
+        // window_start, hence ascending absolute home_departure). Within a
+        // chunk, frontier.iter yields ascending (home_departure, arrival).
+        // Entries with travel > max_time are search artifacts and skipped.
+        //
+        // Cross-chunk dedupe mirrors `optimal_paths` above: two adjacent
+        // chunks may report the same arrival_time, in which case the later
+        // chunk's entry dominates (later home_departure ⇒ shorter travel
+        // time at the same arrival).
+        let mut out: Vec<(u32, u32)> = Vec::new();
+        for chunk in &self.chunks {
+            let ws = chunk.query.window_start;
+            let max_time = chunk.query.max_time;
+            for entry in chunk.frontier.iter(destination) {
+                if (entry.arrival_delta - entry.home_departure_delta) as u32 > max_time {
+                    continue;
+                }
+                let pair = (
+                    ws + entry.home_departure_delta as u32,
+                    ws + entry.arrival_delta as u32,
+                );
+                if let Some(&last) = out.last()
+                    && last.1 == pair.1
+                {
+                    out.pop();
+                }
+                out.push(pair);
+            }
+        }
+        Box::new(out.into_iter())
     }
 }
 
@@ -983,9 +1031,15 @@ impl ProfileRouting {
                     if let Some(segment) = segments.last_mut()
                         && segment.kind == SegmentKind::Walk
                     {
-                        // Merge into the in-progress walk segment.
+                        // Merge into the in-progress walk segment. The
+                        // node_sequence is built in reverse-traversal order
+                        // (vec![curr, prev] at creation), so each merge step
+                        // appends the *new* backward step's prev_node — the
+                        // next earlier node along the walk. (Pushing
+                        // curr_node here would duplicate the prior step's
+                        // prev_node and lose the source-side endpoint.)
                         segment.start_time = delta_to_time(prev_arrival_delta);
-                        segment.node_sequence.push(curr_node);
+                        segment.node_sequence.push(prev_node);
                     } else {
                         let curr_arrival_time = get_true_arrival_delta(curr_node, &curr);
                         segments.push(PathSegment {
@@ -1093,6 +1147,59 @@ impl ProfileRouting {
             total_time: arrival_delta as u32 - home_departure_delta as u32,
             segments,
         }
+    }
+}
+
+/// Single-window profile router. Runs the same engine as one chunk of
+/// [`SplitProfileRouting`], without the splitting/merging machinery. Exposed
+/// so tests can cross-check the split engine against an equivalent unsplit
+/// pass; production callers should keep using [`SplitProfileRouting`].
+pub struct SinglePassProfileRouting {
+    inner: ProfileRouting,
+    isochrone: Isochrone,
+}
+
+impl ProfileRouter for SinglePassProfileRouting {
+    fn compute(
+        data: &PreparedData,
+        query: &ProfileQuery,
+        mut progress: impl FnMut(usize, usize) -> ControlFlow<()>,
+    ) -> ControlFlow<(), Self> {
+        let index = Arc::new(Index::new(data, query));
+        let inner = match ProfileRouting::compute_with_index(data, query, index, &mut progress) {
+            ControlFlow::Continue(r) => r,
+            ControlFlow::Break(()) => return ControlFlow::Break(()),
+        };
+        let chunks = std::slice::from_ref(&inner);
+        let isochrone = compute_isochrone_chunks(data, query, chunks, 1);
+        ControlFlow::Continue(Self { inner, isochrone })
+    }
+
+    fn isochrone(&self) -> &Isochrone {
+        &self.isochrone
+    }
+
+    fn optimal_paths(&self, data: &PreparedData, destination: u32) -> Vec<Path> {
+        let mut paths = self.inner.optimal_paths(data, destination);
+        paths.sort_by_key(|p| (p.home_departure, p.arrival_time));
+        paths
+    }
+
+    fn entries<'a>(&'a self, destination: u32) -> Box<dyn Iterator<Item = (u32, u32)> + 'a> {
+        let ws = self.inner.query.window_start;
+        let max_time = self.inner.query.max_time;
+        Box::new(
+            self.inner
+                .frontier
+                .iter(destination)
+                .filter(move |e| (e.arrival_delta - e.home_departure_delta) as u32 <= max_time)
+                .map(move |entry| {
+                    (
+                        ws + entry.home_departure_delta as u32,
+                        ws + entry.arrival_delta as u32,
+                    )
+                }),
+        )
     }
 }
 
