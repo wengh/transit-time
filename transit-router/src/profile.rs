@@ -161,12 +161,12 @@ pub trait ProfileRouter: Sized {
     fn optimal_paths(&self, data: &PreparedData, destination: u32) -> Vec<Path>;
 
     /// Iterate the Pareto-optimal `(home_departure, arrival_time)` frontier
-    /// for `destination` over journeys with `arrival - home_departure ≤
-    /// max_time`, in ascending `home_departure` order. Both values are
-    /// absolute seconds-of-day. Empty if `destination` is unreachable within
-    /// the budget. Walking-only reachability (a constant-time fallback at
-    /// every home-departure) is *not* yielded as a discrete entry; consumers
-    /// that need it should compute it independently from the walk graph.
+    /// for `destination`, in ascending `home_departure` order. Both values
+    /// are absolute seconds-of-day. Empty if `destination` is unreachable
+    /// by transit within the budget. Walking-only reachability
+    /// (a constant-time fallback at every home-departure) is
+    /// *not* yielded as a discrete entry; consumers that need it should
+    /// compute it independently from the walk graph.
     fn entries<'a>(&'a self, destination: u32) -> Box<dyn Iterator<Item = (u32, u32)> + 'a>;
 }
 
@@ -505,7 +505,6 @@ impl ProfileRouter for SplitProfileRouting {
         // Concatenate per-chunk entries in chunk order (which is ascending
         // window_start, hence ascending absolute home_departure). Within a
         // chunk, frontier.iter yields ascending (home_departure, arrival).
-        // Entries with travel > max_time are search artifacts and skipped.
         //
         // Cross-chunk dedupe mirrors `optimal_paths` above: two adjacent
         // chunks may report the same arrival_time, in which case the later
@@ -514,11 +513,7 @@ impl ProfileRouter for SplitProfileRouting {
         let mut out: Vec<(u32, u32)> = Vec::new();
         for chunk in &self.chunks {
             let ws = chunk.query.window_start;
-            let max_time = chunk.query.max_time;
             for entry in chunk.frontier.iter(destination) {
-                if (entry.arrival_delta - entry.home_departure_delta) as u32 > max_time {
-                    continue;
-                }
                 let pair = (
                     ws + entry.home_departure_delta as u32,
                     ws + entry.arrival_delta as u32,
@@ -806,24 +801,29 @@ impl ProfileRouting {
             }
             let node_id = node_id as u32;
             let window_length = (query.window_end - query.window_start) as u16;
+            let max_arrival = query.window_end + query.max_time;
             let _ = context.expand_transit_legs(
                 ExpandTransitLegQuery {
                     node: node_id,
                     min_departure: query.window_start + walk_time as u32,
-                    max_departure: query.window_end + query.max_time,
+                    max_departure: max_arrival,
+                    max_arrival,
                     // Expand headways during the flexible departure window but not past it.
                     expand_headways: true,
                 },
                 |leg| {
+                    // Clamp home departure to be within the query window
+                    let home_departure_delta = window_length.min(leg.board_delta - walk_time);
+                    if leg.arrival_delta - home_departure_delta > query.max_time as u16 {
+                        return;
+                    }
                     initial_transit_entries.push(PendingEntry {
                         node_id: leg.node_id,
                         entry: Entry {
-                            // Clamp home departure to be within the query window
-                            home_departure_delta: window_length.min(leg.board_delta - walk_time),
+                            home_departure_delta,
                             arrival_delta: leg.arrival_delta,
                         },
                     });
-                    ControlFlow::Continue(())
                 },
             );
         }
@@ -892,6 +892,7 @@ impl ProfileRouting {
                 }
 
                 // Relax transit legs
+                let max_arrival = home_departure_delta as u32 + query.max_time;
                 let min_departure_time =
                     query.window_start + arrival_delta as u32 + query.transfer_slack;
                 let mut max_departure_time = query.window_end + query.max_time;
@@ -924,7 +925,8 @@ impl ProfileRouting {
                     ExpandTransitLegQuery {
                         node: node_id,
                         min_departure: min_departure_time,
-                        max_departure: max_departure_time,
+                        max_departure: max_departure_time.min(max_arrival),
+                        max_arrival,
                         expand_headways: false,
                     },
                     |leg| {
@@ -937,8 +939,7 @@ impl ProfileRouting {
                                 home_departure_delta,
                                 arrival_delta: leg.arrival_delta,
                             },
-                        );
-                        ControlFlow::Continue(())
+                        )
                     },
                 );
             }
@@ -1187,19 +1188,12 @@ impl ProfileRouter for SinglePassProfileRouting {
 
     fn entries<'a>(&'a self, destination: u32) -> Box<dyn Iterator<Item = (u32, u32)> + 'a> {
         let ws = self.inner.query.window_start;
-        let max_time = self.inner.query.max_time;
-        Box::new(
-            self.inner
-                .frontier
-                .iter(destination)
-                .filter(move |e| (e.arrival_delta - e.home_departure_delta) as u32 <= max_time)
-                .map(move |entry| {
-                    (
-                        ws + entry.home_departure_delta as u32,
-                        ws + entry.arrival_delta as u32,
-                    )
-                }),
-        )
+        Box::new(self.inner.frontier.iter(destination).map(move |entry| {
+            (
+                ws + entry.home_departure_delta as u32,
+                ws + entry.arrival_delta as u32,
+            )
+        }))
     }
 }
 
@@ -1239,6 +1233,7 @@ struct ExpandTransitLegQuery {
     node: u32,
     min_departure: u32,
     max_departure: u32,
+    max_arrival: u32,
     expand_headways: bool,
 }
 
@@ -1403,25 +1398,22 @@ impl<'a> ProfileQueryContext<'a> {
         }
     }
 
-    /// For each transit vehicle departing `node` within `[min_departure, max_departure]`,
-    /// follow the trip forward and emit one [`TransitLeg`] per downstream stop, with
-    /// `arrival_delta` filled in. The boarding stop (`node`) is implicit in `transit_ref`
-    /// for path reconstruction. Covers both scheduled and frequency-based routes.
-    fn expand_transit_legs<F>(&self, query: ExpandTransitLegQuery, mut visit: F) -> ControlFlow<()>
+    /// Calls `visit` for each transit leg matching `query`
+    fn expand_transit_legs<F>(&self, query: ExpandTransitLegQuery, mut visit: F)
     where
-        F: FnMut(TransitLeg) -> ControlFlow<()>,
+        F: FnMut(TransitLeg),
     {
         let ExpandTransitLegQuery {
             node,
             min_departure,
             max_departure,
+            max_arrival,
             expand_headways,
         } = query;
 
         let Some(stop_idx) = self.data.node_to_stop(node) else {
-            return ControlFlow::Continue(());
+            return;
         };
-        let max_arrival = self.query.window_end + self.query.max_time;
 
         for &pat_idx in &self.index.patterns_at_stop[stop_idx as usize] {
             let pat = &self.data.patterns[pat_idx as usize];
@@ -1460,7 +1452,7 @@ impl<'a> ProfileQueryContext<'a> {
                         transit_ref: TransitRef::Scheduled {
                             event_idx: board_event_idx,
                         },
-                    })?;
+                    });
                     flat_idx = cur.next_event_index as usize;
                 }
             }
@@ -1511,7 +1503,7 @@ impl<'a> ProfileQueryContext<'a> {
                             arrival_delta: (arrival - self.query.window_start) as u16,
                             pattern_idx: pat_idx as u16,
                             transit_ref: TransitRef::Frequency { freq_idx: fi },
-                        })?;
+                        });
                         if f.next_freq_index == u32::MAX {
                             break;
                         }
@@ -1526,7 +1518,6 @@ impl<'a> ProfileQueryContext<'a> {
                 }
             }
         }
-        ControlFlow::Continue(())
     }
 
     /// Recover the predecessor edge for `(curr_node, curr)` during path
