@@ -278,16 +278,16 @@ TOTAL in-memory              105.90 MB
 
 === Load Timings ===
 Phase                           Time % of total
-parse nodes                   9.9 ms     5.6%
-parse edges                  16.4 ms     9.3%
-parse stops                   0.9 ms     0.5%
+parse nodes                   9.4 ms     5.5%
+parse edges                  15.0 ms     8.8%
+parse stops                   0.9 ms     0.6%
 parse route_names             0.0 ms     0.0%
 parse route_colors            0.0 ms     0.0%
-parse+index patterns        115.5 ms    65.4%
-parse leg_shapes              1.5 ms     0.8%
-build adj list               13.1 ms     7.4%
-build node_grid              19.3 ms    10.9%
-TOTAL                       176.7 ms
+parse+index patterns        110.5 ms    64.7%
+parse leg_shapes              1.3 ms     0.8%
+build adj list               13.9 ms     8.2%
+build node_grid              19.7 ms    11.5%
+TOTAL                       170.7 ms
 
 === Counts ===
 nodes                         514123
@@ -304,24 +304,24 @@ grid cells                      5935
 Source node: 440203
 Window: 00:00–27:00 (1620 min), max_time=45 min, slack=60s
 [profile] ...
-[profile] phase1(initial)=46.8ms phase2(transfer)=440.8ms phase3(totals)=15.5ms total=518.2ms initial_transit_entries=154114
+[profile] phase1(initial)=40.7ms phase2(transfer)=406.5ms phase3(totals)=7.0ms total=472.1ms initial_transit_entries=98276
 [profile] ...
-[profile/split] index_build=5.9ms compute_isochrone=9.9ms chunks=24
-  run 1/10: 0.634 s
-  run 2/10: 0.542 s
-  run 3/10: 0.521 s
-  run 4/10: 0.510 s
-  run 5/10: 0.507 s
-  run 6/10: 0.536 s
-  run 7/10: 0.496 s
-  run 8/10: 0.488 s
-  run 9/10: 0.634 s
-  run 10/10: 0.589 s
+[profile/split] index_build=5.8ms compute_isochrone=5.8ms chunks=24
+  run 1/10: 0.514 s
+  run 2/10: 0.401 s
+  run 3/10: 0.400 s
+  run 4/10: 0.392 s
+  run 5/10: 0.406 s
+  run 6/10: 0.393 s
+  run 7/10: 0.410 s
+  run 8/10: 0.428 s
+  run 9/10: 0.440 s
+  run 10/10: 0.420 s
 
-Profile routing (10 runs, 24 threads): avg 0.546 s, min 0.488 s, max 0.634 s
-Nodes reached: 309895 / 514123
-Min travel time: 0 min, avg: 37 min, max: 45 min
-Always reachable (fraction=1): 26654, sometimes: 283241
+Profile routing (10 runs, 24 threads): avg 0.420 s, min 0.392 s, max 0.514 s
+Nodes reached: 254604 / 514123
+Min travel time: 0 min, avg: 36 min, max: 45 min
+Always reachable (fraction=1): 26654, sometimes: 227950
 ```
 
 **Binary sizes** (regenerate with `make sizes`):
