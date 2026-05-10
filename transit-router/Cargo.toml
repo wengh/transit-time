@@ -25,3 +25,4 @@ transit-prep = { path = "../transit-prep" }
 flate2 = "1"
 rand = "0.9"
 rand_xoshiro = "0.7"
+chrono = { version = "0.4", features = ["clock"] }

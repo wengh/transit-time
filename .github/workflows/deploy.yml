@@ -98,11 +98,15 @@ jobs:
         run: make data-all
 
       # ── Tests ──────────────────────────────────────────────────────────────
-      # Property tests for the router. Run after data is available (the
-      # router test fixture is `chicago.bin`) and before WASM so a router
-      # regression fails fast without burning the PGO training cycle.
-      - name: Run router tests
-        run: make test
+      # Property tests for the router across a 3-city matrix. Each city runs
+      # in its own cargo process so a failure clearly identifies the offending
+      # fixture.
+      - name: Run router tests (chicago)
+        run: make test TEST_CITY=chicago
+      - name: Run router tests (hong_kong)
+        run: make test TEST_CITY=hong_kong
+      - name: Run router tests (paris)
+        run: make test TEST_CITY=paris
 
       # ── WASM (PGO-optimized) ───────────────────────────────────────────────
       # `make wasm` trains a native profile against chicago.bin (built above)

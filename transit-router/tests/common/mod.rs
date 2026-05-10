@@ -15,7 +15,20 @@ use transit_router::data::{self, PreparedData};
 use transit_router::profile::{Isochrone, ProfileQuery, ProfileRouter, SplitProfileRouting};
 use transit_router::router::{patterns_for_date, snap_to_node};
 
-const FIXTURE: &str = "../transit-viz/public/data/chicago.bin";
+/// Path to the fixture `.bin` file. Selected by `ROUTER_TEST_CITY`
+/// (default: `chicago`). Resolved once per test process, logged on
+/// first use so a CI failure can be reproduced locally by re-exporting
+/// the same city. Combined with `ROUTER_TEST_SEED`, the full repro line
+/// is `ROUTER_TEST_CITY=<city> ROUTER_TEST_SEED=<n> make test TEST_CITY=<city>`.
+fn fixture_path() -> &'static str {
+    static ONCE: OnceLock<String> = OnceLock::new();
+    ONCE.get_or_init(|| {
+        let city = std::env::var("ROUTER_TEST_CITY").unwrap_or_else(|_| "chicago".to_string());
+        eprintln!("[router_tests] ROUTER_TEST_CITY={city}");
+        format!("../transit-viz/public/data/{city}.bin")
+    })
+    .as_str()
+}
 
 /// Per-process RNG seed. Logged once on first use so a failure can be
 /// reproduced by re-running with `ROUTER_TEST_SEED=<n>`. Setting the env
@@ -49,7 +62,8 @@ fn run_seed() -> u64 {
 pub fn load_fixture() -> &'static PreparedData {
     static ONCE: OnceLock<PreparedData> = OnceLock::new();
     ONCE.get_or_init(|| {
-        let raw = std::fs::read(FIXTURE).unwrap_or_else(|e| panic!("read {FIXTURE}: {e}"));
+        let path = fixture_path();
+        let raw = std::fs::read(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
         let bytes: Vec<u8> = if raw.starts_with(&[0x1f, 0x8b]) {
             let mut decoder = GzDecoder::new(&raw[..]);
             let mut out = Vec::new();
@@ -62,45 +76,28 @@ pub fn load_fixture() -> &'static PreparedData {
     })
 }
 
-/// First date with at least one active pattern. Discovered by scanning forward
-/// from the median pattern start_date so we land inside the GTFS validity
-/// window regardless of when the fixture was built.
-pub fn active_date(data: &PreparedData) -> u32 {
+/// Date the test queries run against. Defaults to today in local time, so
+/// tests always target service that is currently valid for whichever fixture
+/// is loaded. Override via `ROUTER_TEST_DATE=YYYYMMDD` to reproduce a
+/// specific failure. Logged once on first use — a CI failure reproduces
+/// locally with `ROUTER_TEST_CITY=<c> ROUTER_TEST_DATE=<d> ROUTER_TEST_SEED=<s>`.
+pub fn test_date() -> u32 {
     static ONCE: OnceLock<u32> = OnceLock::new();
     *ONCE.get_or_init(|| {
-        let mut starts: Vec<u32> = data
-            .patterns
-            .iter()
-            .map(|p| p.start_date)
-            .filter(|&d| d > 0)
-            .collect();
-        starts.sort_unstable();
-        let base = if starts.is_empty() {
-            20260101
+        if let Ok(s) = std::env::var("ROUTER_TEST_DATE") {
+            let d: u32 = s.parse().unwrap_or_else(|e| {
+                panic!("ROUTER_TEST_DATE={s:?} is not a YYYYMMDD integer: {e}")
+            });
+            eprintln!("[router_tests] ROUTER_TEST_DATE={d} (pinned)");
+            d
         } else {
-            starts[starts.len() / 2]
-        };
-        for offset in 0..400 {
-            let d = add_days(base, offset);
-            if !patterns_for_date(data, d).is_empty() {
-                return d;
-            }
+            use chrono::Datelike;
+            let today = chrono::Local::now().date_naive();
+            let d = today.year() as u32 * 10000 + today.month() * 100 + today.day();
+            eprintln!("[router_tests] ROUTER_TEST_DATE={d}; reproduce with ROUTER_TEST_DATE={d}");
+            d
         }
-        panic!("no active service within 400 days of {base}");
     })
-}
-
-fn add_days(yyyymmdd: u32, days: u32) -> u32 {
-    let y = (yyyymmdd / 10000) as i32;
-    let m = ((yyyymmdd / 100) % 100) as u32;
-    let d = (yyyymmdd % 100) as u32;
-    let mut date = chrono::NaiveDate::from_ymd_opt(y, m, d)
-        .unwrap_or_else(|| panic!("invalid date {yyyymmdd}"));
-    for _ in 0..days {
-        date = date.succ_opt().expect("date overflow");
-    }
-    use chrono::Datelike;
-    date.year() as u32 * 10000 + date.month() * 100 + date.day()
 }
 
 // =============================================================================
@@ -112,7 +109,7 @@ fn add_days(yyyymmdd: u32, days: u32) -> u32 {
 /// per-process by default (logged so failures are reproducible) or the value
 /// of `ROUTER_TEST_SEED` if set.
 pub fn baseline_query(data: &PreparedData, test_id: &str) -> ProfileQuery {
-    let date = active_date(data);
+    let date = test_date();
     let window_start = 9 * 3600; // 09:00
     let window_end = 10 * 3600; //  10:00
     let max_time = 45 * 60;

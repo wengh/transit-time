@@ -164,6 +164,8 @@ The tests are deliberately written as **behavior-level invariants and metamorphi
 
 Each property runs `ROUTER_TEST_ITERS` times (default 10) against a different source picked by temperature-weighted anchor sampling over busy stops + uniform pick within a 15-minute walk. Each run picks a fresh random seed and logs it as `[router_tests] random seed <n>; reproduce with ROUTER_TEST_SEED=<n>`, so a CI failure can be reproduced locally by pinning that seed.
 
+By default the suite runs against the `chicago.bin` fixture on today's date in local time. To run against a different city: `make test TEST_CITY=hong_kong`. To run the full multi-city sweep (chicago, hong_kong, paris) — one `cargo test` process per city — use `make test-all`. CI runs each city as a separate step so a failing city is identifiable without log scraping. Override the in-process city via `ROUTER_TEST_CITY=<city>` or the query date via `ROUTER_TEST_DATE=YYYYMMDD` if invoking `cargo test` directly. The full repro tuple for a CI failure is `ROUTER_TEST_CITY=<c> ROUTER_TEST_DATE=<d> ROUTER_TEST_SEED=<s>` — all three are logged at the start of each test's output.
+
 ### Formatting
 
 `cargo fmt` formats Rust; `prettier` formats the frontend (TS/TSX/CSS/HTML/JSON/MD inside `transit-viz/`).

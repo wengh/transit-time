@@ -1,4 +1,4 @@
-.PHONY: dev wasm clean data-all data data-some flamegraph sizes test
+.PHONY: dev wasm clean data-all data data-some flamegraph sizes test test-all
 
 # Normalize: accept either lowercase (city=, cities=) or uppercase (CITY=, CITIES=)
 CITY   ?= $(city)
@@ -71,16 +71,35 @@ flamegraph: $(if $(NO_PGO),,$(PROFDATA))
 sizes:
 	./scripts/sizes.py
 
-# Run router property tests. Requires transit-viz/public/data/chicago.bin
-# (built automatically if missing via `make data CITY=chicago`; this is the
-# same fixture the WASM PGO build trains against, so a cached chicago.bin
-# is reused across `make test` and `make wasm`).
+# Run router property tests against a single city fixture. The TEST_CITY
+# variable selects which `.bin` to load (default: chicago). The bin is
+# built automatically if missing via the pattern rule below. For chicago,
+# this is the same fixture the WASM PGO build trains against, so a cached
+# chicago.bin is reused across `make test` and `make wasm`.
+#
 # Override the source-selection seed via ROUTER_TEST_SEED=<u64>.
-test: transit-viz/public/data/chicago.bin
-	cargo test --release -p transit-router --tests
+# ROUTER_TEST_CITY is exported so the tests' fixture_path() logs the city.
+#
+# Note: TEST_CITY is deliberately distinct from the CITY variable used by
+# `make data CITY=<name>` to avoid crosstalk when both are set in the same
+# shell.
+TEST_CITY ?= chicago
 
-transit-viz/public/data/chicago.bin:
-	$(MAKE) data CITY=chicago
+test: transit-viz/public/data/$(TEST_CITY).bin
+	ROUTER_TEST_CITY=$(TEST_CITY) cargo test --release -p transit-router --tests
+
+# Run the full city-matrix sweep. One `cargo test` process per city, run
+# sequentially — parallelizing would oversubscribe (each run already uses
+# rayon internally) and obscure failure attribution. Fail-fast: the first
+# failing city stops the run.
+test-all:
+	$(MAKE) test TEST_CITY=chicago
+	$(MAKE) test TEST_CITY=hong_kong
+	$(MAKE) test TEST_CITY=paris
+
+# Pattern rule: build any city's bin file on demand by delegating to `make data`.
+transit-viz/public/data/%.bin:
+	$(MAKE) data CITY=$*
 
 clean:
 	cargo clean
