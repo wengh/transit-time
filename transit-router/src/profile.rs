@@ -473,22 +473,23 @@ impl ProfileRouter for SplitProfileRouting {
             maybe_par_collect(&self.chunks, |chunk| chunk.optimal_paths(data, destination));
 
         for chunk_result in chunk_results {
+            if let Some(prev) = paths.last()
+                && let Some(next) = chunk_result.first()
+                && prev.arrival_time == next.arrival_time
+            {
+                // Two paths may have the same arrival time
+                // when crossing chunk boundary.
+                // In this case the one from later chunk is
+                // always optimal since
+                // it has a later home departure time.
+                paths.pop();
+            }
             for path in chunk_result {
                 if path.segments.iter().all(|s| s.kind == SegmentKind::Walk) {
                     if walk_path.is_none() {
                         walk_path = Some(path);
                     }
                     continue;
-                }
-                if let Some(last) = paths.last()
-                    && last.arrival_time == path.arrival_time
-                {
-                    // Two paths may have the same arrival time
-                    // when crossing chunk boundary.
-                    // In this case the one from later chunk is
-                    // always optimal since
-                    // it has a later home departure time.
-                    paths.pop();
                 }
                 paths.push(path);
             }
