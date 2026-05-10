@@ -1262,6 +1262,18 @@ impl Index {
                     patterns_at_stop[s].push(pat_idx as u32);
                 }
             }
+            // Frequency chains have no terminal-arrival sentinel like scheduled trips
+            // do (binary.rs trip-final sentinel), so the chain's last `next_stop_index`
+            // isn't indexed by `freq_by_stop`. Add it so recovery can find chains
+            // arriving here.
+            for f in &pat.frequency_routes {
+                if f.next_freq_index == u32::MAX {
+                    let s = f.next_stop_index as usize;
+                    if patterns_at_stop[s].last() != Some(&(pat_idx as u32)) {
+                        patterns_at_stop[s].push(pat_idx as u32);
+                    }
+                }
+            }
         }
         let mut pattern_reverse: Vec<Option<PatternReverse>> =
             (0..data.patterns.len()).map(|_| None).collect();

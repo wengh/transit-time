@@ -34,13 +34,12 @@ fn main() {
     };
     let prepared = transit_router::data::load(bytes).expect("load");
 
-    // Source from todo.md line 81: 41.883251, -87.627007 (Chicago Loop)
-    let source = transit_router::router::snap_to_node(&prepared, 41.883251, -87.627007).unwrap();
+    let source = transit_router::router::snap_to_node(&prepared, 22.29969, 114.18028).unwrap();
     let query = ProfileQuery {
         source_node: source,
-        window_start: 11 * 3600,
-        window_end: 12 * 3600,
-        date: 20260416, // Thursday, per todo.md line 85
+        window_start: 0,
+        window_end: 97200,
+        date: 20260509,
         transfer_slack: 60,
         max_time: 45 * 60,
     };
