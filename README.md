@@ -280,16 +280,16 @@ TOTAL in-memory              105.75 MB
 
 === Load Timings ===
 Phase                           Time % of total
-parse nodes                   7.6 ms     5.0%
-parse edges                  12.7 ms     8.3%
-parse stops                   0.8 ms     0.5%
+parse nodes                   8.6 ms     5.2%
+parse edges                  14.6 ms     8.7%
+parse stops                   1.0 ms     0.6%
 parse route_names             0.0 ms     0.0%
 parse route_colors            0.0 ms     0.0%
-parse+index patterns         99.9 ms    65.2%
-parse leg_shapes              1.5 ms     1.0%
-build adj list               12.4 ms     8.1%
-build node_grid              18.4 ms    12.0%
-TOTAL                       153.4 ms
+parse+index patterns        107.9 ms    64.8%
+parse leg_shapes              1.4 ms     0.8%
+build adj list               13.0 ms     7.8%
+build node_grid              20.0 ms    12.0%
+TOTAL                       166.4 ms
 
 === Counts ===
 nodes                         514123
@@ -306,25 +306,25 @@ grid cells                      5935
 Source node: 440203
 Window: 00:00–27:00 (1620 min), max_time=45 min, slack=60s
 [profile] ...
-[profile] phase1(initial)=30.6ms phase2(transfer)=276.2ms phase3(totals)=13.3ms total=337.5ms initial_transit_entries=91254
+[profile] phase1(initial)=39.6ms phase2(transfer)=426.2ms phase3(totals)=42.6ms total=520.8ms initial_transit_entries=91254
 [profile] ...
-[profile/split] index_build=5.1ms compute_isochrone=4.8ms chunks=24
-  run 1/10: 0.386 s
-  run 2/10: 0.348 s
-  run 3/10: 0.345 s
-  run 4/10: 0.330 s
-  run 5/10: 0.332 s
-  run 6/10: 0.338 s
-  run 7/10: 0.327 s
-  run 8/10: 0.326 s
-  run 9/10: 0.332 s
-  run 10/10: 0.332 s
+[profile/split] index_build=5.8ms compute_isochrone=5.7ms chunks=24
+  run 1/10: 0.536 s
+  run 2/10: 0.502 s
+  run 3/10: 0.517 s
+  run 4/10: 0.483 s
+  run 5/10: 0.463 s
+  run 6/10: 0.446 s
+  run 7/10: 0.466 s
+  run 8/10: 0.450 s
+  run 9/10: 0.448 s
+  run 10/10: 0.449 s
 
-Profile routing (10 runs, 24 threads): avg 0.340 s, min 0.326 s, max 0.386 s
-Nodes reached: 254604 / 514123
-Total profile entries: 41614708
-Min travel time: 0 min, avg: 36 min, max: 45 min
-Always reachable (fraction=1): 26654, sometimes: 227950
+Profile routing (10 runs, 24 threads): avg 0.476 s, min 0.446 s, max 0.536 s
+Nodes reached: 315721 / 514123
+Total profile entries: 48628964
+Min travel time: 0 min, avg: 37 min, max: 45 min
+Always reachable (fraction=1): 26654, sometimes: 289067
 ```
 
 **Binary sizes** (regenerate with `make sizes`):
@@ -332,24 +332,24 @@ Always reachable (fraction=1): 26654, sometimes: 227950
 <!-- BEGIN sizes -->
 | City | Compressed |
 |---|---|
-| Berlin | 11.1M |
-| Boston | 4.2M |
-| Calgary | 3.0M |
-| Chicago | 8.2M |
+| Berlin | 11.4M |
+| Boston | 3.1M |
+| Calgary | 2.8M |
+| Chicago | 8.0M |
 | Hong Kong | 8.7M |
-| Los Angeles | 9.7M |
+| Los Angeles | 9.4M |
 | Madrid | 8.3M |
 | Mexico City | 1.5M |
-| Montreal | 22.5M |
+| Montreal | 22.3M |
 | Moscow | 4.9M |
 | New York City | 18.1M |
-| Ottawa | 8.0M |
-| Paris | 17.5M |
+| Ottawa | 11.9M |
+| Paris | 17.1M |
 | Philadelphia | 4.3M |
-| San Francisco Bay Area | 10.2M |
+| San Francisco Bay Area | 10.0M |
 | Seattle | 5.4M |
-| Toronto | 14.5M |
-| Vancouver | 5.4M |
+| Toronto | 16.7M |
+| Vancouver | 5.3M |
 | Washington | 11.3M |
 | Waterloo | 1.4M |
 <!-- END sizes -->
