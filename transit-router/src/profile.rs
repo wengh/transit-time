@@ -1676,31 +1676,41 @@ impl<'a> ProfileQueryContext<'a> {
                     continue;
                 }
                 // Walk backward from the arrival's predecessor through the
-                // trip chain. Each visited event is a candidate boarding.
+                // trip chain. Each visited event is a candidate boarding;
+                // we keep the *earliest* valid one so a continuous ride is
+                // attributed to its true boarding stop. Returning at the
+                // first (= latest) hit was producing phantom transfers when
+                // a stop's dwell happened to satisfy `transfer_slack` —
+                // e.g., NYC R at Canal St where the 60s dwell exactly
+                // matches the default slack.
+                let mut best: Option<(u32, u32, u32, Option<Entry>)> = None;
                 let mut k_idx = prev_idx;
                 loop {
                     let k_event = &events_data[k_idx as usize];
                     let board_node = data.stop_to_node(k_event.stop_index);
                     let board_time = k_event.time_offset;
                     if let Some(prev_entry) = check_boarding(board_node, board_time) {
-                        let leg = TransitLeg {
-                            node_id: curr_node,
-                            board_delta: (board_time - window_start) as u16,
-                            arrival_delta: a,
-                            pattern_idx: pat_idx as u16,
-                            transit_ref: TransitRef::Scheduled { event_idx: k_idx },
-                        };
-                        return Some(EdgeRecovery {
-                            prev_node: board_node,
-                            prev_entry,
-                            kind: EdgeKind::Transit { leg },
-                        });
+                        best = Some((k_idx, board_node, board_time, prev_entry));
                     }
                     let earlier = pat_rev.event_prev[k_idx as usize];
                     if earlier == u32::MAX {
                         break;
                     }
                     k_idx = earlier;
+                }
+                if let Some((k_idx, board_node, board_time, prev_entry)) = best {
+                    let leg = TransitLeg {
+                        node_id: curr_node,
+                        board_delta: (board_time - window_start) as u16,
+                        arrival_delta: a,
+                        pattern_idx: pat_idx as u16,
+                        transit_ref: TransitRef::Scheduled { event_idx: k_idx },
+                    };
+                    return Some(EdgeRecovery {
+                        prev_node: board_node,
+                        prev_entry,
+                        kind: EdgeKind::Transit { leg },
+                    });
                 }
             }
         }
@@ -1716,6 +1726,12 @@ impl<'a> ProfileQueryContext<'a> {
                 if fi.next_stop_index != curr_stop || fi.travel_time == 0 {
                     continue;
                 }
+                // Mirror the scheduled branch: walk the entire frequency
+                // chain backward and keep the *earliest* valid boarding so
+                // a continuous ride is attributed to its true origin
+                // (eliminates phantom mid-trip transfers when an
+                // intermediate stop's dwell satisfies transfer_slack).
+                let mut best: Option<(u32, u32, u32, Option<Entry>)> = None;
                 let mut chain_idx = i as u32;
                 let mut cumulative_after: u32 = fi.travel_time;
                 loop {
@@ -1733,20 +1749,7 @@ impl<'a> ProfileQueryContext<'a> {
                     if valid {
                         let board_node = data.stop_to_node(curr_freq.stop_index);
                         if let Some(prev_entry) = check_boarding(board_node, board_time) {
-                            let leg = TransitLeg {
-                                node_id: curr_node,
-                                board_delta: (board_time - window_start) as u16,
-                                arrival_delta: a,
-                                pattern_idx: pat_idx as u16,
-                                transit_ref: TransitRef::Frequency {
-                                    freq_idx: chain_idx,
-                                },
-                            };
-                            return Some(EdgeRecovery {
-                                prev_node: board_node,
-                                prev_entry,
-                                kind: EdgeKind::Transit { leg },
-                            });
+                            best = Some((chain_idx, board_node, board_time, prev_entry));
                         }
                     }
                     let earlier = pat_rev.freq_prev[chain_idx as usize];
@@ -1759,6 +1762,22 @@ impl<'a> ProfileQueryContext<'a> {
                     }
                     cumulative_after = cumulative_after.saturating_add(prev_freq.travel_time);
                     chain_idx = earlier;
+                }
+                if let Some((chain_idx, board_node, board_time, prev_entry)) = best {
+                    let leg = TransitLeg {
+                        node_id: curr_node,
+                        board_delta: (board_time - window_start) as u16,
+                        arrival_delta: a,
+                        pattern_idx: pat_idx as u16,
+                        transit_ref: TransitRef::Frequency {
+                            freq_idx: chain_idx,
+                        },
+                    };
+                    return Some(EdgeRecovery {
+                        prev_node: board_node,
+                        prev_entry,
+                        kind: EdgeKind::Transit { leg },
+                    });
                 }
             }
         }
