@@ -906,7 +906,7 @@ impl ProfileRouting {
                 }
 
                 // Relax transit legs
-                let max_arrival = home_departure_delta as u32 + query.max_time;
+                let max_arrival = query.window_start + home_departure_delta as u32 + query.max_time;
                 let min_departure_time =
                     query.window_start + arrival_delta as u32 + query.transfer_slack;
                 let mut max_departure_time = query.window_end + query.max_time;
