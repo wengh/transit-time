@@ -168,6 +168,8 @@ pub trait ProfileRouter: Sized {
     /// *not* yielded as a discrete entry; consumers that need it should
     /// compute it independently from the walk graph.
     fn entries<'a>(&'a self, destination: u32) -> Box<dyn Iterator<Item = (u32, u32)> + 'a>;
+
+    fn stats(&self) -> String;
 }
 
 // ============================================================================
@@ -528,6 +530,17 @@ impl ProfileRouter for SplitProfileRouting {
             }
         }
         Box::new(out.into_iter())
+    }
+
+    fn stats(&self) -> String {
+        let total_entries: usize = self
+            .chunks
+            .iter()
+            .map(|c| {
+                c.frontier.arena.len() + c.frontier.nodes.iter().filter(|n| n.has_head()).count()
+            })
+            .sum();
+        format!("Total profile entries: {total_entries}")
     }
 }
 
@@ -1195,6 +1208,10 @@ impl ProfileRouter for SinglePassProfileRouting {
                 ws + entry.arrival_delta as u32,
             )
         }))
+    }
+
+    fn stats(&self) -> String {
+        String::new()
     }
 }
 

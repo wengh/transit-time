@@ -253,14 +253,14 @@ cargo run --release --bin benchmark_smoke -- transit-viz/public/data/chicago.bin
 === Binary Section Sizes (decompressed) ===
 Section                          Bytes % of total
 header                            32 B     0.0%
-nodes                          1.16 MB    13.1%
-edges                          1.26 MB    14.2%
-stops                         665.0 KB     7.4%
+nodes                          1.16 MB    13.4%
+edges                          1.26 MB    14.5%
+stops                         665.0 KB     7.5%
 route_names                     1.5 KB     0.0%
 route_colors                     844 B     0.0%
-patterns                       5.41 MB    61.3%
-leg_shapes                    360.4 KB     4.0%
-TOTAL decompressed             8.83 MB
+patterns                       5.22 MB    60.4%
+leg_shapes                    360.4 KB     4.1%
+TOTAL decompressed             8.64 MB
 
 === In-Memory Sizes ===
 Structure                        Bytes % of total
@@ -269,27 +269,27 @@ edges                         10.13 MB     9.6%
 stops                         998.5 KB     0.9%
 route_names                     5.6 KB     0.0%
 route_colors                     844 B     0.0%
-patterns/events               54.97 MB    51.9%
+patterns/events               55.01 MB    52.0%
 patterns/freq                  3.13 MB     3.0%
 patterns/other                   124 B     0.0%
 adj list                      15.47 MB    14.6%
 leg_shapes                     1.31 MB     1.2%
 node_grid                      3.24 MB     3.1%
-input buf                      8.83 MB     8.3%
-TOTAL in-memory              105.90 MB
+input buf                      8.64 MB     8.2%
+TOTAL in-memory              105.75 MB
 
 === Load Timings ===
 Phase                           Time % of total
-parse nodes                   9.4 ms     5.5%
-parse edges                  15.0 ms     8.8%
-parse stops                   0.9 ms     0.6%
+parse nodes                   7.6 ms     5.0%
+parse edges                  12.7 ms     8.3%
+parse stops                   0.8 ms     0.5%
 parse route_names             0.0 ms     0.0%
 parse route_colors            0.0 ms     0.0%
-parse+index patterns        110.5 ms    64.7%
-parse leg_shapes              1.3 ms     0.8%
-build adj list               13.9 ms     8.2%
-build node_grid              19.7 ms    11.5%
-TOTAL                       170.7 ms
+parse+index patterns         99.9 ms    65.2%
+parse leg_shapes              1.5 ms     1.0%
+build adj list               12.4 ms     8.1%
+build node_grid              18.4 ms    12.0%
+TOTAL                       153.4 ms
 
 === Counts ===
 nodes                         514123
@@ -298,7 +298,7 @@ stops                          17076
 patterns                          48
 route_names                      211
 leg_shapes                     21570
-total events (raw)           3397896
+total events (raw)           3400091
 sentinel events                    0
 total freq entries                 0
 grid cells                      5935
@@ -306,22 +306,23 @@ grid cells                      5935
 Source node: 440203
 Window: 00:00–27:00 (1620 min), max_time=45 min, slack=60s
 [profile] ...
-[profile] phase1(initial)=40.7ms phase2(transfer)=406.5ms phase3(totals)=7.0ms total=472.1ms initial_transit_entries=98276
+[profile] phase1(initial)=30.6ms phase2(transfer)=276.2ms phase3(totals)=13.3ms total=337.5ms initial_transit_entries=91254
 [profile] ...
-[profile/split] index_build=5.8ms compute_isochrone=5.8ms chunks=24
-  run 1/10: 0.514 s
-  run 2/10: 0.401 s
-  run 3/10: 0.400 s
-  run 4/10: 0.392 s
-  run 5/10: 0.406 s
-  run 6/10: 0.393 s
-  run 7/10: 0.410 s
-  run 8/10: 0.428 s
-  run 9/10: 0.440 s
-  run 10/10: 0.420 s
+[profile/split] index_build=5.1ms compute_isochrone=4.8ms chunks=24
+  run 1/10: 0.386 s
+  run 2/10: 0.348 s
+  run 3/10: 0.345 s
+  run 4/10: 0.330 s
+  run 5/10: 0.332 s
+  run 6/10: 0.338 s
+  run 7/10: 0.327 s
+  run 8/10: 0.326 s
+  run 9/10: 0.332 s
+  run 10/10: 0.332 s
 
-Profile routing (10 runs, 24 threads): avg 0.420 s, min 0.392 s, max 0.514 s
+Profile routing (10 runs, 24 threads): avg 0.340 s, min 0.326 s, max 0.386 s
 Nodes reached: 254604 / 514123
+Total profile entries: 41614708
 Min travel time: 0 min, avg: 36 min, max: 45 min
 Always reachable (fraction=1): 26654, sometimes: 227950
 ```

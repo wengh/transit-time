@@ -139,6 +139,8 @@ fn main() {
         iso.mean_travel_time.len()
     );
 
+    println!("{}", routing.stats());
+
     if !reachable.is_empty() {
         let min_t = reachable.iter().copied().min().unwrap_or(0);
         let max_t = reachable.iter().copied().max().unwrap_or(0);
