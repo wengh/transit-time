@@ -1079,7 +1079,7 @@ impl ProfileRouting {
                                 if event.stop_index == end_stop {
                                     reached_end_stop = true;
                                 }
-                                if event.next_event_index == u32::MAX {
+                                if event.is_trip_end() {
                                     break pat.sentinel_routes[&(curr_event_idx as u32)];
                                 }
                                 curr_event_idx = event.next_event_index;
@@ -1268,7 +1268,7 @@ impl Index {
             // isn't indexed by `freq_by_stop`. Add it so recovery can find chains
             // arriving here.
             for f in &pat.frequency_routes {
-                if f.next_freq_index == u32::MAX {
+                if f.is_last_leg() {
                     let s = f.next_stop_index as usize;
                     if patterns_at_stop[s].last() != Some(&(pat_idx as u32)) {
                         patterns_at_stop[s].push(pat_idx as u32);
@@ -1440,8 +1440,8 @@ impl<'a> ProfileQueryContext<'a> {
                 if event.time_offset > max_departure {
                     break;
                 }
-                if event.travel_time == 0 {
-                    continue; // sentinel
+                if event.is_trip_end() {
+                    continue; // sentinel — not boardable
                 }
                 let board_delta = (event.time_offset - self.query.window_start) as u16;
                 let board_event_idx = (base + start + j) as u32;
@@ -1449,7 +1449,7 @@ impl<'a> ProfileQueryContext<'a> {
 
                 loop {
                     let cur = &pat.stop_index.events_by_stop.data[flat_idx];
-                    if cur.travel_time == 0 || cur.next_event_index == u32::MAX {
+                    if cur.is_trip_end() {
                         break;
                     }
                     let arrival = cur.time_offset + cur.travel_time;
@@ -1473,9 +1473,6 @@ impl<'a> ProfileQueryContext<'a> {
             // ── Frequency-based ───────────────────────────────────────────────
             for &fi in &pat.stop_index.freq_by_stop[stop_idx] {
                 let freq = &pat.frequency_routes[fi as usize];
-                if freq.travel_time == 0 {
-                    continue;
-                }
                 if min_departure >= freq.end_time {
                     continue;
                 }
@@ -1502,9 +1499,6 @@ impl<'a> ProfileQueryContext<'a> {
 
                     loop {
                         let f = &pat.frequency_routes[freq_idx as usize];
-                        if f.travel_time == 0 {
-                            break;
-                        }
                         elapsed += f.travel_time;
                         let arrival = board + elapsed;
                         if arrival > max_arrival {
@@ -1517,7 +1511,7 @@ impl<'a> ProfileQueryContext<'a> {
                             pattern_idx: pat_idx as u16,
                             transit_ref: TransitRef::Frequency { freq_idx: fi },
                         });
-                        if f.next_freq_index == u32::MAX {
+                        if f.is_last_leg() {
                             break;
                         }
                         freq_idx = f.next_freq_index;
@@ -1723,7 +1717,7 @@ impl<'a> ProfileQueryContext<'a> {
                 .expect("active pattern has reverse data");
             let freqs = &pat.frequency_routes;
             for (i, fi) in freqs.iter().enumerate() {
-                if fi.next_stop_index != curr_stop || fi.travel_time == 0 {
+                if fi.next_stop_index != curr_stop {
                     continue;
                 }
                 // Mirror the scheduled branch: walk the entire frequency
@@ -1736,9 +1730,6 @@ impl<'a> ProfileQueryContext<'a> {
                 let mut cumulative_after: u32 = fi.travel_time;
                 loop {
                     let curr_freq = &freqs[chain_idx as usize];
-                    if curr_freq.travel_time == 0 {
-                        break;
-                    }
                     if (target_arrival_abs as u64) < cumulative_after as u64 {
                         break;
                     }
@@ -1757,9 +1748,6 @@ impl<'a> ProfileQueryContext<'a> {
                         break;
                     }
                     let prev_freq = &freqs[earlier as usize];
-                    if prev_freq.travel_time == 0 {
-                        break;
-                    }
                     cumulative_after = cumulative_after.saturating_add(prev_freq.travel_time);
                     chain_idx = earlier;
                 }

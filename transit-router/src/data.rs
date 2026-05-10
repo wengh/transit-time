@@ -59,6 +59,17 @@ pub struct EventData {
     pub next_event_index: u32, // u32::MAX if it's the last event in the trip
 }
 
+impl EventData {
+    /// True for the synthetic arrival-only event appended to each trip in
+    /// `transit-prep`. Sentinels carry the final stop's arrival time and have
+    /// no successor (`next_event_index == u32::MAX`, `travel_time == 0`); they
+    /// must not be used as boarding candidates or traversed as legs. Every non-sentinel event has `travel_time > 0`.
+    #[inline]
+    pub fn is_trip_end(&self) -> bool {
+        self.next_event_index == u32::MAX
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct FreqData {
     pub route_index: u32,
@@ -70,6 +81,15 @@ pub struct FreqData {
     pub travel_time: u32,
     /// Index of the next FreqData in the same trip, or u32::MAX if last leg.
     pub next_freq_index: u32,
+}
+
+impl FreqData {
+    /// True for the last leg of a frequency-based trip — i.e. no successor
+    /// leg to chain into.
+    #[inline]
+    pub fn is_last_leg(&self) -> bool {
+        self.next_freq_index == u32::MAX
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -155,7 +175,8 @@ pub struct PatternData {
     pub max_time: u32,
     pub frequency_routes: Vec<FreqData>,
     pub stop_index: PatternStopIndex,
-    /// Maps flat event index to route_index for sentinel events (travel_time == 0 and next_event_index == u32::MAX).
+    /// Maps flat event index to route_index for trip-end sentinel events
+    /// (see `EventData::is_trip_end`).
     pub sentinel_routes: std::collections::HashMap<u32, u32>,
 }
 

@@ -504,6 +504,33 @@ pub fn parse_gtfs(path: &Path, bbox: (f64, f64, f64, f64)) -> Result<GtfsData> {
                     }
                 }
             }
+            // Enforce strict monotonicity across the trip: every stop's
+            // arrival must be at least 1s after the previous stop's departure,
+            // and departure >= arrival. Many feeds emit minute-rounded times
+            // (HH:MM:00 at every stop), so two consecutive bus stops a half
+            // minute apart end up with `to.arrival == from.departure`.
+            //
+            // Downstream uses `travel_time == 0` (i.e. `to.arrival ==
+            // from.departure`) as the trip-end sentinel marker, so a
+            // non-sentinel zero-second leg would be indistinguishable from a
+            // trip terminator. Bumping forward by 1s per tie stretches the
+            // trip by at most a few seconds — negligible vs. the rounding
+            // already baked into the source data.
+            let mut prev_dep: Option<u32> = None;
+            for r in buf.iter_mut() {
+                let (Some(arr), Some(dep)) = (r.arrival, r.departure) else {
+                    continue;
+                };
+                let new_arr = match prev_dep {
+                    Some(pd) if arr <= pd => pd + 1,
+                    _ => arr,
+                };
+                let new_dep = new_arr.max(dep);
+                r.arrival = Some(new_arr);
+                r.departure = Some(new_dep);
+                prev_dep = Some(new_dep);
+            }
+
             for r in buf.drain(..) {
                 if let (Some(arr), Some(dep)) = (r.arrival, r.departure) {
                     let s = &stops[r.stop_index as usize];

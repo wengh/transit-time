@@ -347,7 +347,10 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
                 travel_time: e.travel_time,
             });
             let is_last = i + 1 == n || flat_events[i + 1].trip_index != e.trip_index;
-            if is_last && e.travel_time > 0 {
+            // Every non-sentinel event has travel_time > 0 after the
+            // monotonicity enforcement in gtfs.rs, so every trip-final row
+            // gets a synthetic sentinel appended.
+            if is_last {
                 with_sentinels.push(FlatEvent {
                     time_offset: e.time_offset + e.travel_time,
                     stop_index: e.next_stop_index,
