@@ -169,6 +169,10 @@ pub trait ProfileRouter: Sized {
     /// compute it independently from the walk graph.
     fn entries<'a>(&'a self, destination: u32) -> Box<dyn Iterator<Item = (u32, u32)> + 'a>;
 
+    /// Returns `true` if `destination` is reachable via at least one
+    /// Pareto-optimal transit path within the budget.
+    fn has_any_transit_paths(&self, destination: u32) -> bool;
+
     fn stats(&self) -> String;
 }
 
@@ -530,6 +534,12 @@ impl ProfileRouter for SplitProfileRouting {
             }
         }
         Box::new(out.into_iter())
+    }
+
+    fn has_any_transit_paths(&self, destination: u32) -> bool {
+        self.chunks
+            .iter()
+            .any(|c| c.frontier.nodes[destination as usize].has_head())
     }
 
     fn stats(&self) -> String {
@@ -1208,6 +1218,10 @@ impl ProfileRouter for SinglePassProfileRouting {
                 ws + entry.arrival_delta as u32,
             )
         }))
+    }
+
+    fn has_any_transit_paths(&self, destination: u32) -> bool {
+        self.inner.frontier.nodes[destination as usize].has_head()
     }
 
     fn stats(&self) -> String {

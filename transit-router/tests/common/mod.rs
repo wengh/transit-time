@@ -16,42 +16,24 @@ use transit_router::profile::{Isochrone, ProfileQuery, ProfileRouter, SplitProfi
 use transit_router::router::{patterns_for_date, snap_to_node};
 
 /// Path to the fixture `.bin` file. Selected by `ROUTER_TEST_CITY`
-/// (default: `chicago`). Resolved once per test process, logged on
-/// first use so a CI failure can be reproduced locally by re-exporting
-/// the same city. Combined with `ROUTER_TEST_SEED`, the full repro line
-/// is `ROUTER_TEST_CITY=<city> ROUTER_TEST_SEED=<n> make test TEST_CITY=<city>`.
+/// (default: `chicago`).
 fn fixture_path() -> &'static str {
     static ONCE: OnceLock<String> = OnceLock::new();
     ONCE.get_or_init(|| {
         let city = std::env::var("ROUTER_TEST_CITY").unwrap_or_else(|_| "chicago".to_string());
-        eprintln!("[router_tests] ROUTER_TEST_CITY={city}");
         format!("../transit-viz/public/data/{city}.bin")
     })
     .as_str()
 }
 
-/// Per-process RNG seed. Logged once on first use so a failure can be
-/// reproduced by re-running with `ROUTER_TEST_SEED=<n>`. Setting the env
-/// var pins the seed (developer reproducing a failure); leaving it unset
-/// generates a fresh random seed each run, so CI exercises new sources
-/// every time.
+/// Per-process RNG seed. Setting `ROUTER_TEST_SEED` pins it for reproducing
+/// failures; leaving it unset generates a fresh random seed each run.
 fn run_seed() -> u64 {
     static ONCE: OnceLock<u64> = OnceLock::new();
     *ONCE.get_or_init(|| {
-        match std::env::var("ROUTER_TEST_SEED")
-            .ok()
-            .and_then(|s| s.parse().ok())
-        {
-            Some(n) => {
-                eprintln!("[router_tests] ROUTER_TEST_SEED={n} (pinned)");
-                n
-            }
-            None => {
-                let n: u64 = rand::random();
-                eprintln!("[router_tests] random seed {n}; reproduce with ROUTER_TEST_SEED={n}");
-                n
-            }
-        }
+        std::env::var("ROUTER_TEST_SEED")
+            .map(|s| s.parse().unwrap())
+            .unwrap_or_else(|_| rand::random())
     })
 }
 
@@ -76,26 +58,18 @@ pub fn load_fixture() -> &'static PreparedData {
     })
 }
 
-/// Date the test queries run against. Defaults to today in local time, so
-/// tests always target service that is currently valid for whichever fixture
-/// is loaded. Override via `ROUTER_TEST_DATE=YYYYMMDD` to reproduce a
-/// specific failure. Logged once on first use — a CI failure reproduces
-/// locally with `ROUTER_TEST_CITY=<c> ROUTER_TEST_DATE=<d> ROUTER_TEST_SEED=<s>`.
+/// Date the test queries run against. Defaults to today in local time.
+/// Override via `ROUTER_TEST_DATE=YYYYMMDD` to reproduce a specific failure.
 pub fn test_date() -> u32 {
     static ONCE: OnceLock<u32> = OnceLock::new();
     *ONCE.get_or_init(|| {
         if let Ok(s) = std::env::var("ROUTER_TEST_DATE") {
-            let d: u32 = s.parse().unwrap_or_else(|e| {
-                panic!("ROUTER_TEST_DATE={s:?} is not a YYYYMMDD integer: {e}")
-            });
-            eprintln!("[router_tests] ROUTER_TEST_DATE={d} (pinned)");
-            d
+            s.parse()
+                .unwrap_or_else(|e| panic!("ROUTER_TEST_DATE={s:?} is not a YYYYMMDD integer: {e}"))
         } else {
             use chrono::Datelike;
             let today = chrono::Local::now().date_naive();
-            let d = today.year() as u32 * 10000 + today.month() * 100 + today.day();
-            eprintln!("[router_tests] ROUTER_TEST_DATE={d}; reproduce with ROUTER_TEST_DATE={d}");
-            d
+            today.year() as u32 * 10000 + today.month() * 100 + today.day()
         }
     })
 }
@@ -115,7 +89,12 @@ pub fn baseline_query(data: &PreparedData, test_id: &str) -> ProfileQuery {
     let max_time = 45 * 60;
     let slack = 60;
 
-    let mut rng = Xoshiro256PlusPlus::seed_from_u64(run_seed() ^ fnv1a(test_id));
+    let seed = run_seed();
+    let city = std::env::var("ROUTER_TEST_CITY").unwrap_or_else(|_| "chicago".to_string());
+    eprintln!(
+        "[router_tests] repro: ROUTER_TEST_CITY={city} ROUTER_TEST_DATE={date} ROUTER_TEST_SEED={seed}"
+    );
+    let mut rng = Xoshiro256PlusPlus::seed_from_u64(seed ^ fnv1a(test_id));
 
     // 1. Stop-event weights for the chosen window. Memoized so the
     //    multi-iter test loops don't rebuild this O(num_events) vector
@@ -130,14 +109,35 @@ pub fn baseline_query(data: &PreparedData, test_id: &str) -> ProfileQuery {
         w
     });
 
-    // 2. Temperature-sample an anchor stop (T=0.9 sharpens slightly toward busy stops).
-    let anchor_stop = temperature_sample(weights, 0.9, &mut rng);
+    // 2. Temperature-sample an anchor stop from stops with at least 10% of the
+    //    busiest stop's event count.
+    let max_weight = *weights.iter().max().unwrap();
+    let threshold = (max_weight / 10).max(1);
+    let top_p_weights: Vec<u32> = weights
+        .iter()
+        .map(|&w| if w >= threshold { w } else { 0 })
+        .collect();
+    let anchor_stop = temperature_sample(&top_p_weights, 0.9, &mut rng);
     let stop = &data.stops[anchor_stop];
 
     // 3. Snap stop's lat/lon to a node, then random-walk-within-15-min from it.
     let anchor_node =
         snap_to_node(data, stop.lat, stop.lon).expect("anchor stop has no nearby node");
     let source_node = random_node_within_walk(data, anchor_node, 15 * 60, &mut rng);
+    let src = &data.nodes[source_node as usize];
+    let total_weight: u32 = top_p_weights.iter().sum();
+    eprintln!(
+        "[router_tests] anchor={:?} ({:.5},{:.5}); weight={} threshold={} total={} max={}; source={source_node} ({:.5},{:.5})",
+        stop.name,
+        stop.lat,
+        stop.lon,
+        weights[anchor_stop],
+        threshold,
+        total_weight,
+        max_weight,
+        src.lat,
+        src.lon,
+    );
 
     ProfileQuery {
         source_node,
@@ -174,10 +174,17 @@ pub fn stop_event_weights(
 ) -> Vec<u32> {
     let mut weights = vec![0u32; data.stops.len()];
     for &p_idx in patterns_for_date(data, date).iter() {
-        let events = &data.patterns[p_idx].stop_index.events_by_stop;
+        let pat = &data.patterns[p_idx];
+        let events = &pat.stop_index.events_by_stop;
         for e in &events.data {
             if e.time_offset >= window_start && e.time_offset <= window_end {
                 weights[e.stop_index as usize] += 1;
+            }
+        }
+        for freq in &pat.frequency_routes {
+            // Count if the frequency service overlaps the window.
+            if freq.start_time < window_end && freq.end_time > window_start {
+                weights[freq.stop_index as usize] += 1;
             }
         }
     }
@@ -289,13 +296,19 @@ pub fn collect_entries<R: ProfileRouter>(router: &R, dest: u32) -> Vec<(u32, u32
 
 /// Deterministic stratified sample of reachable destinations across the
 /// travel-time histogram. Returns at most `n` distinct node indices.
+/// Walk-only reachable nodes (no transit entries) are excluded.
 ///
 /// Buckets reachable nodes into `n` equal-width strata over `[0, max_time]`,
 /// then shuffles each bucket and round-robins one pop per bucket until `n`
 /// nodes are picked or all buckets are empty.
-pub fn sample_reachable_stratified(iso: &Isochrone, n: usize, seed: u64) -> Vec<u32> {
+pub fn sample_reachable_stratified<R: ProfileRouter>(
+    iso: &Isochrone,
+    router: &R,
+    n: usize,
+    seed: u64,
+) -> Vec<u32> {
     let reachable: Vec<u32> = (0..iso.reachable_fraction.len() as u32)
-        .filter(|&i| iso.reachable_fraction[i as usize] > 0)
+        .filter(|&i| router.has_any_transit_paths(i))
         .collect();
     if reachable.is_empty() {
         return Vec::new();

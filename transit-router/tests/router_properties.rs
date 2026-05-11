@@ -198,7 +198,7 @@ fn itinerary_self_consistency() {
         // Filter out the source itself: source==dest is a trivial zero-length
         // journey that `optimal_paths` legitimately returns as a Path with
         // empty `segments`, which would trip the structural assertions below.
-        let sample: Vec<u32> = sample_reachable_stratified(iso, SAMPLE_SIZE, SAMPLE_SEED)
+        let sample: Vec<u32> = sample_reachable_stratified(iso, &router, SAMPLE_SIZE, SAMPLE_SEED)
             .into_iter()
             .filter(|&v| v != q.source_node)
             .collect();
@@ -311,7 +311,7 @@ fn mean_and_fraction_by_exact_integration() {
     eprintln!("[integration iter {iter}] source={}", q.source_node);
     let router = run_split(data, &q);
     let iso = router.isochrone();
-    let sample = sample_reachable_stratified(iso, SAMPLE_SIZE, SAMPLE_SEED);
+    let sample = sample_reachable_stratified(iso, &router, SAMPLE_SIZE, SAMPLE_SEED);
     assert!(!sample.is_empty(), "iter {iter}: empty sample");
 
     // Pick the node with the most entries; ties broken by smallest index.
