@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState, useCallback, useId } from 'react';
 import { useAppState } from '../state/AppContext';
 import type { HoverPath, PathSegment } from '../utils/router';
-import type { HoverData } from '../state/reducer';
+import { currentDest, type HoverData } from '../state/reducer';
 import { getMedianPath } from '../utils/hoverInfo';
 import { formatTime } from '../utils/format';
 import PathSegmentList from './PathSegmentList';
@@ -488,7 +488,9 @@ export function TripChart({ aspectRatio = '1/1', height }: TripChartProps = {}):
   const { state, dispatch } = useAppState();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const chartInfoRef = useRef<ChartInfo | null>(null);
-  const { hoverData, maxTimeMin, pinnedNode, selectedSampleIdx, lockedSampleIdx } = state;
+  const { maxTimeMin, selectedSampleIdx, lockedSampleIdx } = state;
+  const hoverData = currentDest(state)?.hoverData ?? null;
+  const isPinned = state.pinnedDest !== null;
   const prefersDark = usePrefersDark();
   const sizeTick = useResizeTick(canvasRef);
 
@@ -514,27 +516,27 @@ export function TripChart({ aspectRatio = '1/1', height }: TripChartProps = {}):
 
   const handleMouseMove = useCallback(
     (e: React.MouseEvent<HTMLCanvasElement>) => {
-      if (lockedSampleIdx !== null || pinnedNode === null || !chartInfoRef.current) return;
+      if (lockedSampleIdx !== null || !isPinned || !chartInfoRef.current) return;
       const rect = (e.currentTarget as HTMLCanvasElement).getBoundingClientRect();
       const idx = pathIdxAtCanvasX(e.clientX - rect.left, rect.width, chartInfoRef.current);
       dispatch({ type: 'SELECT_SAMPLE', idx });
     },
-    [lockedSampleIdx, pinnedNode, dispatch]
+    [lockedSampleIdx, isPinned, dispatch]
   );
 
   const handleMouseLeave = useCallback(() => {
-    if (lockedSampleIdx !== null || pinnedNode === null) return;
+    if (lockedSampleIdx !== null || !isPinned) return;
     dispatch({ type: 'SELECT_SAMPLE', idx: null });
-  }, [lockedSampleIdx, pinnedNode, dispatch]);
+  }, [lockedSampleIdx, isPinned, dispatch]);
 
   const handleClick = useCallback(
     (e: React.MouseEvent<HTMLCanvasElement>) => {
-      if (pinnedNode === null || !chartInfoRef.current) return;
+      if (!isPinned || !chartInfoRef.current) return;
       const rect = (e.currentTarget as HTMLCanvasElement).getBoundingClientRect();
       const idx = pathIdxAtCanvasX(e.clientX - rect.left, rect.width, chartInfoRef.current);
       dispatch({ type: 'LOCK_SAMPLE', idx: lockedSampleIdx === idx ? null : idx });
     },
-    [lockedSampleIdx, pinnedNode, dispatch]
+    [lockedSampleIdx, isPinned, dispatch]
   );
 
   return (
@@ -560,7 +562,8 @@ export default function HoverInfo({ isFront, onActivate }: HoverInfoProps): Reac
   // chart keeps a fixed height, giving the sawtooth more horizontal room.
   const [expanded, setExpanded] = useState(false);
 
-  const { hoverData, selectedSampleIdx } = state;
+  const { selectedSampleIdx } = state;
+  const hoverData = currentDest(state)?.hoverData ?? null;
 
   if (!hoverData) return null;
 

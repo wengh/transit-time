@@ -410,7 +410,7 @@ export default function LocationSearch({
               placeholder="To…"
               onSelect={handleDestSelect}
               bbox={bbox}
-              latLng={state.pinnedLatLng}
+              latLng={state.pinnedDest?.latLng ?? null}
               variant="desktop"
             />
           </>
@@ -425,7 +425,7 @@ export default function LocationSearch({
       placeholder={interactionMode === 'dest' ? 'Search destination…' : 'Search origin…'}
       onSelect={interactionMode === 'dest' ? handleDestSelect : handleOriginSelect}
       bbox={bbox}
-      latLng={interactionMode === 'dest' ? state.pinnedLatLng : state.sourceLatLng}
+      latLng={interactionMode === 'dest' ? (state.pinnedDest?.latLng ?? null) : state.sourceLatLng}
       variant="mobile"
       className="w-full"
     />

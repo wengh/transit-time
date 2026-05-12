@@ -110,9 +110,7 @@ function AppInner() {
       const hoverData = await buildHoverData(node, s.travelTimes, s.sampleCounts, s.totalSamples);
       dispatch({
         type: 'PIN_DESTINATION',
-        node,
-        latLng,
-        hoverData,
+        dest: { node, latLng, hoverData },
       });
       if (trip !== null && trip < hoverData.allPaths.length) {
         dispatch({ type: 'LOCK_SAMPLE', idx: trip });
@@ -126,7 +124,7 @@ function AppInner() {
     const current = getHashParams();
     setHashParams({
       src: state.sourceLatLng,
-      dst: state.pinnedLatLng ?? undefined,
+      dst: state.pinnedDest?.latLng ?? undefined,
       trip: state.lockedSampleIdx ?? undefined,
       style: state.mapStyle,
       date: state.date,
@@ -139,7 +137,7 @@ function AppInner() {
     });
   }, [
     state.sourceLatLng,
-    state.pinnedLatLng,
+    state.pinnedDest,
     state.lockedSampleIdx,
     state.mapStyle,
     state.date,
@@ -183,8 +181,8 @@ function AppInner() {
 
           // Refresh pinned destination data when a new query completes (e.g. parameter change).
           const currentS = stateRef.current;
-          if (currentS.pinnedNode !== null) {
-            const node = currentS.pinnedNode;
+          if (currentS.pinnedDest !== null) {
+            const node = currentS.pinnedDest.node;
             const hoverData = await buildHoverData(
               node,
               result.travelTimes,
@@ -195,12 +193,9 @@ function AppInner() {
             // Abort if another query started or the user unpinned/changed the node
             // while we were waiting for the worker round-trip.
             const latestS = stateRef.current;
-            if (latestS.computeStatus !== 'done' || latestS.pinnedNode !== node) return;
+            if (latestS.computeStatus !== 'done' || latestS.pinnedDest?.node !== node) return;
 
-            dispatch({
-              type: 'SET_HOVER_DATA',
-              hoverData,
-            });
+            dispatch({ type: 'SET_PINNED_HOVER_DATA', hoverData });
             // Clear any locked sample since the array of paths has likely changed
             dispatch({ type: 'LOCK_SAMPLE', idx: null });
           }
@@ -230,9 +225,10 @@ function AppInner() {
     const srcLon = s.nodeCoords[s.sourceNode * 2 + 1].toFixed(6);
     const lines = [`Source: ${srcLat}, ${srcLon}`];
 
-    if (s.pinnedNode !== null) {
-      const destLat = s.nodeCoords[s.pinnedNode * 2].toFixed(6);
-      const destLon = s.nodeCoords[s.pinnedNode * 2 + 1].toFixed(6);
+    if (s.pinnedDest !== null) {
+      const pinNode = s.pinnedDest.node;
+      const destLat = s.nodeCoords[pinNode * 2].toFixed(6);
+      const destLon = s.nodeCoords[pinNode * 2 + 1].toFixed(6);
       lines.push(`Destination: ${destLat}, ${destLon}`);
     }
 
@@ -247,9 +243,10 @@ function AppInner() {
     lines.push(`Max time: ${s.maxTimeMin} min`);
     lines.push(`Transfer slack: ${s.transferSlack}s`);
 
-    if (s.hoverData) {
+    const pinnedHoverData = s.pinnedDest?.hoverData;
+    if (pinnedHoverData) {
       lines.push('');
-      const { allPaths, avgTravelTime, reachableFraction } = s.hoverData;
+      const { allPaths, avgTravelTime, reachableFraction } = pinnedHoverData;
       if (avgTravelTime !== null) {
         const avgMin = Math.round(avgTravelTime / 60);
         if (reachableFraction !== null) {

@@ -272,7 +272,14 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
 
       const hoverData = await buildHoverData(node, s.travelTimes, s.sampleCounts, s.totalSamples);
 
-      drawRouteSegments(hoverData.allPaths.filter((p) => p.segments.length > 0));
+      // For hovers, skip the imperative route draw if a pin landed during the
+      // await. Otherwise the hover's polylines would paint over the pin's
+      // routes (which were already drawn by the URL-restore effect). The
+      // SET_HOVER_DEST dispatch below still lands harmlessly in hoverDest —
+      // rendering uses `pinnedDest ?? hoverDest`, so the pin wins.
+      if (pin || stateRef.current.pinnedDest === null) {
+        drawRouteSegments(hoverData.allPaths.filter((p) => p.segments.length > 0));
+      }
 
       const latLng = getNodeLatLng(node);
       if (!latLng) return;
@@ -290,9 +297,9 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
             pane: 'transitLines',
           }).addTo(map);
         }
-        dispatch({ type: 'PIN_DESTINATION', node, latLng, hoverData });
+        dispatch({ type: 'PIN_DESTINATION', dest: { node, latLng, hoverData } });
       } else {
-        dispatch({ type: 'SET_HOVER_DATA', hoverData });
+        dispatch({ type: 'SET_HOVER_DEST', dest: { node, latLng, hoverData } });
       }
     }
 
@@ -401,7 +408,7 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
 
       // Desktop: if already pinned, unpin on click (swallow if it's the second
       // click of a double-click so dblclick can set source cleanly).
-      if (s.pinnedNode !== null) {
+      if (s.pinnedDest !== null) {
         if (Date.now() - lastPinTime < 300) return;
         dispatch({ type: 'UNPIN_DESTINATION' });
         return;
@@ -417,7 +424,7 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
     // Hover: show route (desktop, no pinned dest)
     async function onMouseMove(e: L.LeafletMouseEvent) {
       const s = stateRef.current;
-      if (!s.travelTimes || s.pinnedNode !== null) return;
+      if (!s.travelTimes || s.pinnedDest !== null) return;
 
       const node = await snapToNode(e.latlng.lat, e.latlng.lng);
       if (node === lastHoveredNodeRef.current || node === null) return;
@@ -427,7 +434,7 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
 
     function onMouseOut() {
       lastHoveredNodeRef.current = null;
-      if (stateRef.current.pinnedNode === null) {
+      if (stateRef.current.pinnedDest === null) {
         clearRouteOverlay();
         dispatch({ type: 'CLEAR_HOVER' });
       }
@@ -600,24 +607,27 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
 
   // Clear destination marker and routes when unpinned
   useEffect(() => {
-    if (state.pinnedNode === null) {
+    if (state.pinnedDest === null) {
       clearDestination();
     }
-  }, [state.pinnedNode, clearDestination]);
+  }, [state.pinnedDest, clearDestination]);
 
   // Redraw routes when the pinned hover data or the selected sample changes.
   // With a selection, show only that path; otherwise show the full Pareto set.
+  // Gated on `pinnedDest` only — hover routes are drawn imperatively in
+  // `showDestination`, not by this effect.
   useEffect(() => {
-    const { hoverData, pinnedNode, selectedSampleIdx } = state;
-    if (!drawRouteLayersRef.current || !hoverData || pinnedNode === null) return;
+    const pinnedHoverData = state.pinnedDest?.hoverData;
+    if (!drawRouteLayersRef.current || !pinnedHoverData) return;
+    const { selectedSampleIdx } = state;
     const paths =
       selectedSampleIdx !== null
-        ? [hoverData.allPaths[selectedSampleIdx]].filter(
+        ? [pinnedHoverData.allPaths[selectedSampleIdx]].filter(
             (p): p is HoverPath => !!p && p.segments.length > 0
           )
-        : hoverData.allPaths.filter((p) => p.segments.length > 0);
+        : pinnedHoverData.allPaths.filter((p: HoverPath) => p.segments.length > 0);
     drawRouteLayersRef.current(paths);
-  }, [state.selectedSampleIdx, state.hoverData, state.pinnedNode]);
+  }, [state.selectedSampleIdx, state.pinnedDest]);
 
   // Draw source marker when sourceNode is set externally (URL restore)
   useEffect(() => {
@@ -627,12 +637,12 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
     sourceMarkerRef.current = L.marker(sourceLatLng, { title: 'Origin' }).addTo(mapRef.current);
   }, [state.sourceNode, state.sourceLatLng]);
 
-  // Draw dest marker and routes when pinnedNode is set externally (URL restore)
+  // Draw dest marker and routes when pinnedDest is set externally (URL restore)
   useEffect(() => {
-    const { pinnedNode, pinnedLatLng, hoverData } = state;
-    if (pinnedNode === null || !pinnedLatLng || !hoverData || !mapRef.current) return;
+    const { pinnedDest } = state;
+    if (!pinnedDest || !pinnedDest.hoverData || !mapRef.current) return;
     if (destMarkerRef.current) return;
-    destMarkerRef.current = L.circleMarker(pinnedLatLng, {
+    destMarkerRef.current = L.circleMarker(pinnedDest.latLng, {
       radius: 6,
       color: '#fff',
       fillColor: '#4a90d9',
@@ -641,9 +651,11 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
       pane: 'transitLines',
     }).addTo(mapRef.current);
     if (drawRouteLayersRef.current) {
-      drawRouteLayersRef.current(hoverData.allPaths.filter((p) => p.segments.length > 0));
+      drawRouteLayersRef.current(
+        pinnedDest.hoverData.allPaths.filter((p: HoverPath) => p.segments.length > 0)
+      );
     }
-  }, [state.pinnedNode, state.pinnedLatLng, state.hoverData]);
+  }, [state.pinnedDest]);
 
   // Provisional source marker. Visible only while a click is queued during
   // load; removed as soon as a real source marker replaces it (or pending

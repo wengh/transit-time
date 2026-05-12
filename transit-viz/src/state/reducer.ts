@@ -34,13 +34,16 @@ export interface AppState {
   nodeCount: number;
   stopCount: number;
 
-  // Destination
-  pinnedNode: number | null;
-  pinnedLatLng: [number, number] | null;
-  hoverData: HoverData | null;
+  // Destination — split into two slots so hover writes can't race with pin
+  // writes. The displayed destination is `pinnedDest ?? hoverDest` (see
+  // `currentDest`). `pinnedDest.hoverData` may briefly be `null` between a
+  // SET_SOURCE { keepDest: true } and the post-requery patch from App.tsx.
+  pinnedDest: Destination | null;
+  hoverDest: Destination | null;
   // Which Pareto path the user is inspecting in the chart. `selected` is
   // ephemeral (follows the cursor); `locked` pins it across cursor moves and
-  // survives unpin/repin. Both are indices into `hoverData.allPaths` or null.
+  // survives unpin/repin. Both are indices into the displayed destination's
+  // `hoverData.allPaths` or null.
   selectedSampleIdx: number | null;
   lockedSampleIdx: number | null;
 
@@ -58,6 +61,18 @@ export interface AppState {
   // pending intent so "last click wins".
   pendingSource: { latLng: [number, number] } | null;
   pendingDest: { latLng: [number, number]; trip: number | null } | null;
+}
+
+export interface Destination {
+  node: number;
+  latLng: [number, number];
+  // Null only while a pinned destination is awaiting fresh hoverData after a
+  // source/parameter change. Hover destinations always carry hoverData.
+  hoverData: HoverData | null;
+}
+
+export function currentDest(state: AppState): Destination | null {
+  return state.pinnedDest ?? state.hoverDest;
 }
 
 export interface HoverData {
@@ -102,9 +117,12 @@ export type Action =
       numThreads: number;
     }
   | { type: 'QUERY_ERROR' }
-  | { type: 'PIN_DESTINATION'; node: number; latLng: [number, number]; hoverData: HoverData }
+  | { type: 'PIN_DESTINATION'; dest: Destination }
   | { type: 'UNPIN_DESTINATION' }
-  | { type: 'SET_HOVER_DATA'; hoverData: HoverData }
+  // Patches pinnedDest.hoverData in place (e.g., after a parameter-only
+  // requery rebuilds the route to the same pinned node).
+  | { type: 'SET_PINNED_HOVER_DATA'; hoverData: HoverData }
+  | { type: 'SET_HOVER_DEST'; dest: Destination }
   | { type: 'CLEAR_HOVER' }
   | { type: 'SELECT_SAMPLE'; idx: number | null }
   | { type: 'LOCK_SAMPLE'; idx: number | null }
@@ -149,9 +167,8 @@ export const initialState: AppState = {
   stopCount: 0,
 
   // Destination
-  pinnedNode: null,
-  pinnedLatLng: null,
-  hoverData: null,
+  pinnedDest: null,
+  hoverDest: null,
   selectedSampleIdx: null,
   lockedSampleIdx: null,
 
@@ -185,9 +202,8 @@ export function reducer(state: AppState, action: Action): AppState {
         sourceNode: null,
         sourceLatLng: null,
         travelTimes: null,
-        pinnedNode: null,
-        pinnedLatLng: null,
-        hoverData: null,
+        pinnedDest: null,
+        hoverDest: null,
         computeStatus: 'idle',
         computeProgress: null,
       };
@@ -209,17 +225,16 @@ export function reducer(state: AppState, action: Action): AppState {
         travelTimes: null,
         sourceNode: null,
         sourceLatLng: null,
-        pinnedNode: null,
-        pinnedLatLng: null,
-        hoverData: null,
+        pinnedDest: null,
+        hoverDest: null,
         pendingSource: null,
         pendingDest: null,
       };
     case 'SET_SOURCE': {
       // keepDest=true preserves the pinned destination across a source change
-      // (used when the source is set via the search bar). hoverData is still
-      // nulled because it depends on travelTimes from the new query —
-      // App.tsx re-resolves it once the new query completes.
+      // (used when the source is set via the search bar). The pinned dest's
+      // hoverData is nulled because routing is about to re-run; App.tsx
+      // patches it via SET_PINNED_HOVER_DATA when the new query completes.
       const keepDest = action.keepDest === true;
       return {
         ...state,
@@ -227,9 +242,8 @@ export function reducer(state: AppState, action: Action): AppState {
         sourceLatLng: action.latLng,
         travelTimes: null,
         sampleCounts: null,
-        pinnedNode: keepDest ? state.pinnedNode : null,
-        pinnedLatLng: keepDest ? state.pinnedLatLng : null,
-        hoverData: null,
+        pinnedDest: keepDest && state.pinnedDest ? { ...state.pinnedDest, hoverData: null } : null,
+        hoverDest: null,
         selectedSampleIdx: null,
         lockedSampleIdx: null,
         // Auto-switch to dest mode so the next map tap pins a destination.
@@ -277,30 +291,41 @@ export function reducer(state: AppState, action: Action): AppState {
     case 'PIN_DESTINATION':
       return {
         ...state,
-        pinnedNode: action.node,
-        pinnedLatLng: action.latLng,
-        hoverData: action.hoverData,
+        pinnedDest: action.dest,
+        hoverDest: null,
         // Pinning a new destination should show its median trip from the
         // chart, not whichever Pareto sample the user had locked from the
         // previous destination (which would be wrong data anyway since
-        // hoverData.allPaths comes from the new node).
+        // the new dest's allPaths come from a different node).
         selectedSampleIdx: null,
         lockedSampleIdx: null,
       };
     case 'UNPIN_DESTINATION':
       return {
         ...state,
-        pinnedNode: null,
-        pinnedLatLng: null,
-        hoverData: null,
+        pinnedDest: null,
+        hoverDest: null,
         selectedSampleIdx: null,
         lockedSampleIdx: null,
       };
-    case 'SET_HOVER_DATA':
-      return { ...state, hoverData: action.hoverData };
+    case 'SET_PINNED_HOVER_DATA':
+      if (state.pinnedDest === null) return state;
+      return {
+        ...state,
+        pinnedDest: { ...state.pinnedDest, hoverData: action.hoverData },
+      };
+    case 'SET_HOVER_DEST':
+      return { ...state, hoverDest: action.dest };
     case 'CLEAR_HOVER':
-      if (state.pinnedNode !== null) return state;
-      return { ...state, hoverData: null, selectedSampleIdx: null };
+      if (state.hoverDest === null) return state;
+      return {
+        ...state,
+        hoverDest: null,
+        // Selected sample is only meaningful while the chart is showing the
+        // hover preview; clear it when the preview goes away. Locked sample
+        // belongs to the pin (if any) and stays.
+        selectedSampleIdx: state.pinnedDest ? state.selectedSampleIdx : null,
+      };
     case 'SELECT_SAMPLE':
       return { ...state, selectedSampleIdx: action.idx };
     case 'LOCK_SAMPLE':

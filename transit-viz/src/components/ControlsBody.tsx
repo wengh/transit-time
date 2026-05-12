@@ -365,7 +365,7 @@ export default function ControlsBody({
         >
           Change city
         </button>
-        {state.pinnedNode !== null && (
+        {state.pinnedDest !== null && (
           <button
             id="copy-info"
             onClick={handleCopy}

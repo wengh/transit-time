@@ -4,19 +4,20 @@ import PathSegmentList from './PathSegmentList';
 import { TripChart, deriveDisplayPath, deriveTitleText } from './HoverInfo';
 
 // Bottom info strip + expandable drawer. Only renders when a destination is
-// pinned (mobile has no hover, so `state.hoverData` is effectively the pin).
-// Collapsed = 56px summary line; expanded = ~68vh with route segment list and
-// the sawtooth chart in 5:2 aspect ratio.
+// pinned (mobile has no hover, so the pinned destination is the only source
+// of hoverData here). Collapsed = 56px summary line; expanded = ~68vh with
+// route segment list and the sawtooth chart in 5:2 aspect ratio.
 export default function MobileBottomSheet(): React.ReactNode {
   const { state, dispatch } = useAppState();
   const [expanded, setExpanded] = useState(false);
 
-  if (state.loadingState !== 'ready' || !state.hoverData || state.pinnedNode === null) {
+  const pinnedHoverData = state.pinnedDest?.hoverData ?? null;
+  if (state.loadingState !== 'ready' || !pinnedHoverData) {
     return null;
   }
 
-  const displayPath = deriveDisplayPath(state.hoverData, state.selectedSampleIdx);
-  const titleText = deriveTitleText(state.hoverData, state.selectedSampleIdx, displayPath);
+  const displayPath = deriveDisplayPath(pinnedHoverData, state.selectedSampleIdx);
+  const titleText = deriveTitleText(pinnedHoverData, state.selectedSampleIdx, displayPath);
 
   function toggle() {
     setExpanded((v) => !v);
