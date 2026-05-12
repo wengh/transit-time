@@ -142,8 +142,8 @@ export const initialState: AppState = {
 
   // Controls
   mapStyle: DEFAULT_MAP_STYLE,
-  windowStart: 0, // 00:00
-  windowEnd: 27 * 3600, // 27:00 (03:00 of the next day to account for late night trips)
+  windowStart: 6 * 3600, // 06:00
+  windowEnd: 24 * 3600, // 24:00
   date: new Date().toISOString().slice(0, 10),
   maxTimeMin: 45,
   transferSlack: 60,
