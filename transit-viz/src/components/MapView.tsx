@@ -14,7 +14,7 @@ export interface MapViewHandle {
   // is about to run); false if the call queued the click instead, or bailed
   // because snapToNode returned null. The pending-source consumption effect
   // uses this to know whether to dispatch a fallback CONSUME_PENDING_SOURCE.
-  setSource(lat: number, lng: number): Promise<boolean>;
+  setSource(lat: number, lng: number, opts?: { keepDest?: boolean }): Promise<boolean>;
   setDestination(lat: number, lng: number): Promise<void>;
   flyTo(lat: number, lng: number): void;
   zoomIn(): void;
@@ -43,11 +43,13 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
 
   // Refs to closures (updated each time the map-events effect runs)
   // so the imperative handle can call them from outside MapView.
-  const setSourceRef = useRef<((lat: number, lng: number) => Promise<boolean>) | null>(null);
+  const setSourceRef = useRef<
+    ((lat: number, lng: number, opts?: { keepDest?: boolean }) => Promise<boolean>) | null
+  >(null);
   const setDestinationRef = useRef<((lat: number, lng: number) => Promise<void>) | null>(null);
 
   useImperativeHandle(ref, () => ({
-    setSource: (lat, lng) => setSourceRef.current?.(lat, lng) ?? Promise.resolve(false),
+    setSource: (lat, lng, opts) => setSourceRef.current?.(lat, lng, opts) ?? Promise.resolve(false),
     setDestination: (lat, lng) => setDestinationRef.current?.(lat, lng) ?? Promise.resolve(),
     flyTo: (lat, lng) => {
       const map = mapRef.current;
@@ -294,7 +296,12 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
       }
     }
 
-    async function setSource(lat: number, lng: number): Promise<boolean> {
+    async function setSource(
+      lat: number,
+      lng: number,
+      opts?: { keepDest?: boolean }
+    ): Promise<boolean> {
+      const keepDest = opts?.keepDest === true;
       const s = stateRef.current;
       if (s.loadingState !== 'ready') {
         // City data still loading. Queue the click and let App.tsx replay it
@@ -315,13 +322,17 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
       } else {
         sourceMarkerRef.current = L.marker(latLng, { title: 'Origin' }).addTo(map);
       }
-      // Clear destination
-      if (destMarkerRef.current) {
+      // Clear destination unless the caller wants to preserve it (e.g.,
+      // setting source via the search bar while a destination is pinned).
+      // Route overlay is always cleared — the old routes were drawn against
+      // the previous source; App.tsx re-resolves hoverData after the new
+      // query completes, which triggers the route-redraw effect.
+      if (!keepDest && destMarkerRef.current) {
         destMarkerRef.current.remove();
         destMarkerRef.current = null;
       }
       clearRouteOverlay();
-      dispatch({ type: 'SET_SOURCE', node, latLng });
+      dispatch({ type: 'SET_SOURCE', node, latLng, keepDest });
       return true;
     }
 

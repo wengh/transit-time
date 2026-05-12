@@ -84,7 +84,7 @@ export type Action =
     }
   | { type: 'LOAD_ERROR' }
   | { type: 'CHANGE_CITY' }
-  | { type: 'SET_SOURCE'; node: number; latLng: [number, number] }
+  | { type: 'SET_SOURCE'; node: number; latLng: [number, number]; keepDest?: boolean }
   | { type: 'SET_MAP_STYLE'; style: string }
   | { type: 'SET_WINDOW'; windowStart: number; windowEnd: number }
   | { type: 'SET_DATE'; value: string }
@@ -215,21 +215,27 @@ export function reducer(state: AppState, action: Action): AppState {
         pendingSource: null,
         pendingDest: null,
       };
-    case 'SET_SOURCE':
+    case 'SET_SOURCE': {
+      // keepDest=true preserves the pinned destination across a source change
+      // (used when the source is set via the search bar). hoverData is still
+      // nulled because it depends on travelTimes from the new query —
+      // App.tsx re-resolves it once the new query completes.
+      const keepDest = action.keepDest === true;
       return {
         ...state,
         sourceNode: action.node,
         sourceLatLng: action.latLng,
         travelTimes: null,
         sampleCounts: null,
-        pinnedNode: null,
-        pinnedLatLng: null,
+        pinnedNode: keepDest ? state.pinnedNode : null,
+        pinnedLatLng: keepDest ? state.pinnedLatLng : null,
         hoverData: null,
         selectedSampleIdx: null,
         lockedSampleIdx: null,
         // Auto-switch to dest mode so the next map tap pins a destination.
         interactionMode: 'dest',
       };
+    }
     case 'SET_MAP_STYLE':
       return { ...state, mapStyle: action.style };
     case 'SET_WINDOW':

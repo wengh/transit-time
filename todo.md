@@ -294,3 +294,12 @@ implement:
 skip 8
 
 also do have a preprocess pass that computes number of events in the window for every single transit stop. when selecting a source, select "anchor" first using a temperature approach (say temperature = 0.9) with this number as weight, then select a node randomly within 15 minutes walk from this "anchor"
+
+DONE
+
+------
+
+change the address bar to:
+1. when source/destination are set via address bar, keep it there until source/destination changes
+2. when a source is selected via map interaction, query by source position and fill the address bar with the address of the source position. similarly for pinned destination. make sure to have proper debouncing
+2. have line wrap for the address results. and on desktop, make the address bar wider when focused

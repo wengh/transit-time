@@ -1,6 +1,6 @@
 # Transit Isochrone Tool
 
-A browser-based tool that shows how far you can travel from any point on a map using public transit and walking, at any time of day. The entire routing computation runs inside your browser — no server required.
+A browser-based tool that shows how far you can travel from any point on a map using public transit and walking, at any time of day. The entire routing computation runs inside your browser — no routing server required. Address search uses OpenStreetMap's API.
 
 Live demo: https://transit-time.pages.dev/
 
@@ -33,6 +33,10 @@ The overlay also encodes how consistently a location is reachable across the dep
 **Desktop:** Move your cursor over the map. The route from your origin to the point under the cursor is drawn on the map — walk segments as gray dashed lines, transit segments colored by route. A panel appears showing the travel time and the step-by-step itinerary. Single-click to pin a destination so the route stays visible while you adjust controls; click again to unpin.
 
 **Mobile:** Ensure the toggle is set to **Dest**, then tap anywhere on the map to pin a destination. A bottom sheet appears showing the travel time summary. Drag the handle or tap the sheet to expand it and see the full itinerary and sawtooth chart. Tap "Clear" in the sheet or tap another location to pin a new destination.
+
+### Searching by address
+
+A search bar in the top-left lets you set origin and destination by typed address — two inputs on desktop ("From…" / "To…"), one on mobile that follows the Origin/Dest toggle. Results are restricted to the current city. The bar stays in sync with the current origin and destination: picking a result writes that address, and setting either point by map click reverse-geocodes the snapped location. Changing the origin via search keeps the pinned destination.
 
 ### Controls
 

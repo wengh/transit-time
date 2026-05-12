@@ -10,6 +10,17 @@ interface NominatimResult {
   lon: string;
 }
 
+interface NominatimReverseResult {
+  display_name?: string;
+}
+
+// Nominatim usage policy is ~1 request/second per client. Track the last
+// outbound reverse-geocode wall-clock time module-wide (shared across the
+// From and To inputs) so a leading-edge throttle can fire immediately when
+// the window is free, and only delay back-to-back requests.
+const REVERSE_MIN_INTERVAL_MS = 1000;
+let lastReverseFetchAt = 0;
+
 interface LocationSearchProps {
   mapViewRef: RefObject<MapViewHandle | null>;
   variant: 'desktop' | 'mobile';
@@ -21,12 +32,21 @@ interface SearchInputProps {
   placeholder: string;
   onSelect: (lat: number, lng: number) => void;
   bbox: [number, number, number, number] | null;
+  /** Current source/destination lat/lng — input text reflects its address. */
+  latLng: [number, number] | null;
   variant: 'desktop' | 'mobile';
   /** Extra Tailwind classes on the outer wrapper div */
   className?: string;
 }
 
-function SearchInput({ placeholder, onSelect, bbox, variant, className = '' }: SearchInputProps) {
+function SearchInput({
+  placeholder,
+  onSelect,
+  bbox,
+  latLng,
+  variant,
+  className = '',
+}: SearchInputProps) {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<NominatimResult[]>([]);
   const [isOpen, setIsOpen] = useState(false);
@@ -36,10 +56,21 @@ function SearchInput({ placeholder, onSelect, bbox, variant, className = '' }: S
   const containerRef = useRef<HTMLDivElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  // Armed in select() so the immediately-following SET_SOURCE/PIN_DESTINATION
+  // dispatch (which carries a node-snapped lat/lng) doesn't trigger a
+  // reverse-geocode that would overwrite the human label the user picked.
+  // Consumed on the very next reverse-geocode effect run.
+  const skipNextReverseRef = useRef(false);
+  // True while user keystrokes are the source of `query` changes. Suppresses
+  // the forward-search effect when we programmatically setQuery() from
+  // reverse-geocode.
+  const isUserTypingRef = useRef(false);
 
-  // Debounced Nominatim search
+  // Debounced Nominatim forward search — only when the user is actively typing.
+  // Programmatic setQuery() from reverse-geocode must not trigger a search.
   useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
+    if (!isUserTypingRef.current) return;
     if (!query.trim() || !bbox) {
       setResults([]);
       setIsOpen(false);
@@ -97,19 +128,81 @@ function SearchInput({ placeholder, onSelect, bbox, variant, className = '' }: S
     return () => document.removeEventListener('pointerdown', onPointerDown);
   }, []);
 
-  // Reset when city (bbox) changes
+  // Reverse-geocode when the bound latLng changes from outside (map click, pin,
+  // or a SET_SOURCE from a search-select that snapped to a graph node).
   useEffect(() => {
-    setQuery('');
-    setResults([]);
-    setIsOpen(false);
-  }, [bbox]);
+    if (latLng === null) {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+      if (abortRef.current) abortRef.current.abort();
+      skipNextReverseRef.current = false;
+      isUserTypingRef.current = false;
+      setQuery('');
+      setResults([]);
+      setIsOpen(false);
+      return;
+    }
+    // One-shot: consume the skip armed by a search-select.
+    if (skipNextReverseRef.current) {
+      skipNextReverseRef.current = false;
+      return;
+    }
+
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    if (abortRef.current) abortRef.current.abort();
+
+    // Leading-edge: fire immediately if at least REVERSE_MIN_INTERVAL_MS has
+    // passed since the last reverse-geocode; otherwise wait just long enough
+    // to land on the next allowed slot.
+    const delay = Math.max(0, lastReverseFetchAt + REVERSE_MIN_INTERVAL_MS - Date.now());
+
+    debounceRef.current = setTimeout(async () => {
+      lastReverseFetchAt = Date.now();
+      const controller = new AbortController();
+      abortRef.current = controller;
+      setIsLoading(true);
+      try {
+        const url = new URL('https://nominatim.openstreetmap.org/reverse');
+        url.searchParams.set('format', 'json');
+        url.searchParams.set('lat', String(latLng[0]));
+        url.searchParams.set('lon', String(latLng[1]));
+        url.searchParams.set('zoom', '18');
+        const res = await fetch(url.toString(), {
+          signal: controller.signal,
+          headers: { 'Accept-Language': 'en' },
+        });
+        const data: NominatimReverseResult = await res.json();
+        if (data.display_name) {
+          isUserTypingRef.current = false;
+          setQuery(data.display_name);
+          setResults([]);
+          setIsOpen(false);
+        }
+      } catch (e: unknown) {
+        if (e instanceof Error && e.name !== 'AbortError') {
+          // Leave the previous text in place.
+        }
+      } finally {
+        setIsLoading(false);
+      }
+    }, delay);
+
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+  }, [latLng]);
 
   function select(result: NominatimResult) {
-    onSelect(parseFloat(result.lat), parseFloat(result.lon));
-    setQuery('');
+    const lat = parseFloat(result.lat);
+    const lng = parseFloat(result.lon);
+    // Arm the one-shot snap-skip so the imminent SET_SOURCE dispatch with the
+    // node-snapped lat/lng doesn't overwrite this human label.
+    skipNextReverseRef.current = true;
+    isUserTypingRef.current = false;
+    setQuery(result.display_name);
     setResults([]);
     setIsOpen(false);
     inputRef.current?.blur();
+    onSelect(lat, lng);
   }
 
   function onKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
@@ -167,12 +260,12 @@ function SearchInput({ placeholder, onSelect, bbox, variant, className = '' }: S
   const resultCls = (active: boolean) =>
     isDesktop
       ? [
-          'w-full text-left px-3 py-2 text-[12px] leading-snug truncate',
+          'w-full text-left px-3 py-2 text-[12px] leading-snug whitespace-normal break-words',
           'text-zinc-800 dark:text-zinc-200',
           active ? 'bg-blue-50 dark:bg-zinc-700' : 'hover:bg-zinc-100 dark:hover:bg-zinc-800',
         ].join(' ')
       : [
-          'w-full text-left px-2.5 py-1.5 text-[11px] leading-snug truncate',
+          'w-full text-left px-2.5 py-1.5 text-[11px] leading-snug whitespace-normal break-words',
           'text-zinc-200',
           active ? 'bg-zinc-700' : 'hover:bg-zinc-800',
         ].join(' ');
@@ -202,7 +295,10 @@ function SearchInput({ placeholder, onSelect, bbox, variant, className = '' }: S
           ref={inputRef}
           type="text"
           value={query}
-          onChange={(e) => setQuery(e.target.value)}
+          onChange={(e) => {
+            isUserTypingRef.current = true;
+            setQuery(e.target.value);
+          }}
           onKeyDown={onKeyDown}
           onFocus={() => {
             if (results.length > 0) setIsOpen(true);
@@ -277,7 +373,10 @@ export default function LocationSearch({
 
   function handleOriginSelect(lat: number, lng: number) {
     mapViewRef.current?.flyTo(lat, lng);
-    mapViewRef.current?.setSource(lat, lng);
+    // keepDest=true: a search-bar origin change is a "swap origin" gesture,
+    // not a "start over" gesture — preserve any pinned destination so the
+    // route just re-resolves to the same destination from the new origin.
+    mapViewRef.current?.setSource(lat, lng, { keepDest: true });
   }
 
   function handleDestSelect(lat: number, lng: number) {
@@ -289,7 +388,8 @@ export default function LocationSearch({
     return (
       <div
         className={[
-          'w-[240px]',
+          'w-[240px] focus-within:w-[360px]',
+          'transition-[width] duration-150 ease-out',
           'bg-white/95 dark:bg-zinc-900/95',
           'border border-zinc-200 dark:border-zinc-700 rounded-lg',
           'shadow-[0_2px_12px_rgba(0,0,0,0.4)]',
@@ -300,6 +400,7 @@ export default function LocationSearch({
           placeholder="From…"
           onSelect={handleOriginSelect}
           bbox={bbox}
+          latLng={state.sourceLatLng}
           variant="desktop"
         />
         {sourceNode !== null && (
@@ -309,6 +410,7 @@ export default function LocationSearch({
               placeholder="To…"
               onSelect={handleDestSelect}
               bbox={bbox}
+              latLng={state.pinnedLatLng}
               variant="desktop"
             />
           </>
@@ -323,6 +425,7 @@ export default function LocationSearch({
       placeholder={interactionMode === 'dest' ? 'Search destination…' : 'Search origin…'}
       onSelect={interactionMode === 'dest' ? handleDestSelect : handleOriginSelect}
       bbox={bbox}
+      latLng={interactionMode === 'dest' ? state.pinnedLatLng : state.sourceLatLng}
       variant="mobile"
       className="w-full"
     />
