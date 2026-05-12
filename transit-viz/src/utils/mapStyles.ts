@@ -5,10 +5,13 @@ export interface MapStyle {
   subdomains?: string;
 }
 
+const REPO_ATTR =
+  '<a href="https://github.com/wengh/transit-time" target="_blank" rel="noopener">wengh/transit-time</a>';
 const CARTO_ATTR =
-  '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/">CARTO</a>';
+  '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/">CARTO</a> | ' +
+  REPO_ATTR;
 const OSM_ATTR =
-  '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors';
+  '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> | ' + REPO_ATTR;
 
 export const MAP_STYLES: Record<string, MapStyle> = {
   default: {
