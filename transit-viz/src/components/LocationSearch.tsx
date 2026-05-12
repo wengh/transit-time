@@ -234,9 +234,9 @@ function SearchInput({
         'focus:outline-none',
       ].join(' ')
     : [
-        'w-full bg-zinc-800 text-zinc-100',
-        'placeholder-zinc-500',
-        'border border-zinc-700 rounded-md',
+        'w-full bg-white text-zinc-900 dark:bg-zinc-800 dark:text-zinc-100',
+        'placeholder-zinc-400 dark:placeholder-zinc-500',
+        'border border-zinc-300 dark:border-zinc-700 rounded-md',
         'pl-7 pr-2.5 py-1 text-[12px]',
         'focus:outline-none focus:ring-1 focus:ring-blue-500/60',
       ].join(' ');
@@ -251,9 +251,9 @@ function SearchInput({
       ].join(' ')
     : [
         'absolute left-0 right-0 top-full mt-0.5 z-[1200]',
-        'bg-zinc-900',
-        'border border-zinc-700 rounded-md',
-        'shadow-[0_4px_16px_rgba(0,0,0,0.6)]',
+        'bg-white dark:bg-zinc-900',
+        'border border-zinc-200 dark:border-zinc-700 rounded-md',
+        'shadow-[0_4px_16px_rgba(0,0,0,0.4)] dark:shadow-[0_4px_16px_rgba(0,0,0,0.6)]',
         'overflow-hidden',
       ].join(' ');
 
@@ -266,8 +266,8 @@ function SearchInput({
         ].join(' ')
       : [
           'w-full text-left px-2.5 py-1.5 text-[11px] leading-snug whitespace-normal break-words',
-          'text-zinc-200',
-          active ? 'bg-zinc-700' : 'hover:bg-zinc-800',
+          'text-zinc-800 dark:text-zinc-200',
+          active ? 'bg-blue-50 dark:bg-zinc-700' : 'hover:bg-zinc-100 dark:hover:bg-zinc-800',
         ].join(' ');
 
   return (
@@ -419,15 +419,28 @@ export default function LocationSearch({
     );
   }
 
-  // Mobile: single input, action follows the Origin/Dest toggle
+  // Mobile: render both inputs and hide the inactive one via CSS. This keeps
+  // each input's local state (query text, refs) and its previously-resolved
+  // address intact across mode toggles — switching from Dest back to Origin
+  // shows the origin's already-known address without a fresh Nominatim call.
   return (
-    <SearchInput
-      placeholder={interactionMode === 'dest' ? 'Search destination…' : 'Search origin…'}
-      onSelect={interactionMode === 'dest' ? handleDestSelect : handleOriginSelect}
-      bbox={bbox}
-      latLng={interactionMode === 'dest' ? (state.pinnedDest?.latLng ?? null) : state.sourceLatLng}
-      variant="mobile"
-      className="w-full"
-    />
+    <>
+      <SearchInput
+        placeholder="Search origin…"
+        onSelect={handleOriginSelect}
+        bbox={bbox}
+        latLng={state.sourceLatLng}
+        variant="mobile"
+        className={interactionMode === 'origin' ? 'w-full' : 'hidden'}
+      />
+      <SearchInput
+        placeholder="Search destination…"
+        onSelect={handleDestSelect}
+        bbox={bbox}
+        latLng={state.pinnedDest?.latLng ?? null}
+        variant="mobile"
+        className={interactionMode === 'dest' ? 'w-full' : 'hidden'}
+      />
+    </>
   );
 }
