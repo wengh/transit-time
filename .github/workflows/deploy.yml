@@ -74,6 +74,7 @@ jobs:
         id: check-feeds
         env:
           TRANSITLAND_API_KEY: ${{ secrets.TRANSITLAND_API_KEY }}
+          INTERLINE_OSM_EXTRACTS_API_KEY: ${{ secrets.INTERLINE_OSM_EXTRACTS_API_KEY }}
         run: |
           cargo build --release -p transit-prep
           if cargo run --release -p transit-prep -- pipeline --check-only \
@@ -95,6 +96,7 @@ jobs:
         if: steps.check-feeds.outputs.needs_rebuild == 'true'
         env:
           TRANSITLAND_API_KEY: ${{ secrets.TRANSITLAND_API_KEY }}
+          INTERLINE_OSM_EXTRACTS_API_KEY: ${{ secrets.INTERLINE_OSM_EXTRACTS_API_KEY }}
         run: make data-all
 
       # ── Tests ──────────────────────────────────────────────────────────────
