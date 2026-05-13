@@ -905,6 +905,9 @@ pub fn build_service_patterns(data: &GtfsData) -> Vec<ServicePattern> {
 
                             let from_idx = from.stop_index;
                             let to_idx = to.stop_index;
+                            if from_idx == to_idx {
+                                continue;
+                            }
 
                             let dep_time = from.departure_time;
                             let travel = to.arrival_time.saturating_sub(dep_time);
@@ -960,6 +963,9 @@ pub fn build_service_patterns(data: &GtfsData) -> Vec<ServicePattern> {
                             let to = &window[1];
                             let from_idx = from.stop_index;
                             let to_idx = to.stop_index;
+                            if from_idx == to_idx {
+                                continue;
+                            }
                             freq_entries.push(FrequencyEntry {
                                 route_index: route_idx,
                                 stop_index: from_idx,
