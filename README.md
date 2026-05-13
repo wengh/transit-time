@@ -348,7 +348,7 @@ Always reachable (fraction=1): 26654, sometimes: 289067
 | Moscow | 4.9M |
 | New York City | 18.1M |
 | Ottawa | 11.9M |
-| Paris | 17.1M |
+| Paris | 16.2M |
 | Philadelphia | 4.3M |
 | San Francisco Bay Area | 10.0M |
 | Seattle | 5.4M |
