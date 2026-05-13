@@ -1,6 +1,6 @@
 {
     "id": "sf_bay",
-    "osm_url": "https://download.bbbike.org/osm/extract/planet_-122.6,37.2_-121.75,38.07.osm.pbf",
+    "interline_extract": "san-francisco-bay_california",
     "feed_ids": [
         "f-9q9h-stanford~marguerite", // Stanford Marguerite Shuttle
         "f-presidigo~ca~us", // PresidiGo

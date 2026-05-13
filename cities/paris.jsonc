@@ -2,7 +2,7 @@
     "id": "paris",
     "bbbike_name": "Paris",
     "feed_ids": [
-        "https://eu.ftp.opendatasoft.com/stif/GTFS/IDFM-gtfs.zip", // Consolidated feed https://transport.data.gouv.fr/datasets/reseau-urbain-et-interurbain-dile-de-france-mobilites#dataset-resources
+        "https://greens3.transitpdf.com/files/sourcedata/horairesau-246c687815b82f.zip", // Consolidated feed https://busmaps.com/en/france/Republique-Francaise/horairesau-246c687815b82f https://transport.data.gouv.fr/datasets/reseau-urbain-et-interurbain-dile-de-france-mobilites#dataset-resources
         "https://blues3.transitpdf.com/files/uran/improved-gtfs-caee.zip" // Villebon-sur-Yvette https://busmaps.com/en/france/Zen-Bus/caee
     ],
     "name": "Paris, France",

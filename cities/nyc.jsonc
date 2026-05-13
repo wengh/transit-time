@@ -1,6 +1,6 @@
 {
     "id": "nyc",
-    "bbbike_name": "New_York",
+    "bbbike_name": "NewYork",
     "feed_ids": [
         "f-dr5r-nyctsubway",
         "f-dr5r-mtanyctbusmanhattan",

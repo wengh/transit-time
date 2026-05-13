@@ -1,6 +1,6 @@
 {
     "id": "boston",
-    "osm_url": "https://download.bbbike.org/osm/extract/planet_-71.182,42.273_-70.954,42.44.osm.pbf",
+    "interline_extract": "boston_massachusetts",
     "feed_ids": [
         "f-drt-mbta", // MBTA (Subway, Bus, Commuter Rail, Ferry, Silver Line)
         "f-drt3-909983", // Logan Express / Massport
@@ -9,7 +9,7 @@
     ],
     "name": "Boston, MA, USA",
     "file": "boston.bin",
-    "bbox": "-71.1820,42.2730,-70.9540,42.4400",
+    "bbox": "-71.3984,42.0173,-70.1626,42.5232",
     "center": [
         42.357,
         -71.068

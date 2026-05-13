@@ -74,7 +74,7 @@ A Rust preprocessing tool (`transit-prep`) takes a city configuration (a `.jsonc
 
 The city config specifies:
 - One or more GTFS feeds, either as Transitland onestop IDs (e.g. `f-dp3-cta`) or direct URLs
-- An OpenStreetMap source for pedestrian street data (BBBike extract name or direct PBF URL)
+- An OpenStreetMap source for pedestrian street data (Interline OSM Extracts string_id, BBBike extract name, or direct PBF URL)
 - Display metadata (name, map center, zoom)
 
 The preprocessor downloads and caches both the GTFS feeds and the OSM extract. For Transitland feeds, it tracks the latest feed version SHA1 and only re-downloads when a new version is published. It then performs the following steps:
@@ -190,11 +190,14 @@ cd transit-viz && npm run format:check
 
 ### Adding a city
 
-The easiest way is to auto-generate a config from a BBBike city name or OSM PBF URL:
+The easiest way is to auto-generate a config from an Interline OSM Extracts `string_id`, a BBBike city name, or a direct OSM PBF URL:
 
 ```
 cargo run --release -p transit-prep -- generate \
   --id my_city --bbbike-name MyCity --output cities/my_city.jsonc
+# or, with an Interline extract:
+#   INTERLINE_OSM_EXTRACTS_API_KEY=... cargo run --release -p transit-prep -- generate \
+#     --id my_city --interline-extract some-string-id --output cities/my_city.jsonc
 ```
 
 This downloads the OSM extract, reads its bounding box, queries Transitland for all transit feeds in that area, and writes a `.jsonc` config with Transitland feed IDs and operator name comments. Edit the generated file to fill in `name`, `detail`, `tags`, and remove any unwanted feeds.
@@ -212,6 +215,7 @@ You can also create a `.jsonc` file manually:
   ],
   "bbox": "-80.0,43.0,-79.0,44.0",  // min_lon,min_lat,max_lon,max_lat
   "bbbike_name": "MyCity",      // BBBike extract name (for OSM data), OR
+  // "interline_extract": "...", // Interline OSM Extracts string_id (needs INTERLINE_OSM_EXTRACTS_API_KEY), OR
   // "osm_url": "https://...",  // direct URL to an OSM PBF file
   "center": [43.65, -79.38],    // map center [lat, lon]
   "zoom": 12,                   // initial zoom level
@@ -222,7 +226,7 @@ You can also create a `.jsonc` file manually:
 }
 ```
 
-Feed IDs can be Transitland onestop IDs (e.g. `f-dp3-cta`) or direct GTFS zip URLs. Transitland feeds are checked for updates automatically via SHA1 comparison. OSM pedestrian data is fetched from BBBike by name, or from a direct URL if `osm_url` is given. Then run `make data-all` to build the `.bin` file.
+Feed IDs can be Transitland onestop IDs (e.g. `f-dp3-cta`) or direct GTFS zip URLs. Transitland feeds are checked for updates automatically via SHA1 comparison. OSM pedestrian data is fetched from Interline OSM Extracts if `interline_extract` is set (requires `INTERLINE_OSM_EXTRACTS_API_KEY` in the environment), otherwise from BBBike by name, or from a direct URL if `osm_url` is given. Then run `make data-all` to build the `.bin` file.
 
 ### CI/CD pipeline
 

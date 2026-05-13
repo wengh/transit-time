@@ -12,9 +12,10 @@ pub fn extract_pbf_bbox(path: &Path) -> Result<(f64, f64, f64, f64)> {
     let reader = BlobReader::from_path(path)?;
     for blob in reader {
         let blob = blob?;
-        let header = blob.to_headerblock()?;
-        if let Some(bbox) = header.bbox() {
-            return Ok((bbox.left, bbox.bottom, bbox.right, bbox.top));
+        if let Ok(header) = blob.to_headerblock() {
+            if let Some(bbox) = header.bbox() {
+                return Ok((bbox.left, bbox.bottom, bbox.right, bbox.top));
+            }
         }
     }
     bail!("PBF file has no bounding box in header")

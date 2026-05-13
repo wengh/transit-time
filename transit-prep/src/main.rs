@@ -80,6 +80,10 @@ enum Commands {
         #[arg(long)]
         bbbike_name: Option<String>,
 
+        /// Interline OSM Extracts string_id (requires INTERLINE_OSM_EXTRACTS_API_KEY)
+        #[arg(long)]
+        interline_extract: Option<String>,
+
         /// Direct OSM PBF URL
         #[arg(long)]
         osm_url: Option<String>,
@@ -96,6 +100,7 @@ struct CityConfig {
     feed_ids: Vec<String>,
     bbox: String,
     bbbike_name: Option<String>,
+    interline_extract: Option<String>,
     osm_url: Option<String>,
     allow_stale: Option<bool>,
     enabled: Option<bool>,
@@ -294,20 +299,13 @@ fn is_transitland_id(feed_id: &str) -> bool {
     feed_id.starts_with("f-")
 }
 
-/// FNV-1a hash of a URL.
-fn url_hash(url: &str) -> u64 {
-    url.bytes().fold(0xcbf29ce484222325u64, |h, b| {
-        h.wrapping_mul(0x100000001b3) ^ b as u64
-    })
-}
-
 /// Cache path for the GTFS zip download.
 /// Transitland feeds use the onestop ID as filename; direct URLs use a hash.
 fn gtfs_cache_path(feed_id: &str, cache_dir: &Path) -> PathBuf {
     if is_transitland_id(feed_id) {
         cache_dir.join(format!("{}.gtfs.zip", feed_id))
     } else {
-        cache_dir.join(format!("url_{:016x}.gtfs.zip", url_hash(feed_id)))
+        cache_dir.join(format!("url_{:016x}.gtfs.zip", osm::url_hash(feed_id)))
     }
 }
 
@@ -319,7 +317,7 @@ fn gtfs_sha1_path(feed_id: &str, cache_dir: &Path) -> PathBuf {
     } else {
         cache_dir
             .join("sha1")
-            .join(format!("url_{:016x}.sha1", url_hash(feed_id)))
+            .join(format!("url_{:016x}.sha1", osm::url_hash(feed_id)))
     }
 }
 
@@ -605,12 +603,14 @@ fn main() -> Result<()> {
             output,
             id,
             bbbike_name,
+            interline_extract,
             osm_url,
             cache_dir,
         } => cmd_generate(
             &output,
             &id,
             bbbike_name.as_deref(),
+            interline_extract.as_deref(),
             osm_url.as_deref(),
             &cache_dir,
         ),
@@ -897,6 +897,7 @@ fn cmd_pipeline(
                 bbox,
                 cache_dir,
                 id,
+                config.interline_extract.as_deref(),
                 config.bbbike_name.as_deref(),
                 config.osm_url.as_deref(),
             )?;
@@ -935,9 +936,15 @@ fn cmd_pipeline(
     // OSM files for all active cities — include all possible naming patterns
     // since the actual filename depends on which download path was used
     for (id, config, _) in &cities {
-        let sanitized = osm::sanitize(id);
-        expected_files.insert(cache_dir.join(format!("{}.osm.pbf", sanitized)));
-        expected_files.insert(cache_dir.join(format!("{}.osm.xml", sanitized)));
+        if let Some(url) = osm::pick_source_url(
+            config.interline_extract.as_deref(),
+            config.bbbike_name.as_deref(),
+            config.osm_url.as_deref(),
+        ) {
+            // PBF and XML are both possible for direct `osm_url`; hash both.
+            expected_files.insert(osm::pbf_cache_path(cache_dir, id, &url, "osm.pbf"));
+            expected_files.insert(osm::pbf_cache_path(cache_dir, id, &url, "osm.xml"));
+        }
         if let Ok((min_lon, min_lat, max_lon, max_lat)) = parse_bbox(&config.bbox) {
             expected_files.insert(cache_dir.join(format!(
                 "osm_{:.4}_{:.4}_{:.4}_{:.4}.xml",
@@ -1047,6 +1054,7 @@ fn cmd_prep(city_file: &Path, output: &Path, cache_dir: &Path) -> Result<()> {
         bbox,
         cache_dir,
         &city.id,
+        city.interline_extract.as_deref(),
         city.bbbike_name.as_deref(),
         city.osm_url.as_deref(),
     )?;
@@ -1065,20 +1073,38 @@ fn cmd_generate(
     output: &Path,
     id: &str,
     bbbike_name: Option<&str>,
+    interline_extract: Option<&str>,
     osm_url: Option<&str>,
     cache_dir: &Path,
 ) -> Result<()> {
+    let provided = bbbike_name.is_some() as usize
+        + interline_extract.is_some() as usize
+        + osm_url.is_some() as usize;
     anyhow::ensure!(
-        bbbike_name.is_some() || osm_url.is_some(),
-        "Either --bbbike-name or --osm-url must be provided"
+        provided == 1,
+        "Exactly one of --bbbike-name, --interline-extract, or --osm-url must be provided",
     );
 
     let api_key = transitland::get_api_key()?;
     std::fs::create_dir_all(cache_dir)?;
 
-    // Step 1: Download OSM PBF
-    let pbf_path = if let Some(name) = bbbike_name {
-        let cache_path = cache_dir.join(format!("{}.osm.pbf", osm::sanitize(id)));
+    // Step 1: Download OSM PBF (cache name keys off the source URL)
+    let source_url = osm::pick_source_url(interline_extract, bbbike_name, osm_url)
+        .expect("ensure! above guarantees at least one source");
+    let cache_path = osm::pbf_cache_path(cache_dir, id, &source_url, "osm.pbf");
+    let pbf_path = if let Some(extract_id) = interline_extract {
+        if cache_path.exists() {
+            eprintln!("Using cached PBF: {:?}", cache_path);
+            cache_path
+        } else {
+            let key = osm::interline_api_key().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "--interline-extract requires INTERLINE_OSM_EXTRACTS_API_KEY to be set"
+                )
+            })?;
+            osm::try_interline_download(extract_id, &key, &cache_path)?
+        }
+    } else if let Some(name) = bbbike_name {
         if cache_path.exists() {
             eprintln!("Using cached PBF: {:?}", cache_path);
             cache_path
@@ -1086,7 +1112,6 @@ fn cmd_generate(
             osm::try_bbbike_download(name, &cache_path)?
         }
     } else if let Some(url) = osm_url {
-        let cache_path = cache_dir.join(format!("{}.osm.pbf", osm::sanitize(id)));
         if cache_path.exists() {
             eprintln!("Using cached PBF: {:?}", cache_path);
             cache_path
@@ -1154,7 +1179,9 @@ fn cmd_generate(
     let mut out = String::new();
     out.push_str("{\n");
     out.push_str(&format!("    \"id\": \"{}\",\n", id));
-    if let Some(name) = bbbike_name {
+    if let Some(extract_id) = interline_extract {
+        out.push_str(&format!("    \"interline_extract\": \"{}\",\n", extract_id));
+    } else if let Some(name) = bbbike_name {
         out.push_str(&format!("    \"bbbike_name\": \"{}\",\n", name));
     } else if let Some(url) = osm_url {
         out.push_str(&format!("    \"osm_url\": \"{}\",\n", url));

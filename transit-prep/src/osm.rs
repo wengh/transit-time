@@ -11,17 +11,85 @@ const OVERPASS_URLS: &[&str] = &[
 // Known city PBF extract URLs (BBBike)
 const BBBIKE_BASE: &str = "https://download.bbbike.org/osm/bbbike";
 
+// Interline OSM Extracts download endpoint
+const INTERLINE_BASE: &str = "https://app.interline.io/osm_extracts/download_latest";
+
+/// FNV-1a hash of a URL — used to key cache filenames against their source.
+pub fn url_hash(url: &str) -> u64 {
+    url.bytes().fold(0xcbf29ce484222325u64, |h, b| {
+        h.wrapping_mul(0x100000001b3) ^ b as u64
+    })
+}
+
+pub fn interline_api_key() -> Option<String> {
+    std::env::var("INTERLINE_OSM_EXTRACTS_API_KEY")
+        .ok()
+        .filter(|v| !v.is_empty())
+}
+
+/// URL used for cache-key hashing (token deliberately omitted so the cache name
+/// is stable across users / token rotations).
+pub fn interline_source_url(extract_id: &str) -> String {
+    format!(
+        "{}?string_id={}&data_format=pbf",
+        INTERLINE_BASE, extract_id
+    )
+}
+
+pub fn bbbike_source_url(bbbike_name: &str) -> String {
+    format!("{}/{}/{}.osm.pbf", BBBIKE_BASE, bbbike_name, bbbike_name)
+}
+
+/// Pick the canonical OSM source URL from the configured sources.
+/// Returns `None` only when all three are absent (Overpass fallback).
+pub fn pick_source_url(
+    interline_extract: Option<&str>,
+    bbbike_name: Option<&str>,
+    osm_url: Option<&str>,
+) -> Option<String> {
+    if let Some(url) = osm_url {
+        Some(url.to_string())
+    } else if let Some(extract_id) = interline_extract {
+        Some(interline_source_url(extract_id))
+    } else {
+        bbbike_name.map(bbbike_source_url)
+    }
+}
+
+/// Cache file path: `<sanitized_id>_<16hex hash of source url>.<ext>`.
+pub fn pbf_cache_path(cache_dir: &Path, city: &str, source_url: &str, ext: &str) -> PathBuf {
+    cache_dir.join(format!(
+        "{}_{:016x}.{}",
+        sanitize(city),
+        url_hash(source_url),
+        ext
+    ))
+}
+
 /// Fetch pedestrian-walkable OSM data for a bounding box, caching the result.
-/// If `osm_url` is given, downloads directly from that URL.
-/// Otherwise, tries a BBBike PBF extract (if `bbbike_name` is set) then falls back to Overpass.
+///
+/// Exactly one of `interline_extract`, `bbbike_name`, or `osm_url` may be set;
+/// providing more than one is a configuration error. If none is set, falls back
+/// to an Overpass query over `bbox`.
 pub fn fetch_osm(
     bbox: (f64, f64, f64, f64),
     cache_dir: &Path,
     city: &str,
+    interline_extract: Option<&str>,
     bbbike_name: Option<&str>,
     osm_url: Option<&str>,
 ) -> Result<PathBuf> {
     let (min_lon, min_lat, max_lon, max_lat) = bbox;
+
+    let configured = interline_extract.is_some() as usize
+        + bbbike_name.is_some() as usize
+        + osm_url.is_some() as usize;
+    if configured > 1 {
+        bail!(
+            "at most one of `interline_extract`, `bbbike_name`, `osm_url` may be set for city '{}'",
+            city
+        );
+    }
 
     if let Some(url) = osm_url {
         let ext = if url.contains(".pbf") {
@@ -29,7 +97,7 @@ pub fn fetch_osm(
         } else {
             "osm.xml"
         };
-        let cache_path = cache_dir.join(format!("{}.{}", sanitize(city), ext));
+        let cache_path = pbf_cache_path(cache_dir, city, url, ext);
         if cache_path.exists() {
             eprintln!("Using cached OSM: {:?}", cache_path);
             return Ok(cache_path);
@@ -47,14 +115,36 @@ pub fn fetch_osm(
         return Ok(cache_path);
     }
 
-    // Check if a PBF cache already exists
-    let pbf_cache = cache_dir.join(format!("{}.osm.pbf", sanitize(city)));
-    if pbf_cache.exists() {
-        eprintln!("Using cached PBF: {:?}", pbf_cache);
-        return Ok(pbf_cache);
+    if let Some(extract_id) = interline_extract {
+        let cache_path = pbf_cache_path(
+            cache_dir,
+            city,
+            &interline_source_url(extract_id),
+            "osm.pbf",
+        );
+        if cache_path.exists() {
+            eprintln!("Using cached PBF: {:?}", cache_path);
+            return Ok(cache_path);
+        }
+        let key = interline_api_key().ok_or_else(|| {
+            anyhow::anyhow!(
+                "city '{}' uses interline_extract but INTERLINE_OSM_EXTRACTS_API_KEY is not set",
+                city
+            )
+        })?;
+        return try_interline_download(extract_id, &key, &cache_path);
     }
 
-    // Check if an XML cache already exists
+    if let Some(name) = bbbike_name {
+        let cache_path = pbf_cache_path(cache_dir, city, &bbbike_source_url(name), "osm.pbf");
+        if cache_path.exists() {
+            eprintln!("Using cached PBF: {:?}", cache_path);
+            return Ok(cache_path);
+        }
+        return try_bbbike_download(name, &cache_path);
+    }
+
+    // No source configured — use Overpass for the bbox.
     let xml_cache = cache_dir.join(format!(
         "osm_{:.4}_{:.4}_{:.4}_{:.4}.xml",
         min_lon, min_lat, max_lon, max_lat
@@ -63,20 +153,50 @@ pub fn fetch_osm(
         eprintln!("Using cached OSM XML: {:?}", xml_cache);
         return Ok(xml_cache);
     }
-
-    if let Some(name) = bbbike_name {
-        if let Ok(path) = try_bbbike_download(name, &pbf_cache) {
-            return Ok(path);
-        }
-        eprintln!("BBBike extract not available, falling back to Overpass...");
-    }
-
-    // Overpass for smaller areas
     fetch_overpass(bbox, &xml_cache)
 }
 
+/// Try to download a PBF extract from Interline OSM Extracts.
+pub fn try_interline_download(
+    extract_id: &str,
+    api_key: &str,
+    cache_path: &Path,
+) -> Result<PathBuf> {
+    let url = format!(
+        "{}?string_id={}&data_format=pbf&api_token={}",
+        INTERLINE_BASE,
+        urlencoded(extract_id),
+        urlencoded(api_key),
+    );
+
+    eprintln!(
+        "Trying Interline extract: {}?string_id={}&data_format=pbf&api_token=…",
+        INTERLINE_BASE, extract_id,
+    );
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(600))
+        .user_agent("Mozilla/5.0 (compatible; transit-prep/1.0)")
+        .build()?;
+
+    let resp = client.get(&url).send()?;
+
+    if !resp.status().is_success() {
+        bail!("Interline returned {}", resp.status());
+    }
+
+    let bytes = resp.bytes()?;
+    eprintln!("Downloaded PBF: {:.1} MB", bytes.len() as f64 / 1_048_576.0);
+
+    let tmp = cache_path.with_extension("tmp");
+    std::fs::File::create(&tmp)?.write_all(&bytes)?;
+    std::fs::rename(&tmp, cache_path)?;
+
+    Ok(cache_path.to_path_buf())
+}
+
 /// Try to download a city PBF extract from BBBike.
-pub(crate) fn try_bbbike_download(bbbike_name: &str, cache_path: &Path) -> Result<PathBuf> {
+pub fn try_bbbike_download(bbbike_name: &str, cache_path: &Path) -> Result<PathBuf> {
     let url = format!("{}/{}/{}.osm.pbf", BBBIKE_BASE, bbbike_name, bbbike_name);
 
     eprintln!("Trying BBBike extract: {} ...", url);
@@ -149,7 +269,7 @@ out body;"#,
     bail!("All Overpass servers failed")
 }
 
-pub(crate) fn sanitize(s: &str) -> String {
+pub fn sanitize(s: &str) -> String {
     s.chars()
         .map(|c| {
             if c.is_alphanumeric() || c == '-' || c == '_' {
