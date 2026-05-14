@@ -1,29 +1,56 @@
 {
     "id": "tokyo",
-    "enabled": false, // the feed list is not very good
+    // "enabled": false, // the feed list is not very good
     "osm_url": "https://download.geofabrik.de/asia/japan/kanto-latest.osm.pbf",
     "feed_ids": [
-        "https://blues3.transitpdf.com/files/uran/improved-gtfs-tokyo-railways.zip", // Consolidated feed for Tokyo railways https://busmaps.com/en/japan/MKuran/tokyo-railways
-        "f-toei~data~toei~train~gtfs~jp", // Toei (subway, Arakawa tram)
-        "f-tokyometro~data~tokyometro~train~gtfs~jp", // Tokyo Metro (9 subway lines)
-        "f-mir~data~mir~train~gtfs~jp", // Tsukuba Express
+        // Consolidated rail feed: 43 agencies / 160 routes — JR East, Tokyo Metro, Toei (subway + Arakawa tram),
+        // Tobu, Tokyu, Keio, Odakyu, Seibu, Keikyu, Keisei, Sotetsu, Tsukuba Express, Yokohama Municipal, etc.
+        // https://busmaps.com/en/japan/MKuran/tokyo-railways
+        // Individual f-toei~train / f-tokyometro~train / f-mir~train feeds are intentionally omitted —
+        // they're subsets of this feed and the preprocessor merges without deduping stop_times,
+        // which would double-count departures and inflate reachability stats.
+        "https://blues3.transitpdf.com/files/sourcedata/tokyo-railways.zip",
+        // --- Major bus operators ---
+        // MISSING FEEDS: five heavily-used private bus operators are not included —
+        //   Seibu Bus, Tobu Bus, Keikyu Bus, Kokusai Kogyo Bus, Kanachu (Kanagawa Chuo Kotsu).
+        // They are absent from both Transitland and gtfs-data.jp; they publish GTFS only via
+        // ODPT (api.odpt.org), which requires a free developer token embedded in the download
+        // URL.
         "f-toeibus~gtfs~jp", // Toei Bus
         "f-kantobus~alllines~jp", // Kanto Bus (west Tokyo)
         "f-keiobus~alllines~jp", // Keio Bus
-        "f-tokyubus~tokyubus~community~jp", // Tokyu Bus
-        "f-京成トランジットバス", // Keisei Transit Bus
+        "f-tokyubus~tokyubus~community~jp", // Tokyu Bus (community routes only — onestop id is ~community~)
+        "f-odakyubus~aiilines~jp", // Odakyu Bus (west/southwest Tokyo)
+        "f-nishitokyobus~ntbus~jp", // Nishi-Tokyo Bus (Hachioji, Ome)
+        "f-yokohamamunicipal~bus~jp", // Yokohama Municipal Bus
+        "f-京成トランジットバス", // Keisei Transit Bus (Urayasu/Ichikawa, Chiba)
         "f-京成トランジットバス~2", // Keisei Transit Bus 2
-        "f-hitachiautomobiletransportation~alllines~jp", // Hitachi Automotive Transportation
-        "f-hitachiautomobiletransportation~chiyoda~alllines~jp",
-        "f-hitachiautomobiletransportation~kitaalllines~jp",
+        "f-hitachiautomobiletransportation~alllines~jp", // Hitachi Jidosha Kotsu (Adachi-ku; not Ibaraki)
+        "f-hitachiautomobiletransportation~chiyoda~alllines~jp", // Chiyoda ward routes
+        "f-hitachiautomobiletransportation~kitaalllines~jp", // Kita ward routes
         "f-kawasakitsurumirinkobus~allrinko~jp", // Kawasaki Tsurumi Rinko Bus
         "f-transportationbureau~cityofkawasaki~alllines~jp", // Kawasaki City Bus
+        // --- Ward / city community buses ---
         "f-フジエクスプレス港区ちぃばす", // Minato ward Chiibus
+        "f-tokyochuocity~alldata~jp", // Chuo ward
         "f-tokyosuginamicity~greenslowmobility~jp", // Suginami ward
         "f-tokyotaitocity~megurinccby40~jp", // Taito ward Megurin
-        "f-文京区コミュニティバスbーぐる", // Bunkyo ward community bus
+        "f-文京区コミュニティバスbーぐる", // Bunkyo ward B-guru
         "f-文京区コミュニティバスbーぐる~1",
-        "f-f1301702~jp" // Shibuya ward community bus
+        "f-f1301702~jp", // Shibuya ward Hachiko bus
+        "f-katsushikacity~sakura", // Katsushika ward
+        "https://api.gtfs-data.jp/v2/organizations/arakawacity/feeds/sakura/files/feed.zip", // Arakawa ward (gtfs-data.jp; not on Transitland)
+        "f-tachikawacity~kururinbus", // Tachikawa city
+        "f-kokubunjicity~kokubunji~city~bunbus~jp", // Kokubunji city Bun-bus
+        "f-kunitachicity~kunitachi~city~kunikko~jp", // Kunitachi city Kunikko
+        "f-nishitokyocity~alllines~jp", // Nishitokyo city Hana-bus
+        "f-higashimurayamacity~alllines~jp", // Higashimurayama city Green-bus
+        "f-higashiyamatocity~alllines~odpt~jp", // Higashiyamato city Choco-bus
+        "f-kiyosecity~kiyobus~jp", // Kiyose city Kiyo-bus
+        "f-inagicity~ibas~a~course~jp", // Inagi city i-bus (A course only)
+        "f-mizuhotown~alllines~jp", // Mizuho town
+        "f-東京都町田市~コミュニティバス市民バス", // Machida city
+        "f-matsudocity~matsudo" // Matsudo city (Chiba, across the river from Katsushika)
     ],
     "name": "Tokyo, Japan",
     "file": "tokyo.bin",
@@ -33,7 +60,7 @@
         139.782
     ],
     "zoom": 12,
-    "detail": "Tokyo Metro, Toei, Tsukuba Express, Keio Bus, Tokyu Bus",
+    "detail": "JR East, Tokyo Metro, Toei, all major private railways, plus Toei/Keio/Odakyu and ward buses",
     "tags": [
         "japan",
         "subway",

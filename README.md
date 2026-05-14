@@ -350,12 +350,13 @@ Always reachable (fraction=1): 26654, sometimes: 289067
 | Mexico City | 1.5M |
 | Montreal | 22.3M |
 | Moscow | 5.0M |
-| New York City | 18.2M |
+| New York City | 18.1M |
 | Ottawa | 11.9M |
 | Paris | 17.2M |
 | Philadelphia | 4.3M |
 | San Francisco Bay Area | 10.1M |
 | Seattle | 5.4M |
+| Tokyo | 18.5M |
 | Toronto | 16.7M |
 | Vancouver | 5.4M |
 | Washington | 11.3M |
