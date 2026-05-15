@@ -42,6 +42,7 @@ fn main() {
         date: 20260509,
         transfer_slack: 60,
         max_time: 45 * 60,
+        is_warmup: false,
     };
 
     let routing = match SplitProfileRouting::compute(&prepared, &query, |_, _| {

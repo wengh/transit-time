@@ -296,6 +296,7 @@ impl TransitRouter {
         transfer_slack: u32,
         max_time: u32,
         progress_cb: Option<js_sys::Function>,
+        is_warmup: bool,
     ) -> Option<WasmProfileRouting> {
         let query = profile::ProfileQuery {
             source_node,
@@ -304,6 +305,7 @@ impl TransitRouter {
             date,
             transfer_slack,
             max_time,
+            is_warmup: is_warmup,
         };
         let cb = progress_cb;
         let result = profile::SplitProfileRouting::compute(&self.data, &query, |done, total| {

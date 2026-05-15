@@ -146,6 +146,7 @@ pub fn baseline_query(data: &PreparedData, test_id: &str) -> ProfileQuery {
         date,
         transfer_slack: slack,
         max_time,
+        is_warmup: false,
     }
 }
 

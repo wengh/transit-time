@@ -69,6 +69,7 @@ fn main() {
         date,
         transfer_slack: slack,
         max_time,
+        is_warmup: false,
     };
 
     let mut timings: Vec<Duration> = Vec::with_capacity(repeats as usize);

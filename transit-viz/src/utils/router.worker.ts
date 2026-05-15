@@ -115,12 +115,13 @@ function warmupTierUp(r: TransitRouter) {
   const t0 = performance.now();
   const p = r.compute_profile(
     sourceNode,
-    start,
-    start + 10 * 60,
+    start, // window_start
+    start + 15 * 60, // window_end
     date,
-    60,
-    60 * 60,
-    () => performance.now() - t0 > WARMUP_BUDGET_MS
+    60, // transfer_slack
+    60 * 60, // max_time
+    () => performance.now() - t0 > WARMUP_BUDGET_MS,
+    true // is_warmup
   );
   const elapsed = performance.now() - t0;
   console.log(
@@ -157,7 +158,8 @@ function handleRunQuery(id: number, params: RunQueryWorkerParams) {
       (done: number, total: number) => {
         postMessage({ id, type: 'progress', done, total } satisfies WorkerResponse);
         return cancelFlag ? Atomics.load(cancelFlag, 0) !== 0 : false;
-      }
+      },
+      false // is_warmup
     ) ?? null;
 
   if (!profile) {

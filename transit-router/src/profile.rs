@@ -63,6 +63,8 @@ pub struct ProfileQuery {
     /// Isochrone budget in seconds. Nodes unreachable within `max_time` of
     /// departing home are reported as unreachable.
     pub max_time: u32,
+    /// When `true`, `split_profile_query` forces one chunk per worker so they can all warm up. Used to force WASM tier-up.
+    pub is_warmup: bool,
 }
 
 /// Per-node isochrone summary for the map overlay.
@@ -556,15 +558,19 @@ impl ProfileRouter for SplitProfileRouting {
 
 fn split_profile_query(query: &ProfileQuery) -> Vec<ProfileQuery> {
     let max_chunk_points = MAX_DELTA as u32 - query.max_time + 1;
-    let window_points = query.window_end - query.window_start + 1;
-    let min_required_chunks = window_points.div_ceil(max_chunk_points) as usize;
-    let max_chunks_by_min_size = (window_points / MIN_SPLIT_CHUNK_SECONDS).max(1) as usize;
-    let max_allowed_chunks = max_chunks_by_min_size.max(min_required_chunks);
-    let desired_num_chunks = get_thread_count() * CHUNKS_PER_THREAD;
-    let chunk_count = desired_num_chunks
-        .max(1)
-        .clamp(min_required_chunks, max_allowed_chunks)
-        .min(window_points as usize);
+    let chunk_count = if query.is_warmup {
+        // Use thread_count chunks for warmup so each worker gets some work to do
+        get_thread_count().min(max_chunk_points as usize)
+    } else {
+        let window_points = query.window_end - query.window_start + 1;
+        let min_required_chunks = window_points.div_ceil(max_chunk_points) as usize;
+        let max_chunks_by_min_size = (window_points / MIN_SPLIT_CHUNK_SECONDS).max(1) as usize;
+        let max_allowed_chunks = max_chunks_by_min_size.max(min_required_chunks);
+        let desired_num_chunks = get_thread_count() * CHUNKS_PER_THREAD;
+        desired_num_chunks
+            .max(1)
+            .clamp(min_required_chunks, max_allowed_chunks)
+    };
 
     let mut chunk_start = query.window_start;
     let mut chunks = Vec::with_capacity(chunk_count);
