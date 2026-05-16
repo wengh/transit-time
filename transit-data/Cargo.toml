@@ -1,0 +1,12 @@
+[package]
+name = "transit-data"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "transit_data"
+path = "src/lib.rs"
+
+[dependencies]
+pco = "1"
+console_error_panic_hook = "0.1.7"
