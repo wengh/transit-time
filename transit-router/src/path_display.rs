@@ -2,9 +2,7 @@
 //!
 //! Everything here is a *pure function* of `Path` (+ `PreparedData` for colour
 //! lookups). `Path` itself is the canonical data; display strings and the
-//! dominant route colour are computed views, assembled at the serialisation
-//! boundary via [`PathView`]. This keeps `Path` free of derived fields so the
-//! same struct can be locked down by tests without drifting into a view type.
+//! dominant route colour are computed views.
 
 use crate::data::PreparedData;
 use crate::profile::{Path, PathSegment, SegmentKind};
@@ -23,28 +21,6 @@ pub struct PathDisplay {
     pub segment_lines: Vec<Vec<String>>,
     /// Summary line for the whole journey (e.g. `"Total: 17 min"`).
     pub total_time_line: String,
-}
-
-/// JSON-boundary wrapper: flattens `Path`'s fields at the top level and adds
-/// derived data (display strings, colour). Never constructed in pure-Rust
-/// hot paths — callers work with `&Path` directly and call the helpers below.
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PathView<'a> {
-    #[serde(flatten)]
-    pub path: &'a Path,
-    pub display: PathDisplay,
-    pub dominant_route_color_hex: Option<String>,
-}
-
-impl<'a> PathView<'a> {
-    pub fn new(data: &PreparedData, path: &'a Path) -> Self {
-        Self {
-            display: display(path),
-            dominant_route_color_hex: dominant_route_color(data, path),
-            path,
-        }
-    }
 }
 
 /// Produce the per-segment text lines + total-time summary for a path.

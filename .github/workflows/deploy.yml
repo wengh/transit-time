@@ -119,7 +119,7 @@ jobs:
         id: wasm-cache
         with:
           path: transit-viz/pkg/
-          key: ${{ runner.os }}-wasm-${{ hashFiles('transit-router/src/**', 'transit-router/Cargo.toml', '.cargo/config.toml', 'Makefile', 'scripts/pgo-train.sh') }}
+          key: ${{ runner.os }}-wasm-${{ hashFiles('transit-router/src/**', 'transit-router/Cargo.toml', 'transit-router-wasm/src/**', 'transit-router-wasm/Cargo.toml', 'transit-data/src/**', 'transit-data/Cargo.toml', '.cargo/config.toml', 'Makefile', 'scripts/pgo-train.sh') }}
 
       - name: Build WASM
         if: steps.wasm-cache.outputs.cache-hit != 'true'

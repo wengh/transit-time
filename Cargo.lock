@@ -2100,6 +2100,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "transit-data"
+version = "0.1.0"
+dependencies = [
+ "console_error_panic_hook",
+ "pco",
+]
+
+[[package]]
 name = "transit-prep"
 version = "0.1.0"
 dependencies = [
@@ -2130,9 +2138,7 @@ version = "0.1.0"
 dependencies = [
  "bytemuck",
  "chrono",
- "console_error_panic_hook",
  "flate2",
- "js-sys",
  "pco",
  "radix-heap",
  "rand",
@@ -2140,7 +2146,20 @@ dependencies = [
  "rayon",
  "serde",
  "serde_json",
+ "transit-data",
  "transit-prep",
+]
+
+[[package]]
+name = "transit-router-wasm"
+version = "0.1.0"
+dependencies = [
+ "console_error_panic_hook",
+ "js-sys",
+ "serde",
+ "serde_json",
+ "transit-data",
+ "transit-router",
  "wasm-bindgen",
  "wasm-bindgen-rayon",
  "web-sys",

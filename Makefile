@@ -5,7 +5,7 @@ CITY   ?= $(city)
 CITIES ?= $(cities)
 
 # Source files for change detection
-ROUTER_SRC := $(shell find transit-router/src -name '*.rs')
+ROUTER_SRC := $(shell find transit-router/src transit-router-wasm/src transit-data/src -name '*.rs')
 WASM_OUT := transit-viz/pkg/transit_router_bg.wasm
 PROFDATA := target/pgo-data/merged.profdata
 
@@ -20,10 +20,10 @@ WASM_RUSTFLAGS_PGO := "-C","target-feature=+atomics,+bulk-memory,+mutable-global
 # by running benchmark_smoke against Chicago, then builds WASM with
 # -Cprofile-use. ~17% faster routing than a plain build.
 wasm: $(WASM_OUT)
-$(WASM_OUT): $(ROUTER_SRC) transit-router/Cargo.toml .cargo/config.toml Makefile $(PROFDATA)
-	RUSTUP_TOOLCHAIN=nightly wasm-pack build transit-router --target web --out-dir ../transit-viz/pkg -- -Z build-std=panic_abort,std --config 'target.wasm32-unknown-unknown.rustflags=[$(WASM_RUSTFLAGS_PGO)]'
+$(WASM_OUT): $(ROUTER_SRC) transit-router/Cargo.toml transit-router-wasm/Cargo.toml transit-data/Cargo.toml .cargo/config.toml Makefile $(PROFDATA)
+	RUSTUP_TOOLCHAIN=nightly wasm-pack build transit-router-wasm --target web --out-dir ../transit-viz/pkg --out-name transit_router -- -Z build-std=panic_abort,std --config 'target.wasm32-unknown-unknown.rustflags=[$(WASM_RUSTFLAGS_PGO)]'
 
-$(PROFDATA): $(ROUTER_SRC) transit-router/Cargo.toml scripts/pgo-train.sh
+$(PROFDATA): $(ROUTER_SRC) transit-router/Cargo.toml transit-data/Cargo.toml scripts/pgo-train.sh
 	./scripts/pgo-train.sh $@
 
 # Build all data via pipeline (checks feeds, downloads stale, rebuilds affected)
