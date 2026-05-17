@@ -7,10 +7,11 @@
 //! production entry point: it splits the departure window into chunks, runs
 //! each chunk through the internal [`ProfileRouting`] engine (in parallel
 //! when rayon is available), and stitches the per-chunk frontiers into a
-//! single [`Isochrone`]. [`SinglePassProfileRouting`] runs the same engine
-//! over the whole window in one shot and is exposed for cross-checks and
-//! parity tests. Callers hold `impl ProfileRouter` or a concrete struct
-//! directly; internal representation is free to change.
+//! single [`Isochrone`]. Setting [`ProfileQuery::max_parallelism`] to
+//! `Some(1)` collapses the split to a single chunk — what the parity test
+//! exercises to check the split-and-merge path agrees with the unsplit one.
+//! Callers hold `impl ProfileRouter` or a concrete struct directly; internal
+//! representation is free to change.
 
 use std::{
     cmp::Reverse,
@@ -65,6 +66,16 @@ pub struct ProfileQuery {
     pub max_time: u32,
     /// When `true`, `split_profile_query` forces one chunk per worker so they can all warm up. Used to force WASM tier-up.
     pub is_warmup: bool,
+    /// Hint capping the number of chunks the window is split into. `None` =
+    /// use rayon's full thread count (default). `Some(n)` where `n <= 1`
+    /// forces a single-pass run (one chunk over the full window). Honored
+    /// only for non-warmup queries; warmup always uses full parallelism so
+    /// it can prime the thread pool / WASM tier-up.
+    ///
+    /// **Hint, not a guarantee**: the engine may still create more chunks
+    /// than this if the window is long enough that one chunk can't cover it
+    /// within `MAX_DELTA` (see `min_required_chunks` in `split_profile_query`).
+    pub max_parallelism: Option<usize>,
 }
 
 /// Per-node isochrone summary for the map overlay.
@@ -559,14 +570,24 @@ impl ProfileRouter for SplitProfileRouting {
 fn split_profile_query(query: &ProfileQuery) -> Vec<ProfileQuery> {
     let max_chunk_points = MAX_DELTA as u32 - query.max_time + 1;
     let chunk_count = if query.is_warmup {
-        // Use thread_count chunks for warmup so each worker gets some work to do
+        // Use thread_count chunks for warmup so each worker gets some work to do.
+        // Warmup ignores `max_parallelism` — the whole point is to prime the
+        // thread pool / WASM tier-up cache.
         get_thread_count().min(max_chunk_points as usize)
     } else {
         let window_points = query.window_end - query.window_start + 1;
         let min_required_chunks = window_points.div_ceil(max_chunk_points) as usize;
         let max_chunks_by_min_size = (window_points / MIN_SPLIT_CHUNK_SECONDS).max(1) as usize;
         let max_allowed_chunks = max_chunks_by_min_size.max(min_required_chunks);
-        let desired_num_chunks = get_thread_count() * CHUNKS_PER_THREAD;
+        // `max_parallelism` caps the per-query thread count below rayon's
+        // global count. `Some(0)` and `Some(1)` both fold to "one thread"
+        // (i.e. single-pass) — clamped by `min_required_chunks` which can
+        // force >1 chunks for very long windows.
+        let effective_threads = match query.max_parallelism {
+            Some(n) => n.max(1).min(get_thread_count()),
+            None => get_thread_count(),
+        };
+        let desired_num_chunks = effective_threads * CHUNKS_PER_THREAD;
         desired_num_chunks
             .max(1)
             .clamp(min_required_chunks, max_allowed_chunks)
@@ -1178,60 +1199,6 @@ impl ProfileRouting {
             total_time: arrival_delta as u32 - home_departure_delta as u32,
             segments,
         }
-    }
-}
-
-/// Single-window profile router. Runs the same engine as one chunk of
-/// [`SplitProfileRouting`], without the splitting/merging machinery. Exposed
-/// so tests can cross-check the split engine against an equivalent unsplit
-/// pass; production callers should keep using [`SplitProfileRouting`].
-pub struct SinglePassProfileRouting {
-    inner: ProfileRouting,
-    isochrone: Isochrone,
-}
-
-impl ProfileRouter for SinglePassProfileRouting {
-    fn compute(
-        data: &PreparedData,
-        query: &ProfileQuery,
-        mut progress: impl FnMut(usize, usize) -> ControlFlow<()>,
-    ) -> ControlFlow<(), Self> {
-        let index = Arc::new(Index::new(data, query));
-        let inner = match ProfileRouting::compute_with_index(data, query, index, &mut progress) {
-            ControlFlow::Continue(r) => r,
-            ControlFlow::Break(()) => return ControlFlow::Break(()),
-        };
-        let chunks = std::slice::from_ref(&inner);
-        let isochrone = compute_isochrone_chunks(data, query, chunks, 1);
-        ControlFlow::Continue(Self { inner, isochrone })
-    }
-
-    fn isochrone(&self) -> &Isochrone {
-        &self.isochrone
-    }
-
-    fn optimal_paths(&self, data: &PreparedData, destination: u32) -> Vec<Path> {
-        let mut paths = self.inner.optimal_paths(data, destination);
-        paths.sort_by_key(|p| (p.home_departure, p.arrival_time));
-        paths
-    }
-
-    fn entries<'a>(&'a self, destination: u32) -> Box<dyn Iterator<Item = (u32, u32)> + 'a> {
-        let ws = self.inner.query.window_start;
-        Box::new(self.inner.frontier.iter(destination).map(move |entry| {
-            (
-                ws + entry.home_departure_delta as u32,
-                ws + entry.arrival_delta as u32,
-            )
-        }))
-    }
-
-    fn has_any_transit_paths(&self, destination: u32) -> bool {
-        self.inner.frontier.nodes[destination as usize].has_head()
-    }
-
-    fn stats(&self) -> String {
-        String::new()
     }
 }
 

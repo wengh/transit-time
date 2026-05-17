@@ -1,10 +1,13 @@
 /// Smoke harness for profile routing. Prints load timings and isochrone stats.
 /// Usage:
 ///   cargo run --release --bin benchmark_smoke -- <city.bin> <src_lat> <src_lon> [YYYYMMDD] [window_start_hhmm] [window_minutes] [max_min] [slack_s] [repeats]
+use std::ops::ControlFlow;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
-use transit_router::profile::ProfileRouter as _;
-use transit_router::{data, profile, router};
+
+use chrono::{Duration as ChronoDuration, NaiveDate};
+use transit_router::{IsochroneParams, Router, SinceMidnight, TimeWindow};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -19,7 +22,7 @@ fn main() {
     let bin_path = PathBuf::from(&args[1]);
     let src_lat: f64 = args[2].parse().expect("src_lat");
     let src_lon: f64 = args[3].parse().expect("src_lon");
-    let date: u32 = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(20260413);
+    let date_yyyymmdd: u32 = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(20260413);
     let hhmm: u32 = args.get(5).and_then(|s| s.parse().ok()).unwrap_or(900);
     let window_minutes: u32 = args.get(6).and_then(|s| s.parse().ok()).unwrap_or(60);
     let max_min: u32 = args.get(7).and_then(|s| s.parse().ok()).unwrap_or(45);
@@ -28,7 +31,6 @@ fn main() {
 
     let window_start = (hhmm / 100) * 3600 + (hhmm % 100) * 60;
     let window_end = window_start + window_minutes * 60;
-    let max_time = max_min * 60;
 
     println!("Loading {:?} ...", bin_path);
     let raw = std::fs::read(&bin_path).expect("read city binary");
@@ -44,13 +46,18 @@ fn main() {
     } else {
         &raw[..]
     };
-    let (prepared, load_stats) = data::load_with_stats(buf).expect("load");
+    // `load_with_stats` so we print the per-section breakdown the README's
+    // perf table cites. Then hand the decoded data to `Router::from_prepared`
+    // instead of re-decoding via `Router::from_bytes`.
+    let (prepared, load_stats) =
+        transit_router::data::load_with_stats(buf).expect("load with stats");
     println!();
     load_stats.print();
 
-    let src = router::snap_to_node(&prepared, src_lat, src_lon).expect("snap source");
+    let router = Router::from_prepared(Arc::new(prepared));
+    let src = router.snap(src_lat, src_lon).expect("snap source");
     println!();
-    println!("Source node: {src}");
+    println!("Source node: {}", src.get());
     println!(
         "Window: {:02}:{:02}–{:02}:{:02} ({} min), max_time={} min, slack={}s",
         window_start / 3600,
@@ -62,32 +69,32 @@ fn main() {
         slack,
     );
 
-    let query = profile::ProfileQuery {
-        source_node: src,
-        window_start,
-        window_end,
+    let date = decode_yyyymmdd(date_yyyymmdd);
+    let params = IsochroneParams {
+        source: src,
         date,
-        transfer_slack: slack,
-        max_time,
-        is_warmup: false,
+        window: TimeWindow {
+            start: SinceMidnight::from_seconds(window_start),
+            end: SinceMidnight::from_seconds(window_end),
+        },
+        max_time: ChronoDuration::seconds((max_min * 60) as i64),
+        transfer_slack: ChronoDuration::seconds(slack as i64),
+        max_parallelism: None,
     };
 
     let mut timings: Vec<Duration> = Vec::with_capacity(repeats as usize);
-    let mut routing_opt = None;
+    let mut iso_opt = None;
     for i in 0..repeats {
         let t0 = Instant::now();
-        let routing = match profile::SplitProfileRouting::compute(&prepared, &query, |_, _| {
-            std::ops::ControlFlow::Continue(())
-        }) {
-            std::ops::ControlFlow::Continue(r) => r,
-            std::ops::ControlFlow::Break(()) => unreachable!("smoke progress never cancels"),
-        };
+        let iso = router
+            .isochrone(params.clone(), |_, _| ControlFlow::Continue(()))
+            .expect("isochrone");
         let dt = t0.elapsed();
         timings.push(dt);
         println!("  run {}/{}: {:.3} s", i + 1, repeats, dt.as_secs_f64());
-        routing_opt = Some(routing);
+        iso_opt = Some(iso);
     }
-    let routing = routing_opt.unwrap();
+    let iso = iso_opt.unwrap();
 
     let total: Duration = timings.iter().sum();
     let avg = total / timings.len() as u32;
@@ -95,14 +102,15 @@ fn main() {
     let max = *timings.iter().max().unwrap();
     let elapsed = avg;
 
-    let iso = routing.isochrone();
-    let num_threads = iso.num_threads;
+    let num_threads = iso.num_threads_used();
+    let mean = iso.mean_travel_time();
+    let fraction = iso.reachable_fraction();
+
     // Reachability is signaled by `reachable_fraction > 0`; the mean is
     // undefined (zero-init) for never-reachable nodes.
-    let reachable: Vec<u32> = iso
-        .mean_travel_time
+    let reachable: Vec<u32> = mean
         .iter()
-        .zip(iso.reachable_fraction.iter())
+        .zip(fraction.iter())
         .filter(|&(_, &f)| f > 0)
         .map(|(&t, _)| t as u32)
         .collect();
@@ -134,13 +142,9 @@ fn main() {
             },
         );
     }
-    println!(
-        "Nodes reached: {} / {}",
-        reachable.len(),
-        iso.mean_travel_time.len()
-    );
+    println!("Nodes reached: {} / {}", reachable.len(), mean.len());
 
-    println!("{}", routing.stats());
+    println!("{}", iso.stats());
 
     if !reachable.is_empty() {
         let min_t = reachable.iter().copied().min().unwrap_or(0);
@@ -152,18 +156,17 @@ fn main() {
             avg_t / 60,
             max_t / 60
         );
-        let always_reachable = iso
-            .reachable_fraction
-            .iter()
-            .filter(|&&f| f == u16::MAX)
-            .count();
-        let sometimes_reachable = iso
-            .reachable_fraction
-            .iter()
-            .filter(|&&f| f > 0 && f < u16::MAX)
-            .count();
+        let always_reachable = fraction.iter().filter(|&&f| f == u16::MAX).count();
+        let sometimes_reachable = fraction.iter().filter(|&&f| f > 0 && f < u16::MAX).count();
         println!(
             "Always reachable (fraction=1): {always_reachable}, sometimes: {sometimes_reachable}"
         );
     }
+}
+
+fn decode_yyyymmdd(date: u32) -> NaiveDate {
+    let y = (date / 10_000) as i32;
+    let m = (date / 100) % 100;
+    let d = date % 100;
+    NaiveDate::from_ymd_opt(y, m, d).expect("valid YYYYMMDD")
 }

@@ -1,16 +1,19 @@
 //! WASM bindings for the pure-Rust `transit-router` engine. Browser-only.
 //!
-//! Everything in this crate is glue: type translation between `transit_router`
-//! types and JS/WebAssembly, plus JSON serialization for the path-display
-//! boundary. The routing algorithm lives in `transit_router::profile`.
+//! Everything in this crate is glue: type translation between
+//! [`transit_router`] types and JS/WebAssembly, plus JSON serialization for
+//! the path-display boundary. The routing algorithm lives in
+//! [`transit_router::profile`]; the idiomatic-Rust facade in
+//! [`transit_router::api`] is what this crate wraps.
 
 use std::collections::HashMap;
+use std::ops::ControlFlow;
 
+use chrono::{Duration, NaiveDate};
 use serde::Serialize;
 use transit_data::PreparedData;
 use transit_router::path_display;
-use transit_router::profile::{self, ProfileRouter as _};
-use transit_router::router;
+use transit_router::{Isochrone, IsochroneParams, NodeId, Path, Router, SinceMidnight, TimeWindow};
 use wasm_bindgen::prelude::*;
 
 /// Re-export wasm-bindgen-rayon's thread-pool initializer. The JS side calls
@@ -27,53 +30,51 @@ pub fn mark_rayon_ready() {
 
 // === WASM wrappers ===
 
-/// Thin WASM adapter over [`profile::SplitProfileRouting`]. All logic lives
-/// inside the inner pure-Rust struct; this exists only to serialize outputs
-/// for JS.
+/// Thin WASM adapter over [`Isochrone`]. All logic lives inside the inner
+/// pure-Rust struct; this exists only to serialize outputs for JS.
 #[wasm_bindgen]
 pub struct WasmProfileRouting {
-    inner: profile::SplitProfileRouting,
+    inner: Isochrone,
 }
 
 #[wasm_bindgen]
 impl WasmProfileRouting {
     /// Per-node mean travel time (seconds) over reachable departures in the
-    /// window. Undefined when `reachable_fractions()[i] == 0` — consumers must
-    /// check that first. Length = `num_nodes`.
+    /// window. Undefined when `reachable_fractions()[i] == 0` — consumers
+    /// must check that first. Length = `num_nodes`.
     pub fn mean_travel_times(&self) -> Vec<u16> {
-        self.inner.isochrone().mean_travel_time.clone()
+        self.inner.mean_travel_time().to_vec()
     }
 
     /// Per-node fraction of the departure window during which the node is
     /// reachable within `max_time`, quantized over `u16::MAX`
     /// (i.e. fraction = `value / 65535`). Length = `num_nodes`.
     pub fn reachable_fractions(&self) -> Vec<u16> {
-        self.inner.isochrone().reachable_fraction.clone()
+        self.inner.reachable_fraction().to_vec()
     }
 
     pub fn num_threads(&self) -> u32 {
-        self.inner.isochrone().num_threads
+        self.inner.num_threads_used()
     }
 
     pub fn window_start(&self) -> u32 {
-        self.inner.isochrone().query.window_start
+        self.inner.params().window.start.as_seconds()
     }
 
     pub fn window_end(&self) -> u32 {
-        self.inner.isochrone().query.window_end
+        self.inner.params().window.end.as_seconds()
     }
 
     /// All Pareto-optimal paths to `destination`, JSON-serialized. The TS side
-    /// calls `JSON.parse` once per hover. Requires a `TransitRouter` for access
-    /// to the underlying `PreparedData` (names, colours).
+    /// calls `JSON.parse` once per hover. The `_router` parameter is kept for
+    /// JS-side ABI stability (the frontend still passes it); the path-display
+    /// data is resolved via the `Isochrone`'s own shared `PreparedData`.
     ///
     /// Emits a JSON object containing `{ paths: Vec<PathView>, representativeIndex: Option<usize> }`.
-    pub fn optimal_paths(&self, router: &TransitRouter, destination: u32) -> String {
-        let paths = self.inner.optimal_paths(&router.data, destination);
-        let views: Vec<PathView> = paths
-            .iter()
-            .map(|p| PathView::new(&router.data, p))
-            .collect();
+    pub fn optimal_paths(&self, _router: &TransitRouter, destination: u32) -> String {
+        let data = self.inner.data();
+        let paths = self.inner.paths(NodeId(destination));
+        let views: Vec<PathView> = paths.iter().map(|p| PathView::new(data, p)).collect();
 
         let representative_index = compute_representative_index(&paths, self.window_start());
 
@@ -102,13 +103,13 @@ impl WasmProfileRouting {
 #[serde(rename_all = "camelCase")]
 pub struct PathView<'a> {
     #[serde(flatten)]
-    pub path: &'a profile::Path,
+    pub path: &'a Path,
     pub display: path_display::PathDisplay,
     pub dominant_route_color_hex: Option<String>,
 }
 
 impl<'a> PathView<'a> {
-    pub fn new(data: &PreparedData, path: &'a profile::Path) -> Self {
+    pub fn new(data: &PreparedData, path: &'a Path) -> Self {
         Self {
             display: path_display::display(path),
             dominant_route_color_hex: path_display::dominant_route_color(data, path),
@@ -117,10 +118,10 @@ impl<'a> PathView<'a> {
     }
 }
 
-/// Computes the mode of the Pareto frontier paths,
-/// using the transit routes as signature and weighted by responsible departure time length.
-/// Returns the path with median total time among the family of paths.
-fn compute_representative_index(paths: &[profile::Path], window_start: u32) -> Option<usize> {
+/// Compute the mode of the Pareto frontier paths, using the transit routes
+/// as signature and weighted by responsible departure-time length. Returns
+/// the path with median total time among that family.
+fn compute_representative_index(paths: &[Path], window_start: u32) -> Option<usize> {
     if paths.is_empty() {
         return None;
     }
@@ -167,46 +168,47 @@ fn compute_representative_index(paths: &[profile::Path], window_start: u32) -> O
 
 #[wasm_bindgen]
 pub struct TransitRouter {
-    data: PreparedData,
+    inner: Router,
 }
 
 #[wasm_bindgen]
 impl TransitRouter {
     #[wasm_bindgen(constructor)]
     pub fn new(bytes: &[u8]) -> Result<TransitRouter, JsValue> {
-        let data = transit_data::load(bytes).map_err(|e| JsValue::from_str(&format!("{}", e)))?;
-        Ok(TransitRouter { data })
+        let inner = Router::from_bytes(bytes).map_err(|e| JsValue::from_str(&format!("{e}")))?;
+        Ok(TransitRouter { inner })
     }
 
     pub fn num_nodes(&self) -> u32 {
-        self.data.num_nodes as u32
+        self.inner.data().num_nodes as u32
     }
 
     pub fn num_edges(&self) -> u32 {
-        self.data.num_edges as u32
+        self.inner.data().num_edges as u32
     }
 
     pub fn num_stops(&self) -> u32 {
-        self.data.num_stops as u32
+        self.inner.data().num_stops as u32
     }
 
     pub fn num_routes(&self) -> u32 {
-        self.data.route_names.len() as u32
+        self.inner.data().route_names.len() as u32
     }
 
     pub fn node_lat(&self, idx: u32) -> f64 {
-        self.data.nodes[idx as usize].lat
+        self.inner.data().nodes[idx as usize].lat
     }
 
     pub fn node_lon(&self, idx: u32) -> f64 {
-        self.data.nodes[idx as usize].lon
+        self.inner.data().nodes[idx as usize].lon
     }
 
-    /// Return all node positions as flat [lat0, lon0, lat1, lon1, ...] array.
-    /// Called once after data load, cached on JS side.
+    /// Return all node positions as a flat `[lat0, lon0, lat1, lon1, …]`
+    /// array. Called once after data load, cached on JS side.
     pub fn all_node_coords(&self) -> Vec<f64> {
-        let mut out = Vec::with_capacity(self.data.num_nodes * 2);
-        for n in &self.data.nodes {
+        let data = self.inner.data();
+        let mut out = Vec::with_capacity(data.num_nodes * 2);
+        for n in &data.nodes {
             out.push(n.lat);
             out.push(n.lon);
         }
@@ -214,16 +216,17 @@ impl TransitRouter {
     }
 
     pub fn stop_name(&self, idx: u32) -> String {
-        self.data.stops[idx as usize].name.clone()
+        self.inner.data().stops[idx as usize].name.clone()
     }
 
     pub fn stop_node(&self, idx: u32) -> u32 {
-        self.data.stop_to_node(idx)
+        self.inner.data().stop_to_node(idx)
     }
 
     pub fn route_name(&self, idx: u32) -> String {
-        if (idx as usize) < self.data.route_names.len() {
-            self.data.route_names[idx as usize].clone()
+        let data = self.inner.data();
+        if (idx as usize) < data.route_names.len() {
+            data.route_names[idx as usize].clone()
         } else {
             String::new()
         }
@@ -233,8 +236,9 @@ impl TransitRouter {
     /// [`path_display::adjust_color_for_visibility`] so callers don't re-run
     /// the luminance check in JS. Empty string when the route has no colour.
     pub fn route_color(&self, idx: u32) -> String {
-        if (idx as usize) < self.data.route_colors.len() {
-            if let Some(color) = self.data.route_colors[idx as usize] {
+        let data = self.inner.data();
+        if (idx as usize) < data.route_colors.len() {
+            if let Some(color) = data.route_colors[idx as usize] {
                 return path_display::adjust_color_for_visibility(&color.to_hex())
                     .unwrap_or_default();
             }
@@ -243,36 +247,36 @@ impl TransitRouter {
     }
 
     pub fn node_stop_name(&self, node_idx: u32) -> String {
-        if let Some(stop_idx) = self.data.node_to_stop(node_idx) {
-            return self.data.stops[stop_idx as usize].name.clone();
+        let data = self.inner.data();
+        if let Some(stop_idx) = data.node_to_stop(node_idx) {
+            return data.stops[stop_idx as usize].name.clone();
         }
         String::new()
     }
 
     pub fn num_patterns(&self) -> u32 {
-        self.data.patterns.len() as u32
+        self.inner.data().patterns.len() as u32
     }
 
     pub fn pattern_day_mask(&self, idx: u32) -> u8 {
-        self.data.patterns[idx as usize].day_mask
+        self.inner.data().patterns[idx as usize].day_mask
     }
 
     pub fn num_patterns_for_date(&self, date: u32) -> u32 {
-        router::patterns_for_date(&self.data, date).len() as u32
+        let nd = decode_yyyymmdd(date);
+        self.inner.patterns_for_date(nd) as u32
     }
 
     pub fn snap_to_node(&self, lat: f64, lon: f64) -> Option<u32> {
-        router::snap_to_node(&self.data, lat, lon)
+        self.inner.snap(lat, lon).map(|n| n.get())
     }
 
-    /// Run profile routing over `[window_start, window_end]`. Returns an opaque
-    /// handle containing the isochrone (for map rendering) and internal Pareto
-    /// frontier state (for subsequent `optimal_paths` queries).
+    /// Run profile routing over `[window_start, window_end]`. Returns an
+    /// opaque handle containing the isochrone (for map rendering) and the
+    /// internal Pareto frontier (for subsequent `optimal_paths` queries).
     ///
-    /// `progress_cb` (optional): called with `(done, total)` during the
-    /// transit phase so the caller can report progress to the UI. The JS
-    /// callback returns truthy to request cancellation; if it does (or any
-    /// other cancellation path fires) this method returns `None`.
+    /// `progress_cb`: called with `(done, total)` from the transit phase;
+    /// returning truthy from JS cancels and produces `None`.
     pub fn compute_profile(
         &self,
         source_node: u32,
@@ -284,39 +288,40 @@ impl TransitRouter {
         progress_cb: Option<js_sys::Function>,
         is_warmup: bool,
     ) -> Option<WasmProfileRouting> {
-        let query = profile::ProfileQuery {
-            source_node,
-            window_start,
-            window_end,
-            date,
-            transfer_slack,
-            max_time,
-            is_warmup: is_warmup,
+        let params = IsochroneParams {
+            source: NodeId(source_node),
+            date: decode_yyyymmdd(date),
+            window: TimeWindow {
+                start: SinceMidnight::from_seconds(window_start),
+                end: SinceMidnight::from_seconds(window_end),
+            },
+            max_time: Duration::seconds(max_time as i64),
+            transfer_slack: Duration::seconds(transfer_slack as i64),
+            max_parallelism: None,
         };
-        let cb = progress_cb;
-        let result = profile::SplitProfileRouting::compute(&self.data, &query, |done, total| {
-            if let Some(ref f) = cb {
+        let on_progress = |done: usize, total: usize| {
+            if let Some(ref f) = progress_cb {
                 let cancel = f
                     .call2(&JsValue::NULL, &JsValue::from(done), &JsValue::from(total))
                     .map(|v| v.is_truthy())
                     .unwrap_or(false);
                 if cancel {
-                    return std::ops::ControlFlow::Break(());
+                    return ControlFlow::Break(());
                 }
             }
-            std::ops::ControlFlow::Continue(())
-        });
-        result
-            .continue_value()
-            .map(|r| WasmProfileRouting { inner: r })
+            ControlFlow::Continue(())
+        };
+        let result = if is_warmup {
+            self.inner.isochrone_warmup(params, on_progress)
+        } else {
+            self.inner.isochrone(params, on_progress)
+        };
+        result.ok().map(|inner| WasmProfileRouting { inner })
     }
 
-    /// Chain per-leg GTFS shapes for a transit segment, or build a straight-line
-    /// polyline for a walk segment, from a node sequence. Flat `[lat, lon, ...]` f32s.
-    ///
-    /// `route_index`: `None`/`u32::MAX` for walk segments (straight line between
-    /// the two nodes); `Some(r)` for transit (chain per-leg shapes with straight-line
-    /// fallback when shape data is missing).
+    /// Chain per-leg GTFS shapes for a transit segment, or build a straight-
+    /// line polyline for a walk segment, from a node sequence. Returns a flat
+    /// `[lat, lon, …]` `f32` array.
     pub fn segment_shape(&self, route_index: Option<u32>, nodes: Vec<u32>) -> Vec<f32> {
         let ri = match route_index {
             None => None,
@@ -324,34 +329,35 @@ impl TransitRouter {
             Some(r) if r <= u16::MAX as u32 - 1 => Some(r as u16),
             Some(_) => None,
         };
-        path_display::segment_shape(&self.data, ri, &nodes)
+        path_display::segment_shape(self.inner.data(), ri, &nodes)
     }
 
-    /// Get the shape polyline for a single leg between two consecutive stops (by node index).
-    /// Returns flat array [lat, lon, lat, lon, ...] of the pre-sliced sub-polyline, or empty.
+    /// Get the shape polyline for a single leg between two consecutive stops
+    /// (by node index). Flat `[lat, lon, …]` `f64`. Empty when no shape data.
     pub fn route_shape_between(&self, route_idx: u32, from_node: u32, to_node: u32) -> Vec<f64> {
-        let Some(from_stop) = self.data.node_to_stop(from_node) else {
+        let data = self.inner.data();
+        let Some(from_stop) = data.node_to_stop(from_node) else {
             return Vec::new();
         };
-        let Some(to_stop) = self.data.node_to_stop(to_node) else {
+        let Some(to_stop) = data.node_to_stop(to_node) else {
             return Vec::new();
         };
 
         let key = (route_idx, from_stop, to_stop);
-        let idx = match self.data.leg_shape_keys.binary_search(&key) {
+        let idx = match data.leg_shape_keys.binary_search(&key) {
             Ok(i) => i,
             Err(_) => return Vec::new(),
         };
 
-        let start = self.data.leg_shape_offsets[idx] as usize;
-        let end = self.data.leg_shape_offsets[idx + 1] as usize;
-        let lats = &self.data.leg_shapes_lat[start..end];
-        let lons = &self.data.leg_shapes_lon[start..end];
+        let start = data.leg_shape_offsets[idx] as usize;
+        let end = data.leg_shape_offsets[idx + 1] as usize;
+        let lats = &data.leg_shapes_lat[start..end];
+        let lons = &data.leg_shapes_lon[start..end];
 
-        let min_lat = self.data.coord_min_lat;
-        let min_lon = self.data.coord_min_lon;
-        let lat_scale = self.data.coord_lat_scale;
-        let lon_scale = self.data.coord_lon_scale;
+        let min_lat = data.coord_min_lat;
+        let min_lon = data.coord_min_lon;
+        let lat_scale = data.coord_lat_scale;
+        let lon_scale = data.coord_lon_scale;
         let mut result = Vec::with_capacity(lats.len() * 2);
         for i in 0..lats.len() {
             result.push(min_lat + lats[i] as f64 / lat_scale);
@@ -359,4 +365,12 @@ impl TransitRouter {
         }
         result
     }
+}
+
+/// Engine's u32 `YYYYMMDD` → [`NaiveDate`].
+fn decode_yyyymmdd(date: u32) -> NaiveDate {
+    let y = (date / 10_000) as i32;
+    let m = (date / 100) % 100;
+    let d = date % 100;
+    NaiveDate::from_ymd_opt(y, m, d).unwrap_or_else(|| NaiveDate::from_ymd_opt(2000, 1, 1).unwrap())
 }
