@@ -1,7 +1,14 @@
 pub use transit_data as data;
+pub mod api;
 pub mod path_display;
 pub mod profile;
 pub mod router;
+
+pub use api::{
+    Entry, Isochrone, IsochroneParams, NodeId, RouteId, Router, RouterError, SinceMidnight, StopId,
+    TimeWindow,
+};
+pub use profile::{Path, PathSegment, SegmentKind};
 
 use rayon::iter::IntoParallelIterator;
 use rayon::prelude::*;

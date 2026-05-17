@@ -5,13 +5,16 @@
 ///
 /// Usage: cargo run --release --bin repro_panic -- <city.bin>
 use rayon::prelude::*;
+use std::ops::ControlFlow;
 use std::path::PathBuf;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 use std::time::{Duration, Instant};
-use transit_router::profile::{ProfileQuery, ProfileRouter as _, SplitProfileRouting};
+
+use chrono::{Duration as ChronoDuration, NaiveDate};
+use transit_router::{Isochrone, IsochroneParams, NodeId, Router, SinceMidnight, TimeWindow};
 
 fn main() {
     let bin = PathBuf::from(
@@ -32,35 +35,33 @@ fn main() {
     } else {
         &raw[..]
     };
-    let prepared = transit_router::data::load(bytes).expect("load");
 
-    let source = transit_router::router::snap_to_node(&prepared, 22.29969, 114.18028).unwrap();
-    let query = ProfileQuery {
-        source_node: source,
-        window_start: 0,
-        window_end: 97200,
-        date: 20260509,
-        transfer_slack: 60,
-        max_time: 45 * 60,
-        is_warmup: false,
+    let router = Router::from_bytes(bytes).expect("Router::from_bytes");
+    let source = router.snap(22.29969, 114.18028).expect("snap source");
+    let params = IsochroneParams {
+        source,
+        date: NaiveDate::from_ymd_opt(2026, 5, 9).unwrap(),
+        window: TimeWindow {
+            start: SinceMidnight::from_seconds(0),
+            end: SinceMidnight::from_seconds(97_200),
+        },
+        max_time: ChronoDuration::seconds(45 * 60),
+        transfer_slack: ChronoDuration::seconds(60),
+        max_parallelism: None,
     };
-
-    let routing = match SplitProfileRouting::compute(&prepared, &query, |_, _| {
-        std::ops::ControlFlow::Continue(())
-    }) {
-        std::ops::ControlFlow::Continue(r) => r,
-        std::ops::ControlFlow::Break(()) => unreachable!("repro progress never cancels"),
-    };
+    let iso = router
+        .isochrone(params, |_, _| ControlFlow::Continue(()))
+        .expect("isochrone");
 
     let target: Option<u32> = std::env::args().nth(2).and_then(|s| s.parse().ok());
     if let Some(dst) = target {
         println!("--- target destination {} ---", dst);
-        let _ = routing.optimal_paths(&prepared, dst);
+        let _ = iso.paths(NodeId(dst));
         return;
     }
 
     println!("Reconstructing paths to every node ...");
-    let n = prepared.num_nodes;
+    let n = router.data().num_nodes;
     let done = Arc::new(AtomicUsize::new(0));
     let finished = Arc::new(AtomicBool::new(false));
     let started = Instant::now();
@@ -76,7 +77,7 @@ fn main() {
     let (total, mut panicked_at) = (0..n as u32)
         .into_par_iter()
         .map(|dst| {
-            let outcome = reconstruct_destination(&prepared, &routing, dst);
+            let outcome = reconstruct_destination(&iso, dst);
             done.fetch_add(1, Ordering::Relaxed);
             outcome
         })
@@ -127,14 +128,8 @@ enum DestinationOutcome {
     Panicked(u32),
 }
 
-fn reconstruct_destination(
-    prepared: &transit_router::data::PreparedData,
-    routing: &SplitProfileRouting,
-    dst: u32,
-) -> DestinationOutcome {
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        routing.optimal_paths(prepared, dst)
-    }));
+fn reconstruct_destination(iso: &Isochrone, dst: u32) -> DestinationOutcome {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| iso.paths(NodeId(dst))));
     match result {
         Ok(paths) if paths.is_empty() => DestinationOutcome::Unreachable,
         Ok(_) => DestinationOutcome::Reachable,

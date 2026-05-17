@@ -5,15 +5,16 @@
 
 use std::io::Read;
 use std::ops::ControlFlow;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
+use chrono::{Duration as ChronoDuration, NaiveDate};
 use flate2::read::GzDecoder;
 use rand::{RngCore, SeedableRng};
 use rand_xoshiro::Xoshiro256PlusPlus;
 
 use transit_router::data::{self, PreparedData};
-use transit_router::profile::{Isochrone, ProfileQuery, ProfileRouter, SplitProfileRouting};
 use transit_router::router::{patterns_for_date, snap_to_node};
+use transit_router::{Isochrone, IsochroneParams, NodeId, Router, SinceMidnight, TimeWindow};
 
 /// Path to the fixture `.bin` file. Selected by `ROUTER_TEST_CITY`
 /// (default: `chicago`).
@@ -78,11 +79,11 @@ pub fn test_date() -> u32 {
 // Query construction
 // =============================================================================
 
-/// Baseline ProfileQuery with a temperature-biased source. The RNG seed is
-/// `run_seed() ⊕ hash(test_id)` — `run_seed()` returns a fresh random value
-/// per-process by default (logged so failures are reproducible) or the value
-/// of `ROUTER_TEST_SEED` if set.
-pub fn baseline_query(data: &PreparedData, test_id: &str) -> ProfileQuery {
+/// Baseline [`IsochroneParams`] with a temperature-biased source. The RNG
+/// seed is `run_seed() ⊕ hash(test_id)` — `run_seed()` returns a fresh
+/// random value per-process by default (logged so failures are
+/// reproducible) or the value of `ROUTER_TEST_SEED` if set.
+pub fn baseline_query(data: &PreparedData, test_id: &str) -> IsochroneParams {
     let date = test_date();
     let window_start = 9 * 3600; // 09:00
     let window_end = 10 * 3600; //  10:00
@@ -139,14 +140,17 @@ pub fn baseline_query(data: &PreparedData, test_id: &str) -> ProfileQuery {
         src.lon,
     );
 
-    ProfileQuery {
-        source_node,
-        window_start,
-        window_end,
-        date,
-        transfer_slack: slack,
-        max_time,
-        is_warmup: false,
+    IsochroneParams {
+        source: NodeId(source_node),
+        date: NaiveDate::from_ymd_opt((date / 10_000) as i32, (date / 100) % 100, date % 100)
+            .expect("valid YYYYMMDD test_date"),
+        window: TimeWindow {
+            start: SinceMidnight::from_seconds(window_start),
+            end: SinceMidnight::from_seconds(window_end),
+        },
+        max_time: ChronoDuration::seconds(max_time as i64),
+        transfer_slack: ChronoDuration::seconds(slack as i64),
+        max_parallelism: None,
     }
 }
 
@@ -280,47 +284,84 @@ pub fn random_node_within_walk<R: RngCore>(
     }
 }
 
-// =============================================================================
-// Test-side router conveniences
-// =============================================================================
+// ────────────────────────────────────────────────────────────────────────────
+// Public-API helpers used by all property tests.
+// ────────────────────────────────────────────────────────────────────────────
 
-pub fn run_split(data: &PreparedData, query: &ProfileQuery) -> SplitProfileRouting {
-    match SplitProfileRouting::compute(data, query, |_, _| ControlFlow::Continue(())) {
-        ControlFlow::Continue(r) => r,
-        ControlFlow::Break(()) => unreachable!("test progress callback never breaks"),
-    }
+/// `&'static Router` over the same fixture as [`load_fixture`]. Re-decodes
+/// the binary so the two fixtures hold independent `PreparedData` (engine
+/// `&'static PreparedData` vs Router's `Arc<PreparedData>`). The bytes are
+/// identical, so the two graphs are observationally indistinguishable.
+pub fn router_fixture() -> &'static Router {
+    static ROUTER: OnceLock<Router> = OnceLock::new();
+    ROUTER.get_or_init(|| {
+        let path = fixture_path();
+        let raw = std::fs::read(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+        let bytes: Vec<u8> = if raw.starts_with(&[0x1f, 0x8b]) {
+            let mut decoder = GzDecoder::new(&raw[..]);
+            let mut out = Vec::new();
+            decoder.read_to_end(&mut out).expect("gunzip fixture");
+            out
+        } else {
+            raw
+        };
+        let data = data::load(&bytes).expect("parse fixture");
+        Router::from_prepared(Arc::new(data))
+    })
 }
 
-pub fn collect_entries<R: ProfileRouter>(router: &R, dest: u32) -> Vec<(u32, u32)> {
-    router.entries(dest).collect()
+/// Run a query through the public [`Router::isochrone`] API.
+pub fn run_iso(router: &Router, params: &IsochroneParams) -> Isochrone {
+    router
+        .isochrone(params.clone(), |_, _| ControlFlow::Continue(()))
+        .expect("router::isochrone")
 }
 
-/// Deterministic stratified sample of reachable destinations across the
-/// travel-time histogram. Returns at most `n` distinct node indices.
-/// Walk-only reachable nodes (no transit entries) are excluded.
-///
-/// Buckets reachable nodes into `n` equal-width strata over `[0, max_time]`,
-/// then shuffles each bucket and round-robins one pop per bucket until `n`
-/// nodes are picked or all buckets are empty.
-pub fn sample_reachable_stratified<R: ProfileRouter>(
-    iso: &Isochrone,
-    router: &R,
-    n: usize,
-    seed: u64,
-) -> Vec<u32> {
-    let reachable: Vec<u32> = (0..iso.reachable_fraction.len() as u32)
-        .filter(|&i| router.has_any_transit_paths(i))
+/// Run a query forcing a specific `max_parallelism`. Used by the parity test
+/// to collapse the window to one chunk (`max_parallelism = 1`) and compare
+/// against the default split path.
+pub fn run_iso_with_max_parallelism(
+    router: &Router,
+    params: &IsochroneParams,
+    max: usize,
+) -> Isochrone {
+    let mut p = params.clone();
+    p.max_parallelism = Some(max);
+    router
+        .isochrone(p, |_, _| ControlFlow::Continue(()))
+        .expect("router::isochrone")
+}
+
+/// Per-destination Pareto frontier as `(home_departure_secs, arrival_secs)`
+/// pairs — flattens [`SinceMidnight`] back to raw u32 so tests can compare
+/// directly with `(u32, u32)` sets.
+pub fn iso_entries(iso: &Isochrone, dest: u32) -> Vec<(u32, u32)> {
+    iso.entries(NodeId(dest))
+        .into_iter()
+        .map(|e| (e.departure.as_seconds(), e.arrival.as_seconds()))
+        .collect()
+}
+
+/// Stratified sample of up to `n` destinations with at least one transit
+/// path, bucketed by mean travel time to spread the sample across the
+/// reachable histogram. Deterministic given `seed`.
+pub fn sample_reachable_stratified_iso(iso: &Isochrone, n: usize, seed: u64) -> Vec<u32> {
+    let mean = iso.mean_travel_time();
+    let frac = iso.reachable_fraction();
+    let reachable: Vec<u32> = (0..frac.len() as u32)
+        .filter(|&i| frac[i as usize] > 0)
+        .filter(|&i| !iso.entries(NodeId(i)).is_empty())
         .collect();
     if reachable.is_empty() {
         return Vec::new();
     }
     let want = n.min(reachable.len());
 
+    let max_time = iso.params().max_time.num_seconds().max(0) as u16;
     let mut by_bucket: std::collections::BTreeMap<u16, Vec<u32>> =
         std::collections::BTreeMap::new();
-    let max_time = iso.query.max_time as u16;
     for &v in &reachable {
-        let mtt = iso.mean_travel_time[v as usize];
+        let mtt = mean[v as usize];
         let bucket = ((mtt as u32 * n as u32) / (max_time.max(1) as u32 + 1)) as u16;
         by_bucket.entry(bucket).or_default().push(v);
     }
@@ -328,7 +369,6 @@ pub fn sample_reachable_stratified<R: ProfileRouter>(
     let mut rng = Xoshiro256PlusPlus::seed_from_u64(seed);
     let mut buckets: Vec<Vec<u32>> = by_bucket.into_values().collect();
     for bucket in &mut buckets {
-        // Fisher-Yates so round-robin pops are unbiased per bucket.
         for i in (1..bucket.len()).rev() {
             let j = (rng.next_u64() % (i as u64 + 1)) as usize;
             bucket.swap(i, j);
