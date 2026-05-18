@@ -233,17 +233,10 @@ impl TransitRouter {
     }
 
     /// Hex route colour for `idx`, brightness-adjusted via
-    /// [`path_display::adjust_color_for_visibility`] so callers don't re-run
-    /// the luminance check in JS. Empty string when the route has no colour.
+    /// [`path_display::route_color`] so callers don't re-run the luminance
+    /// check in JS. Empty string when the route has no colour.
     pub fn route_color(&self, idx: u32) -> String {
-        let data = self.inner.data();
-        if (idx as usize) < data.route_colors.len() {
-            if let Some(color) = data.route_colors[idx as usize] {
-                return path_display::adjust_color_for_visibility(&color.to_hex())
-                    .unwrap_or_default();
-            }
-        }
-        String::new()
+        path_display::route_color(self.inner.data(), idx).unwrap_or_default()
     }
 
     pub fn node_stop_name(&self, node_idx: u32) -> String {
@@ -330,40 +323,6 @@ impl TransitRouter {
             Some(_) => None,
         };
         path_display::segment_shape(self.inner.data(), ri, &nodes)
-    }
-
-    /// Get the shape polyline for a single leg between two consecutive stops
-    /// (by node index). Flat `[lat, lon, …]` `f64`. Empty when no shape data.
-    pub fn route_shape_between(&self, route_idx: u32, from_node: u32, to_node: u32) -> Vec<f64> {
-        let data = self.inner.data();
-        let Some(from_stop) = data.node_to_stop(from_node) else {
-            return Vec::new();
-        };
-        let Some(to_stop) = data.node_to_stop(to_node) else {
-            return Vec::new();
-        };
-
-        let key = (route_idx, from_stop, to_stop);
-        let idx = match data.leg_shape_keys.binary_search(&key) {
-            Ok(i) => i,
-            Err(_) => return Vec::new(),
-        };
-
-        let start = data.leg_shape_offsets[idx] as usize;
-        let end = data.leg_shape_offsets[idx + 1] as usize;
-        let lats = &data.leg_shapes_lat[start..end];
-        let lons = &data.leg_shapes_lon[start..end];
-
-        let min_lat = data.coord_min_lat;
-        let min_lon = data.coord_min_lon;
-        let lat_scale = data.coord_lat_scale;
-        let lon_scale = data.coord_lon_scale;
-        let mut result = Vec::with_capacity(lats.len() * 2);
-        for i in 0..lats.len() {
-            result.push(min_lat + lats[i] as f64 / lat_scale);
-            result.push(min_lon + lons[i] as f64 / lon_scale);
-        }
-        result
     }
 }
 
