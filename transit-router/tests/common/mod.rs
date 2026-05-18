@@ -61,16 +61,17 @@ pub fn load_fixture() -> &'static PreparedData {
 
 /// Date the test queries run against. Defaults to today in local time.
 /// Override via `ROUTER_TEST_DATE=YYYYMMDD` to reproduce a specific failure.
-pub fn test_date() -> u32 {
-    static ONCE: OnceLock<u32> = OnceLock::new();
+pub fn test_date() -> NaiveDate {
+    static ONCE: OnceLock<NaiveDate> = OnceLock::new();
     *ONCE.get_or_init(|| {
         if let Ok(s) = std::env::var("ROUTER_TEST_DATE") {
-            s.parse()
-                .unwrap_or_else(|e| panic!("ROUTER_TEST_DATE={s:?} is not a YYYYMMDD integer: {e}"))
+            let v: u32 = s.parse().unwrap_or_else(|e| {
+                panic!("ROUTER_TEST_DATE={s:?} is not a YYYYMMDD integer: {e}")
+            });
+            NaiveDate::from_ymd_opt((v / 10_000) as i32, (v / 100) % 100, v % 100)
+                .unwrap_or_else(|| panic!("ROUTER_TEST_DATE={s:?} is not a valid calendar date"))
         } else {
-            use chrono::Datelike;
-            let today = chrono::Local::now().date_naive();
-            today.year() as u32 * 10000 + today.month() * 100 + today.day()
+            chrono::Local::now().date_naive()
         }
     })
 }
@@ -93,7 +94,8 @@ pub fn baseline_query(data: &PreparedData, test_id: &str) -> IsochroneParams {
     let seed = run_seed();
     let city = std::env::var("ROUTER_TEST_CITY").unwrap_or_else(|_| "chicago".to_string());
     eprintln!(
-        "[router_tests] repro: ROUTER_TEST_CITY={city} ROUTER_TEST_DATE={date} ROUTER_TEST_SEED={seed}"
+        "[router_tests] repro: ROUTER_TEST_CITY={city} ROUTER_TEST_DATE={} ROUTER_TEST_SEED={seed}",
+        date.format("%Y%m%d"),
     );
     let mut rng = Xoshiro256PlusPlus::seed_from_u64(seed ^ fnv1a(test_id));
 
@@ -142,8 +144,7 @@ pub fn baseline_query(data: &PreparedData, test_id: &str) -> IsochroneParams {
 
     IsochroneParams {
         source: NodeId(source_node),
-        date: NaiveDate::from_ymd_opt((date / 10_000) as i32, (date / 100) % 100, date % 100)
-            .expect("valid YYYYMMDD test_date"),
+        date,
         window: TimeWindow {
             start: SinceMidnight::from_seconds(window_start),
             end: SinceMidnight::from_seconds(window_end),
@@ -173,7 +174,7 @@ fn fnv1a(s: &str) -> u64 {
 /// busy-stop weighting comes from the discrete events).
 pub fn stop_event_weights(
     data: &PreparedData,
-    date: u32,
+    date: NaiveDate,
     window_start: u32,
     window_end: u32,
 ) -> Vec<u32> {

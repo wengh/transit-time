@@ -13,6 +13,7 @@
 //! Callers hold `impl ProfileRouter` or a concrete struct directly; internal
 //! representation is free to change.
 
+use chrono::NaiveDate;
 use std::{
     cmp::Reverse,
     ops::ControlFlow,
@@ -57,8 +58,9 @@ pub struct ProfileQuery {
     pub window_start: u32,
     /// Absolute seconds-of-day. End of the departure-time window.
     pub window_end: u32,
-    /// YYYYMMDD.
-    pub date: u32,
+    /// Calendar date the query runs against. Selects which patterns are
+    /// active via day-of-week mask + GTFS calendar exceptions.
+    pub date: NaiveDate,
     /// Seconds of transfer slack between transit legs.
     pub transfer_slack: u32,
     /// Isochrone budget in seconds. Nodes unreachable within `max_time` of

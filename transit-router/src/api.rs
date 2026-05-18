@@ -5,7 +5,7 @@
 use std::ops::ControlFlow;
 use std::sync::Arc;
 
-use chrono::{Datelike, Duration, NaiveDate};
+use chrono::{Duration, NaiveDate};
 
 use crate::data::PreparedData;
 use crate::profile::{Path, ProfileQuery, ProfileRouter as _, SplitProfileRouting};
@@ -225,7 +225,7 @@ impl Router {
     /// Number of patterns (service-pattern + day-mask) running on `date`.
     /// Drives the "no service today" warning in the UI.
     pub fn patterns_for_date(&self, date: NaiveDate) -> usize {
-        patterns_for_date(&self.data, encode_yyyymmdd(date)).len()
+        patterns_for_date(&self.data, date).len()
     }
 
     /// Compute the isochrone. `on_progress` is called as `(done, total)` from
@@ -266,7 +266,7 @@ impl Router {
             source_node: params.source.get(),
             window_start: params.window.start.as_seconds(),
             window_end: params.window.end.as_seconds(),
-            date: encode_yyyymmdd(params.date),
+            date: params.date,
             transfer_slack: params.transfer_slack.num_seconds().max(0) as u32,
             max_time: params.max_time.num_seconds().max(0) as u32,
             is_warmup,
@@ -351,11 +351,6 @@ impl Isochrone {
     pub fn stats(&self) -> String {
         self.inner.stats()
     }
-}
-
-/// `NaiveDate` → engine's u32 `YYYYMMDD`.
-fn encode_yyyymmdd(date: NaiveDate) -> u32 {
-    date.year() as u32 * 10_000 + date.month() * 100 + date.day()
 }
 
 // Public types must be Send + Sync.
