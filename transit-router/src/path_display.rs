@@ -33,6 +33,13 @@ pub fn display(path: &Path) -> PathDisplay {
     }
 }
 
+/// Brightness-adjusted hex colour for a route. Returns `None` when the route
+/// has no GTFS-supplied colour or `route_idx` is out of range.
+pub fn route_color(data: &PreparedData, route_idx: u32) -> Option<String> {
+    let color = data.route_colors.get(route_idx as usize)?.as_ref()?;
+    adjust_color_for_visibility(&color.to_hex())
+}
+
 /// Pick the longest transit segment's route colour, brightness-adjusted for
 /// legibility on a light map. Returns `None` for walk-only paths or unknown
 /// colours. Same logic the frontend used to run per-hover.
@@ -42,9 +49,7 @@ pub fn dominant_route_color(data: &PreparedData, path: &Path) -> Option<String> 
         .iter()
         .filter(|s| s.kind == SegmentKind::Transit)
         .max_by_key(|s| s.end_time.saturating_sub(s.start_time))?;
-    let route_idx = dominant.route_index? as usize;
-    let color = data.route_colors.get(route_idx)?.as_ref()?;
-    adjust_color_for_visibility(&color.to_hex())
+    route_color(data, dominant.route_index? as u32)
 }
 
 fn format_segment(seg: &PathSegment) -> Vec<String> {
@@ -107,7 +112,10 @@ pub fn segment_shape(data: &PreparedData, route_index: Option<u16>, nodes: &[u32
     }
 }
 
-fn leg_shape_between(
+/// Chain a pre-decoded leg shape (route × from-stop × to-stop) into a flat
+/// `[lat, lon, …]` `f32` polyline. Returns `None` when the leg is absent or
+/// its stored shape is empty.
+pub fn leg_shape_between(
     data: &PreparedData,
     route_idx: u32,
     from_node: u32,
