@@ -39,22 +39,10 @@ pub fn snap_to_node(data: &PreparedData, lat: f64, lon: f64) -> Option<u32> {
     best
 }
 
-/// Convert a YYYYMMDD date to day of week (0=Mon..6=Sun).
-fn date_to_day_of_week(date: u32) -> u8 {
-    let y = (date / 10000) as i32;
-    let m = (date / 100) % 100;
-    let d = date % 100;
-    NaiveDate::from_ymd_opt(y, m, d)
-        .expect("invalid YYYYMMDD date")
-        .weekday()
-        .num_days_from_monday() as u8
-}
-
-/// Find pattern indices active on a given date (YYYYMMDD).
+/// Find pattern indices active on a given date.
 /// Checks day-of-week mask, start/end date range, and date exceptions.
-pub fn patterns_for_date(data: &PreparedData, date: u32) -> Vec<usize> {
-    let day_of_week = date_to_day_of_week(date);
-    let bit = 1u8 << day_of_week;
+pub fn patterns_for_date(data: &PreparedData, date: NaiveDate) -> Vec<usize> {
+    let bit = 1u8 << date.weekday().num_days_from_monday();
     data.patterns
         .iter()
         .enumerate()
@@ -62,23 +50,23 @@ pub fn patterns_for_date(data: &PreparedData, date: u32) -> Vec<usize> {
             if p.stop_index.events_by_stop.is_empty() && p.frequency_routes.is_empty() {
                 return false;
             }
-            // Explicitly removed on this date
             if p.date_exceptions_remove.contains(&date) {
                 return false;
             }
-            // Explicitly added on this date
             if p.date_exceptions_add.contains(&date) {
                 return true;
             }
-            // Check day-of-week mask
             if p.day_mask & bit == 0 {
                 return false;
             }
-            // Check date range (0 means unbounded)
-            if p.start_date != 0 && date < p.start_date {
+            if let Some(start) = p.start_date
+                && date < start
+            {
                 return false;
             }
-            if p.end_date != 0 && date > p.end_date {
+            if let Some(end) = p.end_date
+                && date > end
+            {
                 return false;
             }
             true

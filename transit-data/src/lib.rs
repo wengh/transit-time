@@ -1,6 +1,28 @@
 use std::time::Duration;
 extern crate console_error_panic_hook;
 
+use chrono::NaiveDate;
+
+/// Decode a u32 GTFS-style date (YYYYMMDD) into a [`NaiveDate`]. The on-disk
+/// `.bin` format keeps the compact decimal-packed representation; engine and
+/// downstream types use `NaiveDate` everywhere else.
+///
+/// Panics on a non-zero value that doesn't parse — prepared binaries are
+/// trusted to be well-formed (see the project's binary-invariant policy).
+fn yyyymmdd_to_naive_date(v: u32) -> NaiveDate {
+    let y = (v / 10_000) as i32;
+    let m = (v / 100) % 100;
+    let d = v % 100;
+    NaiveDate::from_ymd_opt(y, m, d)
+        .unwrap_or_else(|| panic!("invalid YYYYMMDD value in prepared binary: {v}"))
+}
+
+/// Wraps [`yyyymmdd_to_naive_date`] with the `0 = unbounded` sentinel used by
+/// pattern `start_date` / `end_date` columns.
+fn yyyymmdd_bound_to_naive_date(v: u32) -> Option<NaiveDate> {
+    (v != 0).then(|| yyyymmdd_to_naive_date(v))
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
 
@@ -167,10 +189,12 @@ pub struct PatternStopIndex {
 
 pub struct PatternData {
     pub day_mask: u8,
-    pub start_date: u32, // YYYYMMDD, 0 = unbounded
-    pub end_date: u32,   // YYYYMMDD, 0 = unbounded
-    pub date_exceptions_add: Vec<u32>,
-    pub date_exceptions_remove: Vec<u32>,
+    /// Inclusive lower bound of the service window. `None` = unbounded.
+    pub start_date: Option<NaiveDate>,
+    /// Inclusive upper bound of the service window. `None` = unbounded.
+    pub end_date: Option<NaiveDate>,
+    pub date_exceptions_add: Vec<NaiveDate>,
+    pub date_exceptions_remove: Vec<NaiveDate>,
     pub min_time: u32,
     pub max_time: u32,
     pub frequency_routes: Vec<FreqData>,
@@ -381,17 +405,17 @@ pub fn load_with_stats(buf: &[u8]) -> Result<(PreparedData, LoadStats), String> 
         let _pattern_id = read_u32(&buf, &mut pos);
         let day_mask = buf[pos];
         pos += 1;
-        let start_date = read_u32(&buf, &mut pos);
-        let end_date = read_u32(&buf, &mut pos);
+        let start_date = yyyymmdd_bound_to_naive_date(read_u32(&buf, &mut pos));
+        let end_date = yyyymmdd_bound_to_naive_date(read_u32(&buf, &mut pos));
         let num_add = read_u32(&buf, &mut pos) as usize;
         let mut date_exceptions_add = Vec::with_capacity(num_add);
         for _ in 0..num_add {
-            date_exceptions_add.push(read_u32(&buf, &mut pos));
+            date_exceptions_add.push(yyyymmdd_to_naive_date(read_u32(&buf, &mut pos)));
         }
         let num_remove = read_u32(&buf, &mut pos) as usize;
         let mut date_exceptions_remove = Vec::with_capacity(num_remove);
         for _ in 0..num_remove {
-            date_exceptions_remove.push(read_u32(&buf, &mut pos));
+            date_exceptions_remove.push(yyyymmdd_to_naive_date(read_u32(&buf, &mut pos)));
         }
         let min_time = read_u32(&buf, &mut pos);
         let max_time = read_u32(&buf, &mut pos);
