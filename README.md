@@ -70,7 +70,7 @@ The pipeline has two stages: offline preprocessing and in-browser routing.
 
 ### Offline: building city data files
 
-A Rust preprocessing tool (`transit-prep`) takes a city configuration (a `.jsonc` file in `cities/`) and produces a single self-contained `.bin` file for that city.
+A Rust preprocessing tool (`city-builder`) takes a city configuration (a `.jsonc` file in `cities/`) and produces a single self-contained `.bin` file for that city.
 
 The city config specifies:
 - One or more GTFS feeds, either as Transitland onestop IDs (e.g. `f-dp3-cta`) or direct URLs
@@ -140,7 +140,7 @@ This runs the pipeline which: extracts feed IDs from all city configs, checks Tr
 
 Individual cities can be built with:
 ```
-cargo run --release -p transit-prep -- prep --city-file cities/chicago.jsonc --output transit-viz/public/data/chicago.bin
+cargo run --release -p city-builder -- prep --city-file cities/chicago.jsonc --output transit-viz/public/data/chicago.bin
 ```
 
 **Start the development server** (builds everything if needed, then serves on port 5173):
@@ -193,10 +193,10 @@ cd transit-viz && npm run format:check
 The easiest way is to auto-generate a config from an Interline OSM Extracts `string_id`, a BBBike city name, or a direct OSM PBF URL:
 
 ```
-cargo run --release -p transit-prep -- generate \
+cargo run --release -p city-builder -- generate \
   --id my_city --bbbike-name MyCity --output cities/my_city.jsonc
 # or, with an Interline extract:
-#   INTERLINE_OSM_EXTRACTS_API_KEY=... cargo run --release -p transit-prep -- generate \
+#   INTERLINE_OSM_EXTRACTS_API_KEY=... cargo run --release -p city-builder -- generate \
 #     --id my_city --interline-extract some-string-id --output cities/my_city.jsonc
 ```
 
@@ -234,7 +234,7 @@ The GitHub Actions workflow (`.github/workflows/deploy.yml`) runs on every push 
 
 The deploy job has four phases:
 
-1. **Data** — runs `transit-prep pipeline --check-only` to query Transitland for updated SHA1 hashes (without downloading anything). If any feed is stale or a `.bin` file is missing, the job restores the raw GTFS/OSM download cache and runs `make data-all` to rebuild affected cities. If everything is current it skips this step entirely.
+1. **Data** — runs `city-builder pipeline --check-only` to query Transitland for updated SHA1 hashes (without downloading anything). If any feed is stale or a `.bin` file is missing, the job restores the raw GTFS/OSM download cache and runs `make data-all` to rebuild affected cities. If everything is current it skips this step entirely.
 2. **WASM** — builds the routing engine with `make wasm` (nightly Rust + wasm-pack + native PGO training on the just-built `chicago.bin`). The output is cached by source hash of `transit-router/`, the Makefile, and `scripts/pgo-train.sh`; rebuilt only on changes.
 3. **Frontend** — installs npm dependencies and runs `npm run build` to produce the static site in `transit-viz/dist/`.
 4. **Deploy** — publishes `transit-viz/dist/` to Cloudflare Pages via `wrangler pages deploy`.
