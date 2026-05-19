@@ -1,7 +1,14 @@
+//! Transitland API client: feed metadata, SHA1 polling, GTFS-zip downloads.
+
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 
 const API_BASE: &str = "https://api.transit.land/api/v2/rest";
+
+/// Drop bbox-query feeds whose last service date is older than this many
+/// days. Feeds that expired more than a month ago are almost always
+/// abandoned; including them would just produce dead trip data.
+const FEED_EXPIRY_DAYS: i64 = 30;
 
 #[derive(serde::Deserialize)]
 struct FeedsResponse {
@@ -13,8 +20,6 @@ struct FeedsResponse {
 pub struct Feed {
     pub onestop_id: String,
     pub urls: FeedUrls,
-    #[allow(dead_code)]
-    pub authorization: Option<FeedAuth>,
     pub feed_state: Option<FeedState>,
     #[serde(default)]
     pub feed_versions: Vec<FeedVersionEntry>,
@@ -38,13 +43,6 @@ pub struct FeedVersion {
 #[derive(serde::Deserialize, Clone)]
 pub struct FeedUrls {
     pub static_current: Option<String>,
-}
-
-#[derive(serde::Deserialize, Clone)]
-#[allow(dead_code)]
-pub struct FeedAuth {
-    #[serde(rename = "type")]
-    pub auth_type: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -104,7 +102,6 @@ pub fn latest_feed_sha1(api_key: &str, onestop_id: &str) -> Result<Option<String
 }
 
 /// Download the latest GTFS zip for a Transitland feed using header-based auth.
-/// Returns the raw bytes of the zip file.
 pub fn download_feed(api_key: &str, onestop_id: &str) -> Result<Vec<u8>> {
     let url = format!(
         "{}/feeds/{}/download_latest_feed_version",
@@ -163,9 +160,8 @@ pub fn query_feeds_in_bbox(api_key: &str, bbox: (f64, f64, f64, f64)) -> Result<
         }
     }
 
-    // Filter out feeds whose latest version expired over 1 month ago
     let today = chrono::Utc::now().date_naive();
-    let cutoff = today - chrono::Duration::days(30);
+    let cutoff = today - chrono::Duration::days(FEED_EXPIRY_DAYS);
     let before_filter = all_feeds.len();
     all_feeds.retain(|feed| {
         let latest_date = feed
@@ -181,7 +177,7 @@ pub fn query_feeds_in_bbox(api_key: &str, bbox: (f64, f64, f64, f64)) -> Result<
                 );
                 false
             }
-            _ => true, // keep feeds with no date info or still valid
+            _ => true,
         }
     });
     if before_filter != all_feeds.len() {

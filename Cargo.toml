@@ -1,5 +1,5 @@
 [workspace]
-members = ["transit-data", "transit-prep", "transit-router", "transit-router-wasm"]
+members = ["transit-data", "transit-prep", "transit-router", "transit-router-wasm", "city-builder"]
 resolver = "2"
 
 [workspace.dependencies]

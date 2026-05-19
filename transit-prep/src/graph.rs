@@ -111,13 +111,9 @@ fn parse_xml(osm_path: &Path) -> Result<RawOsmData> {
                     let mut lon = 0.0f64;
                     for attr in e.attributes().flatten() {
                         match attr.key.as_ref() {
-                            b"id" => id = String::from_utf8_lossy(&attr.value).parse().unwrap_or(0),
-                            b"lat" => {
-                                lat = String::from_utf8_lossy(&attr.value).parse().unwrap_or(0.0)
-                            }
-                            b"lon" => {
-                                lon = String::from_utf8_lossy(&attr.value).parse().unwrap_or(0.0)
-                            }
+                            b"id" => id = String::from_utf8_lossy(&attr.value).parse().unwrap(),
+                            b"lat" => lat = String::from_utf8_lossy(&attr.value).parse().unwrap(),
+                            b"lon" => lon = String::from_utf8_lossy(&attr.value).parse().unwrap(),
                             _ => {}
                         }
                     }
@@ -138,13 +134,9 @@ fn parse_xml(osm_path: &Path) -> Result<RawOsmData> {
                     let mut lon = 0.0f64;
                     for attr in e.attributes().flatten() {
                         match attr.key.as_ref() {
-                            b"id" => id = String::from_utf8_lossy(&attr.value).parse().unwrap_or(0),
-                            b"lat" => {
-                                lat = String::from_utf8_lossy(&attr.value).parse().unwrap_or(0.0)
-                            }
-                            b"lon" => {
-                                lon = String::from_utf8_lossy(&attr.value).parse().unwrap_or(0.0)
-                            }
+                            b"id" => id = String::from_utf8_lossy(&attr.value).parse().unwrap(),
+                            b"lat" => lat = String::from_utf8_lossy(&attr.value).parse().unwrap(),
+                            b"lon" => lon = String::from_utf8_lossy(&attr.value).parse().unwrap(),
                             _ => {}
                         }
                     }

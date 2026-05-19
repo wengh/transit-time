@@ -165,8 +165,5 @@ fn main() {
 }
 
 fn decode_yyyymmdd(date: u32) -> NaiveDate {
-    let y = (date / 10_000) as i32;
-    let m = (date / 100) % 100;
-    let d = date % 100;
-    NaiveDate::from_ymd_opt(y, m, d).expect("valid YYYYMMDD")
+    transit_router::data::yyyymmdd_to_naive_date_opt(date).expect("valid YYYYMMDD")
 }
