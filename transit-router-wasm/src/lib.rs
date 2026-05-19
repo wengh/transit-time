@@ -326,10 +326,7 @@ impl TransitRouter {
     }
 }
 
-/// Engine's u32 `YYYYMMDD` → [`NaiveDate`].
 fn decode_yyyymmdd(date: u32) -> NaiveDate {
-    let y = (date / 10_000) as i32;
-    let m = (date / 100) % 100;
-    let d = date % 100;
-    NaiveDate::from_ymd_opt(y, m, d).unwrap_or_else(|| NaiveDate::from_ymd_opt(2000, 1, 1).unwrap())
+    transit_data::yyyymmdd_to_naive_date_opt(date)
+        .unwrap_or_else(|| panic!("invalid YYYYMMDD from JS boundary: {date}"))
 }

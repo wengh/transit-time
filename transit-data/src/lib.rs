@@ -3,24 +3,23 @@ extern crate console_error_panic_hook;
 
 use chrono::NaiveDate;
 
-/// Decode a u32 GTFS-style date (YYYYMMDD) into a [`NaiveDate`]. The on-disk
-/// `.bin` format keeps the compact decimal-packed representation; engine and
-/// downstream types use `NaiveDate` everywhere else.
-///
-/// Panics on a non-zero value that doesn't parse — prepared binaries are
-/// trusted to be well-formed (see the project's binary-invariant policy).
-fn yyyymmdd_to_naive_date(v: u32) -> NaiveDate {
+/// Decode a u32 GTFS-style date (YYYYMMDD) into a [`NaiveDate`], returning
+/// `None` if the value isn't a valid calendar date. Used at the JS / CLI
+/// boundary where dates are passed as YYYYMMDD u32.
+pub fn yyyymmdd_to_naive_date_opt(v: u32) -> Option<NaiveDate> {
     let y = (v / 10_000) as i32;
     let m = (v / 100) % 100;
     let d = v % 100;
     NaiveDate::from_ymd_opt(y, m, d)
-        .unwrap_or_else(|| panic!("invalid YYYYMMDD value in prepared binary: {v}"))
 }
 
-/// Wraps [`yyyymmdd_to_naive_date`] with the `0 = unbounded` sentinel used by
-/// pattern `start_date` / `end_date` columns.
-fn yyyymmdd_bound_to_naive_date(v: u32) -> Option<NaiveDate> {
-    (v != 0).then(|| yyyymmdd_to_naive_date(v))
+fn days_to_naive_date(v: i32) -> NaiveDate {
+    NaiveDate::from_num_days_from_ce_opt(v)
+        .unwrap_or_else(|| panic!("invalid days-since-CE value in prepared binary: {v}"))
+}
+
+fn days_bound_to_naive_date(v: i32) -> Option<NaiveDate> {
+    (v != i32::MIN).then(|| days_to_naive_date(v))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -267,7 +266,7 @@ pub fn load_with_stats(buf: &[u8]) -> Result<(PreparedData, LoadStats), String> 
     }
     pos += 4;
     let version = read_u32(&buf, &mut pos);
-    if version != 11 {
+    if version != 12 {
         return Err(format!("Unsupported version {}", version));
     }
     let num_nodes = read_u32(&buf, &mut pos) as usize;
@@ -405,17 +404,17 @@ pub fn load_with_stats(buf: &[u8]) -> Result<(PreparedData, LoadStats), String> 
         let _pattern_id = read_u32(&buf, &mut pos);
         let day_mask = buf[pos];
         pos += 1;
-        let start_date = yyyymmdd_bound_to_naive_date(read_u32(&buf, &mut pos));
-        let end_date = yyyymmdd_bound_to_naive_date(read_u32(&buf, &mut pos));
+        let start_date = days_bound_to_naive_date(read_u32(&buf, &mut pos) as i32);
+        let end_date = days_bound_to_naive_date(read_u32(&buf, &mut pos) as i32);
         let num_add = read_u32(&buf, &mut pos) as usize;
         let mut date_exceptions_add = Vec::with_capacity(num_add);
         for _ in 0..num_add {
-            date_exceptions_add.push(yyyymmdd_to_naive_date(read_u32(&buf, &mut pos)));
+            date_exceptions_add.push(days_to_naive_date(read_u32(&buf, &mut pos) as i32));
         }
         let num_remove = read_u32(&buf, &mut pos) as usize;
         let mut date_exceptions_remove = Vec::with_capacity(num_remove);
         for _ in 0..num_remove {
-            date_exceptions_remove.push(yyyymmdd_to_naive_date(read_u32(&buf, &mut pos)));
+            date_exceptions_remove.push(days_to_naive_date(read_u32(&buf, &mut pos) as i32));
         }
         let min_time = read_u32(&buf, &mut pos);
         let max_time = read_u32(&buf, &mut pos);

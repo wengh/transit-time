@@ -1,3 +1,6 @@
+//! Download OSM pedestrian-walkable extracts from BBBike, Interline, or
+//! Overpass; cache by source-URL hash.
+
 use anyhow::{Result, bail};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -269,7 +272,7 @@ out body;"#,
     bail!("All Overpass servers failed")
 }
 
-pub fn sanitize(s: &str) -> String {
+fn sanitize(s: &str) -> String {
     s.chars()
         .map(|c| {
             if c.is_alphanumeric() || c == '-' || c == '_' {

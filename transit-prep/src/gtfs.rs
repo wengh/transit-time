@@ -570,7 +570,7 @@ pub fn parse_gtfs(path: &Path, bbox: (f64, f64, f64, f64)) -> Result<GtfsData> {
                 stop_index: stop_idx,
                 arrival,
                 departure,
-                stop_sequence: record.stop_sequence.parse().unwrap_or(0),
+                stop_sequence: record.stop_sequence.parse().unwrap(),
             });
         }
         // Flush the last trip.
@@ -599,8 +599,8 @@ pub fn parse_gtfs(path: &Path, bbox: (f64, f64, f64, f64)) -> Result<GtfsData> {
                         record.saturday == "1",
                         record.sunday == "1",
                     ],
-                    start_date: record.start_date.parse().unwrap_or(0),
-                    end_date: record.end_date.parse().unwrap_or(0),
+                    start_date: record.start_date.parse().unwrap(),
+                    end_date: record.end_date.parse().unwrap(),
                     added_dates: Vec::new(),
                     removed_dates: Vec::new(),
                 },
@@ -616,7 +616,7 @@ pub fn parse_gtfs(path: &Path, bbox: (f64, f64, f64, f64)) -> Result<GtfsData> {
             .from_reader(cal_dates_csv.as_bytes());
         for result in rdr.deserialize::<CalendarDateRecord>() {
             let record = result?;
-            let date: u32 = record.date.parse().unwrap_or(0);
+            let date: u32 = record.date.parse().unwrap();
             let service = services
                 .entry(record.service_id.clone())
                 .or_insert_with(|| Service {
@@ -677,7 +677,7 @@ pub fn parse_gtfs(path: &Path, bbox: (f64, f64, f64, f64)) -> Result<GtfsData> {
                     trip_id: record.trip_id,
                     start_time: start,
                     end_time: end,
-                    headway_secs: record.headway_secs.parse().unwrap_or(0),
+                    headway_secs: record.headway_secs.parse().unwrap(),
                 });
             }
         }

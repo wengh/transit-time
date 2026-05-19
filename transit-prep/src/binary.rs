@@ -222,7 +222,7 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
 
     // Header
     buf.extend_from_slice(b"TRNS");
-    write_u32(&mut buf, 11); // version
+    write_u32(&mut buf, 12); // version
     write_u32(&mut buf, num_nodes as u32);
     write_u32(&mut buf, data.edges.len() as u32);
     write_u32(&mut buf, data.stops.len() as u32);
@@ -296,15 +296,15 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
     for pattern in &data.patterns {
         write_u32(&mut buf, pattern.pattern_id);
         buf.push(pattern.day_mask);
-        write_u32(&mut buf, pattern.start_date);
-        write_u32(&mut buf, pattern.end_date);
+        write_i32(&mut buf, yyyymmdd_bound_to_days(pattern.start_date));
+        write_i32(&mut buf, yyyymmdd_bound_to_days(pattern.end_date));
         write_u32(&mut buf, pattern.date_exceptions_add.len() as u32);
         for &d in &pattern.date_exceptions_add {
-            write_u32(&mut buf, d);
+            write_i32(&mut buf, yyyymmdd_to_days(d));
         }
         write_u32(&mut buf, pattern.date_exceptions_remove.len() as u32);
         for &d in &pattern.date_exceptions_remove {
-            write_u32(&mut buf, d);
+            write_i32(&mut buf, yyyymmdd_to_days(d));
         }
         write_u32(&mut buf, pattern.min_time);
         write_u32(&mut buf, pattern.max_time);
@@ -531,6 +531,28 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
 
 fn write_u32(buf: &mut Vec<u8>, v: u32) {
     buf.extend_from_slice(&v.to_le_bytes());
+}
+
+fn write_i32(buf: &mut Vec<u8>, v: i32) {
+    buf.extend_from_slice(&v.to_le_bytes());
+}
+
+fn yyyymmdd_to_days(v: u32) -> i32 {
+    use chrono::Datelike;
+    let y = (v / 10_000) as i32;
+    let m = (v / 100) % 100;
+    let d = v % 100;
+    chrono::NaiveDate::from_ymd_opt(y, m, d)
+        .unwrap_or_else(|| panic!("invalid YYYYMMDD: {v}"))
+        .num_days_from_ce()
+}
+
+fn yyyymmdd_bound_to_days(v: u32) -> i32 {
+    if v == 0 {
+        i32::MIN
+    } else {
+        yyyymmdd_to_days(v)
+    }
 }
 
 fn write_f64(buf: &mut Vec<u8>, v: f64) {

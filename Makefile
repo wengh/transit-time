@@ -28,7 +28,7 @@ $(PROFDATA): $(ROUTER_SRC) transit-router/Cargo.toml transit-data/Cargo.toml scr
 
 # Build all data via pipeline (checks feeds, downloads stale, rebuilds affected)
 data-all:
-	cargo run --release -p transit-prep --bin transit-prep -- pipeline \
+	cargo run --release -p city-builder -- pipeline \
 		--cities-dir cities/ \
 		--output-dir transit-viz/public/data/ \
 		--cache-dir cache
@@ -36,7 +36,7 @@ data-all:
 # Build data for one city, e.g. `make data city=montreal`
 data:
 	@test -n "$(CITY)" || (echo "Usage: make data city=montreal" && exit 1)
-	cargo run --release -p transit-prep --bin transit-prep -- prep \
+	cargo run --release -p city-builder -- prep \
 		--city-file cities/$(CITY).jsonc \
 		--output transit-viz/public/data/$(CITY).bin \
 		--cache-dir cache
@@ -45,7 +45,7 @@ data:
 data-some:
 	@test -n "$(CITIES)" || (echo "Usage: make data-some cities='montreal boston'" && exit 1)
 	for city in $(CITIES); do \
-		cargo run --release -p transit-prep --bin transit-prep -- prep \
+		cargo run --release -p city-builder -- prep \
 			--city-file cities/$$city.jsonc \
 			--output transit-viz/public/data/$$city.bin \
 			--cache-dir cache || exit 1; \

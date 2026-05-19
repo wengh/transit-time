@@ -67,8 +67,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: transit-viz/public/data/
-          key: ${{ runner.os }}-bins-${{ hashFiles('transit-prep/src/**', 'transit-router/src/**', 'cities/*.jsonc') }}-${{ github.run_id }}
-          restore-keys: ${{ runner.os }}-bins-${{ hashFiles('transit-prep/src/**', 'transit-router/src/**', 'cities/*.jsonc') }}-
+          key: ${{ runner.os }}-bins-${{ hashFiles('transit-prep/src/**', 'transit-router/src/**', 'city-builder/src/**', 'cities/*.jsonc') }}-${{ github.run_id }}
+          restore-keys: ${{ runner.os }}-bins-${{ hashFiles('transit-prep/src/**', 'transit-router/src/**', 'city-builder/src/**', 'cities/*.jsonc') }}-
 
       - name: Check if rebuild needed
         id: check-feeds
@@ -76,8 +76,8 @@ jobs:
           TRANSITLAND_API_KEY: ${{ secrets.TRANSITLAND_API_KEY }}
           INTERLINE_OSM_EXTRACTS_API_KEY: ${{ secrets.INTERLINE_OSM_EXTRACTS_API_KEY }}
         run: |
-          cargo build --release -p transit-prep
-          if cargo run --release -p transit-prep -- pipeline --check-only \
+          cargo build --release -p city-builder
+          if cargo run --release -p city-builder -- pipeline --check-only \
               --cities-dir cities/ --output-dir transit-viz/public/data/ --cache-dir cache; then
             echo "needs_rebuild=false" >> "$GITHUB_OUTPUT"
           else
