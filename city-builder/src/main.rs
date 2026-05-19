@@ -226,7 +226,10 @@ fn cmd_check(city_file: &Path, cache_dir: &Path) -> Result<bool> {
                 );
                 return Ok(true);
             }
-            Ok(Some(_)) => eprintln!("Feed '{}': up to date", feed_id),
+            Ok(Some(remote_sha1)) => {
+                let _ = std::fs::write(&sha1_path, &remote_sha1);
+                eprintln!("Feed '{}': up to date", feed_id);
+            }
             Ok(None) => eprintln!("Feed '{}': no remote sha1 available", feed_id),
             Err(e) => eprintln!("WARNING: could not check '{}': {}", feed_id, e),
         }
@@ -502,7 +505,8 @@ fn cmd_pipeline(
             let name = path.file_name().unwrap_or_default().to_string_lossy();
             if (name.ends_with(".gtfs.zip")
                 || name.ends_with(".osm.pbf")
-                || name.ends_with(".osm.xml"))
+                || name.ends_with(".osm.xml")
+                || (name.starts_with("osm_") && name.ends_with(".xml")))
                 && !expected_files.contains(&path)
             {
                 eprintln!("  removing orphaned: {}", name);
