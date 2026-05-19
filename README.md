@@ -340,18 +340,18 @@ Always reachable (fraction=1): 26654, sometimes: 289067
 <!-- BEGIN sizes -->
 | City | Compressed |
 |---|---|
-| Berlin | 11.4M |
+| Berlin | 11.3M |
 | Boston | 3.4M |
 | Calgary | 2.8M |
 | Chicago | 8.1M |
 | Hong Kong | 8.7M |
-| Los Angeles | 9.4M |
+| Los Angeles | 9.5M |
 | Madrid | 8.3M |
 | Mexico City | 1.5M |
 | Montreal | 22.3M |
 | Moscow | 5.0M |
 | New York City | 18.1M |
-| Ottawa | 11.9M |
+| Ottawa | 12.0M |
 | Paris | 17.2M |
 | Philadelphia | 4.3M |
 | San Francisco Bay Area | 10.1M |
