@@ -581,15 +581,10 @@ fn split_profile_query(query: &ProfileQuery) -> Vec<ProfileQuery> {
         let min_required_chunks = window_points.div_ceil(max_chunk_points) as usize;
         let max_chunks_by_min_size = (window_points / MIN_SPLIT_CHUNK_SECONDS).max(1) as usize;
         let max_allowed_chunks = max_chunks_by_min_size.max(min_required_chunks);
-        // `max_parallelism` caps the per-query thread count below rayon's
-        // global count. `Some(0)` and `Some(1)` both fold to "one thread"
-        // (i.e. single-pass) — clamped by `min_required_chunks` which can
-        // force >1 chunks for very long windows.
-        let effective_threads = match query.max_parallelism {
+        let desired_num_chunks = match query.max_parallelism {
             Some(n) => n.max(1).min(get_thread_count()),
-            None => get_thread_count(),
+            None => get_thread_count() * CHUNKS_PER_THREAD,
         };
-        let desired_num_chunks = effective_threads * CHUNKS_PER_THREAD;
         desired_num_chunks
             .max(1)
             .clamp(min_required_chunks, max_allowed_chunks)
