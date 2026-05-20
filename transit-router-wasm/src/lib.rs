@@ -57,6 +57,13 @@ impl WasmProfileRouting {
         self.inner.num_threads_used()
     }
 
+    /// Per-node travel time (seconds) for a single `departure` (seconds since
+    /// midnight) — one animation frame. `u16::MAX` marks unreachable nodes.
+    pub fn travel_times_at(&self, departure: u32) -> Vec<u16> {
+        self.inner
+            .travel_times_at(SinceMidnight::from_seconds(departure))
+    }
+
     pub fn window_start(&self) -> u32 {
         self.inner.params().window.start.as_seconds()
     }
