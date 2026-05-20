@@ -188,6 +188,11 @@ pub trait ProfileRouter: Sized {
     /// Pareto-optimal transit path within the budget.
     fn has_any_transit_paths(&self, destination: u32) -> bool;
 
+    /// Per-node travel time (seconds) for a single home departure at absolute
+    /// second-of-day `t_abs`, clamped into the window — one animation frame.
+    /// `u16::MAX` marks unreachable nodes. Length = `data.num_nodes`.
+    fn travel_times_at(&self, t_abs: u32) -> Vec<u16>;
+
     fn stats(&self) -> String;
 }
 
@@ -566,6 +571,19 @@ impl ProfileRouter for SplitProfileRouting {
             })
             .sum();
         format!("Total profile entries: {total_entries}")
+    }
+
+    fn travel_times_at(&self, t_abs: u32) -> Vec<u16> {
+        let lo = self.chunks.first().unwrap().query.window_start;
+        let hi = self.chunks.last().unwrap().query.window_end;
+        let t = t_abs.clamp(lo, hi);
+        // Chunks tile the window; the one holding `t` answers travel(t) there.
+        let chunk = self
+            .chunks
+            .iter()
+            .find(|c| t >= c.query.window_start && t <= c.query.window_end)
+            .expect("clamped departure must fall in some chunk");
+        chunk.travel_times_at(t)
     }
 }
 
@@ -1038,6 +1056,33 @@ impl ProfileRouting {
             .collect();
         maybe_par_collect(entries, |entry| {
             self.reconstruct_path(&context, destination, entry)
+        })
+    }
+
+    /// Per-node `travel(t) = arrival − t` for home departure `t_abs`, which
+    /// must lie within this chunk's window. Capped at `query.max_time`;
+    /// `u16::MAX` for nodes unreachable within the budget.
+    fn travel_times_at(&self, t_abs: u32) -> Vec<u16> {
+        debug_assert!(
+            t_abs >= self.query.window_start && t_abs <= self.query.window_end,
+            "departure must lie within the chunk window"
+        );
+        let delta_t = (t_abs - self.query.window_start) as u16;
+        let max_time = self.query.max_time.min(u16::MAX as u32) as u16;
+        maybe_par_collect(0..self.frontier.nodes.len() as u32, |node_id| {
+            let mut best = self.patterns.walk_time(node_id);
+            // Entries ascend by home_departure; the first with home_departure
+            // ≥ delta_t gives the earliest arrival.
+            for entry in self.frontier.iter(node_id) {
+                if entry.home_departure_delta >= delta_t {
+                    let travel = entry.arrival_delta - delta_t;
+                    if travel <= max_time {
+                        best = Some(best.map_or(travel, |b| b.min(travel)));
+                    }
+                    break;
+                }
+            }
+            best.unwrap_or(u16::MAX)
         })
     }
 
