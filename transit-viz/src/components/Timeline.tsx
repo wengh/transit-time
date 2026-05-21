@@ -6,6 +6,7 @@ import {
   useAnimReady,
   useAnimRenderedDeparture,
 } from '../state/animationStore';
+import { useAppState } from '../state/AppContext';
 import { formatTime } from '../utils/format';
 
 // Frames skipped by a Shift+Arrow jump (30 min at FRAME_STEP=300).
@@ -23,6 +24,7 @@ function clamp(v: number, lo: number, hi: number): number {
 // so a 60 Hz play loop never re-renders React. Only discrete state — mode,
 // playing, ready, the rendered-frame readout — flows through hooks.
 export default function Timeline(): React.ReactNode {
+  const { state } = useAppState();
   const ready = useAnimReady();
   const mode = useAnimMode();
   const playing = useAnimPlaying();
@@ -110,7 +112,10 @@ export default function Timeline(): React.ReactNode {
     [seekToClientX]
   );
 
-  if (!ready) return null;
+  // Once a destination is pinned the sawtooth chart (with its own playback
+  // controls) becomes the scrubber, so the standalone bar steps aside. The
+  // keyboard `useEffect` above stays mounted and active regardless.
+  if (!ready || state.pinnedDest !== null) return null;
 
   const windowStart = animationStore.getWindowStart();
   const windowEnd = animationStore.getWindowEnd();

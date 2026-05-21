@@ -69,6 +69,9 @@ class AnimationStore {
   // ── Internal ──
   private frameRenderer: FrameRenderer | null = null;
   private lastRenderedDep = -1;
+  // Hover-preview snapshot. Non-null while the sawtooth chart is being hovered
+  // (not dragged): holds the committed {mode,currentTime} to restore on exit.
+  private previewSaved: { mode: AnimMode; time: number } | null = null;
   private rafId = 0;
   private lastTickTime = 0;
   private throttleTimer: ReturnType<typeof setTimeout> | null = null;
@@ -102,6 +105,7 @@ class AnimationStore {
     this.throttledTime = windowStart;
     this.renderedDeparture = windowStart;
     this.lastRenderedDep = -1;
+    this.previewSaved = null;
     this.ready = true;
     this.mode = 'average';
     this.stopRaf();
@@ -117,6 +121,7 @@ class AnimationStore {
     this.playing = false;
     this.mode = 'average';
     this.lastRenderedDep = -1;
+    this.previewSaved = null;
     this.notifyReact();
   }
 
@@ -124,6 +129,7 @@ class AnimationStore {
 
   exit(): void {
     if (this.mode === 'average') return;
+    this.previewSaved = null;
     this.stopRaf();
     this.playing = false;
     this.mode = 'average';
@@ -132,6 +138,7 @@ class AnimationStore {
 
   play(): void {
     if (!this.ready) return;
+    this.previewSaved = null;
     this.mode = 'frame';
     // Restart from the window start if the playhead is parked at the end.
     if (this.currentTime >= this.lastFrameTime()) {
@@ -146,6 +153,7 @@ class AnimationStore {
 
   pause(): void {
     if (!this.playing) return;
+    this.previewSaved = null;
     this.stopRaf();
     this.playing = false;
     this.throttledTime = this.currentTime;
@@ -160,11 +168,42 @@ class AnimationStore {
   /** Commit the playhead to a departure time (click-seek, keyboard). */
   seek(t: number): void {
     if (!this.ready) return;
+    this.previewSaved = null;
     this.mode = 'frame';
     this.currentTime = clamp(t, this.windowStart, this.lastFrameTime());
     this.throttledTime = this.currentTime;
     this.renderCurrentFrame(false);
     this.notifyRaf();
+    this.notifyReact();
+  }
+
+  /**
+   * Preview a departure time without committing it — used by hover on the
+   * sawtooth chart. The first call snapshots the committed playhead; later
+   * calls just move the preview. `clearPreview` restores the snapshot. While
+   * playing, hover preview is ignored (the playhead is already moving).
+   */
+  setPreview(t: number): void {
+    if (!this.ready || this.playing) return;
+    if (this.previewSaved === null) {
+      this.previewSaved = { mode: this.mode, time: this.currentTime };
+    }
+    this.mode = 'frame';
+    this.currentTime = clamp(t, this.windowStart, this.lastFrameTime());
+    this.throttledTime = this.currentTime;
+    this.renderCurrentFrame(false);
+    this.notifyReact();
+  }
+
+  /** Restore the committed playhead after a hover preview ends. */
+  clearPreview(): void {
+    if (this.previewSaved === null) return;
+    const { mode, time } = this.previewSaved;
+    this.previewSaved = null;
+    this.mode = mode;
+    this.currentTime = time;
+    this.throttledTime = time;
+    if (mode === 'frame') this.renderCurrentFrame(true);
     this.notifyReact();
   }
 

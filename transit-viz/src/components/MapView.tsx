@@ -267,16 +267,6 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
     async function showDestination(node: number, pin: boolean) {
       const sAtStart = stateRef.current;
       if (!sAtStart.travelTimes) return;
-      const tt = sAtStart.travelTimes[node];
-      if (isNaN(tt) || tt < 0) {
-        clearRouteOverlay();
-        if (destMarkerRef.current) {
-          destMarkerRef.current.remove();
-          destMarkerRef.current = null;
-        }
-        dispatch({ type: pin ? 'UNPIN_DESTINATION' : 'CLEAR_HOVER' });
-        return;
-      }
 
       // Re-verify state after async work. If the source changed or was
       // cleared, this destination data is stale.
@@ -548,6 +538,11 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
     function renderFrame(frame: Uint16Array) {
       const s = stateRef.current;
       if (!s.nodeCoords || !map) return;
+      // A zoom animation is in progress: Leaflet is CSS-transforming the
+      // existing iso canvas to track the tiles. Re-rendering now would replace
+      // that canvas and reset its transform, desyncing it. Skip — `zoomend`
+      // triggers a forced redraw once the animation settles.
+      if ((map as { _animatingZoom?: boolean })._animatingZoom) return;
       if (!glStateRef.current) {
         glStateRef.current = initWebGL();
       }
