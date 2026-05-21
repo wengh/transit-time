@@ -19,9 +19,10 @@ import { FrameCache } from '../utils/frameCache';
 // This file is the single source of truth for the playhead; the app reducer
 // holds no per-frame state.
 
-// Departure-time granularity of a frame, in seconds. The isochrone redraws
-// when the playhead crosses a 5-minute boundary; the thumb still moves
-// continuously between them.
+// Departure-time granularity of an autoplay frame, in seconds. During playback
+// the isochrone redraws only when the playhead crosses a 5-minute boundary; a
+// manual scrub or hover instead renders the exact playhead time, rounded to the
+// nearest second.
 export const FRAME_STEP = 300;
 
 // Wall-clock duration of a full-window playback pass.
@@ -69,6 +70,13 @@ class AnimationStore {
   // ── Internal ──
   private frameRenderer: FrameRenderer | null = null;
   private lastRenderedDep = -1;
+  // Single-flight gate for the primary (playhead) frame fetch. A manual scrub
+  // emits a distinct exact-second departure on every pointer move; without this
+  // they would all queue on the serial WASM worker. Only one fetch runs at a
+  // time — the latest target requested while busy is parked in `pendingPrimary`
+  // and chased on resolve, so a fast drag costs ~2 fetches, not ~100.
+  private primaryInflight = false;
+  private pendingPrimary = -1;
   // Hover-preview snapshot. Non-null while the sawtooth chart is being hovered
   // (not dragged): holds the committed {mode,currentTime} to restore on exit.
   private previewSaved: { mode: AnimMode; time: number } | null = null;
@@ -94,6 +102,16 @@ class AnimationStore {
     return clamp(snapped, this.windowStart, last);
   }
 
+  /**
+   * Departure of the frame to render for the current playhead. Playback snaps
+   * to the 5-minute grid so prefetched/cached frames are reused and the map
+   * redraws only on boundary crossings; a manual scrub or hover renders the
+   * exact playhead time, rounded to the nearest second for stable cache keys.
+   */
+  private depForCurrent(): number {
+    return this.playing ? this.snapToFrame(this.currentTime) : Math.round(this.currentTime);
+  }
+
   // ── Lifecycle ──
 
   /** Called when a query completes: a fresh profile is now in the worker. */
@@ -105,6 +123,8 @@ class AnimationStore {
     this.throttledTime = windowStart;
     this.renderedDeparture = windowStart;
     this.lastRenderedDep = -1;
+    this.primaryInflight = false;
+    this.pendingPrimary = -1;
     this.previewSaved = null;
     this.ready = true;
     this.mode = 'average';
@@ -121,6 +141,8 @@ class AnimationStore {
     this.playing = false;
     this.mode = 'average';
     this.lastRenderedDep = -1;
+    this.primaryInflight = false;
+    this.pendingPrimary = -1;
     this.previewSaved = null;
     this.notifyReact();
   }
@@ -170,7 +192,7 @@ class AnimationStore {
     if (!this.ready) return;
     this.previewSaved = null;
     this.mode = 'frame';
-    this.currentTime = clamp(t, this.windowStart, this.lastFrameTime());
+    this.currentTime = clamp(t, this.windowStart, this.windowEnd);
     this.throttledTime = this.currentTime;
     this.renderCurrentFrame(false);
     this.notifyRaf();
@@ -189,7 +211,7 @@ class AnimationStore {
       this.previewSaved = { mode: this.mode, time: this.currentTime };
     }
     this.mode = 'frame';
-    this.currentTime = clamp(t, this.windowStart, this.lastFrameTime());
+    this.currentTime = clamp(t, this.windowStart, this.windowEnd);
     this.throttledTime = this.currentTime;
     this.renderCurrentFrame(false);
     this.notifyReact();
@@ -207,9 +229,9 @@ class AnimationStore {
     this.notifyReact();
   }
 
-  /** Step the playhead by N frames (arrow keys). */
+  /** Step the playhead by N×5min from the exact current time (arrow keys). */
   stepFrames(n: number): void {
-    this.seek(this.snapToFrame(this.currentTime) + n * FRAME_STEP);
+    this.seek(this.currentTime + n * FRAME_STEP);
   }
 
   jumpToStart(): void {
@@ -217,7 +239,7 @@ class AnimationStore {
   }
 
   jumpToEnd(): void {
-    this.seek(this.lastFrameTime());
+    this.seek(this.windowEnd);
   }
 
   // ── Map integration ──
@@ -271,7 +293,7 @@ class AnimationStore {
 
   private renderCurrentFrame(force: boolean): void {
     if (this.mode !== 'frame' || !this.frameRenderer) return;
-    const dep = this.snapToFrame(this.currentTime);
+    const dep = this.depForCurrent();
     if (dep === this.lastRenderedDep && !force) return;
 
     const frame = this.cache.get(dep);
@@ -284,24 +306,41 @@ class AnimationStore {
       // (or the average view, if nothing has rendered yet) while we fetch.
       this.requestFrame(dep);
     }
-    this.prefetch(dep);
+    // Prefetch speculates along the 5-minute grid — useful for playback, but a
+    // free-form manual scrub rarely follows it, so only prefetch while playing.
+    if (this.playing) this.prefetch(dep);
   }
 
   private requestFrame(dep: number): void {
+    // Single-flight: while a primary fetch runs, just remember the latest
+    // target. A fast manual scrub emits dozens of distinct exact-second
+    // departures; queuing them all would back up the serial worker. When the
+    // in-flight fetch resolves we jump straight to wherever the scrub ended up.
+    if (this.primaryInflight) {
+      this.pendingPrimary = dep;
+      return;
+    }
+    this.primaryInflight = true;
     this.cache
       .fetch(dep)
-      .then((frame) => {
-        if (!frame || this.mode !== 'frame' || !this.frameRenderer) return;
-        // Only paint if the user is still on this frame.
-        if (this.snapToFrame(this.currentTime) !== dep) return;
-        this.lastRenderedDep = dep;
-        this.renderedDeparture = dep;
-        this.frameRenderer(frame);
-        this.notifyReact();
-      })
-      .catch(() => {
-        /* superseded query or worker error — drop silently */
-      });
+      .then((frame) => this.onPrimaryResolved(dep, frame))
+      .catch(() => this.onPrimaryResolved(dep, null));
+  }
+
+  private onPrimaryResolved(dep: number, frame: Uint16Array | null): void {
+    this.primaryInflight = false;
+    // Paint only if the playhead is still on this frame and still in frame mode
+    // (null frame = superseded query or worker error — drop silently).
+    if (frame && this.mode === 'frame' && this.frameRenderer && this.depForCurrent() === dep) {
+      this.lastRenderedDep = dep;
+      this.renderedDeparture = dep;
+      this.frameRenderer(frame);
+      this.notifyReact();
+    }
+    // Chase wherever the scrub moved while the worker was busy.
+    const next = this.pendingPrimary;
+    this.pendingPrimary = -1;
+    if (next >= 0 && this.mode === 'frame') this.requestFrame(next);
   }
 
   private prefetch(dep: number): void {
