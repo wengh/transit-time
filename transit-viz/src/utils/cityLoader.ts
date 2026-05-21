@@ -2,6 +2,7 @@ import { initWasm, loadRouter, numPatternsForDate } from './router';
 import { dateToYYYYMMDD } from './format';
 import type { Action } from '../state/reducer';
 import type { City } from '../cities';
+import { animationStore } from '../state/animationStore';
 
 export async function loadCity(
   city: City,
@@ -9,6 +10,8 @@ export async function loadCity(
   includePatternCount: boolean = false
 ): Promise<{ nodeCoords: Float32Array }> {
   dispatch({ type: 'START_LOADING', city });
+  // A new city means a new graph — discard any timeline state from the old one.
+  animationStore.reset();
 
   try {
     await initWasm();

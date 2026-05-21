@@ -1,8 +1,16 @@
 import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useRef } from 'react';
 import L from 'leaflet';
 import { useAppState } from '../state/AppContext';
-import { initWebGL, renderIsochrone } from '../utils/webgl';
+import {
+  initWebGL,
+  renderIsochrone,
+  renderIsochroneFrame,
+  type RenderResult,
+} from '../utils/webgl';
+import { animationStore, useAnimMode, useAnimRenderedDeparture } from '../state/animationStore';
 import { cancelInflightQuery, snapToNode, type HoverPath } from '../utils/router';
+import type { HoverData } from '../state/reducer';
+import { deriveDisplayPath } from './HoverInfo';
 import { ROUTE_COLORS } from '../utils/colors';
 import { getHashParams, setHashParams } from '../utils/urlHash';
 import { buildHoverData } from '../utils/hoverInfo';
@@ -38,6 +46,11 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
   const routePolylinesRef = useRef<L.Path[]>([]);
   const routeRendererRef = useRef<L.Canvas | null>(null);
   const drawRouteLayersRef = useRef<((paths: HoverPath[]) => void) | null>(null);
+  // Picks which route paths to draw for a destination — the full Pareto fan
+  // (average view) or just the path optimal for the current departure time
+  // (playback). Reassigned every render so imperative hover code reads the
+  // live animation state without re-running the map-events effect.
+  const resolveRoutePathsRef = useRef<(hd: HoverData) => HoverPath[]>(() => []);
   const lastHoveredNodeRef = useRef<number | null>(null);
   const renderIsoRef = useRef<(() => void) | null>(null);
 
@@ -278,7 +291,7 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
       // SET_HOVER_DEST dispatch below still lands harmlessly in hoverDest —
       // rendering uses `pinnedDest ?? hoverDest`, so the pin wins.
       if (pin || stateRef.current.pinnedDest === null) {
-        drawRouteSegments(hoverData.allPaths.filter((p) => p.segments.length > 0));
+        drawRouteSegments(resolveRoutePathsRef.current(hoverData));
       }
 
       const latLng = getNodeLatLng(node);
@@ -349,7 +362,7 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
       const s = stateRef.current;
       if (s.loadingState !== 'ready') {
         // Queue and let App.tsx drain after the first query completes.
-        dispatch({ type: 'QUEUE_PENDING_DEST', latLng: [lat, lng], trip: null });
+        dispatch({ type: 'QUEUE_PENDING_DEST', latLng: [lat, lng] });
         return;
       }
       const node = await snapToNode(lat, lng);
@@ -383,7 +396,6 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
             dispatch({
               type: 'QUEUE_PENDING_DEST',
               latLng: [e.latlng.lat, e.latlng.lng],
-              trip: null,
             });
           }
         }
@@ -440,8 +452,77 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
       }
     }
 
-    // Re-render isochrone on map move/zoom
+    // Push a finished WebGL render onto the shared Leaflet overlay layer. Both
+    // the average view and the per-frame animation draw through this — the GL
+    // canvas is reused, so the overlay just re-points at it and repositions.
+    function applyIsoResult(result: RenderResult) {
+      if (isoOverlayRef.current) {
+        (isoOverlayRef.current as any)._isoCanvas = result.canvas;
+        (isoOverlayRef.current as any)._isoBounds = result.renderBounds;
+        (isoOverlayRef.current as any)._reset();
+        return;
+      }
+      const CanvasLayer = L.Layer.extend({
+        _isoCanvas: result.canvas as HTMLCanvasElement,
+        _isoBounds: result.renderBounds as L.LatLngBounds,
+        onAdd(m: L.Map) {
+          this._map = m;
+          this._zoomAnimated = (m as any)._zoomAnimated;
+          const pane = m.getPane('overlayPane')!;
+          this._isoCanvas.style.position = 'absolute';
+          this._isoCanvas.style.pointerEvents = 'none';
+          if (this._zoomAnimated) {
+            L.DomUtil.addClass(this._isoCanvas, 'leaflet-zoom-animated');
+          }
+          pane.appendChild(this._isoCanvas);
+          this._reset();
+          return this;
+        },
+        onRemove() {
+          this._isoCanvas.remove();
+          return this;
+        },
+        getEvents() {
+          const events: Record<string, (e: any) => void> = {
+            zoom: this._reset,
+            viewreset: this._reset,
+          };
+          if (this._zoomAnimated) {
+            events.zoomanim = this._animateZoom;
+          }
+          return events;
+        },
+        _animateZoom(e: any) {
+          const m: L.Map = this._map;
+          const scale = m.getZoomScale(e.zoom);
+          const offset = (m as any)._latLngBoundsToNewLayerBounds(
+            this._isoBounds,
+            e.zoom,
+            e.center
+          ).min;
+          L.DomUtil.setTransform(this._isoCanvas, offset, scale);
+        },
+        _reset() {
+          const m: L.Map = this._map;
+          if (!m) return;
+          const topLeft = m.latLngToLayerPoint(this._isoBounds.getNorthWest());
+          const bottomRight = m.latLngToLayerPoint(this._isoBounds.getSouthEast());
+          L.DomUtil.setTransform(this._isoCanvas, topLeft, 1);
+          this._isoCanvas.style.width = bottomRight.x - topLeft.x + 'px';
+          this._isoCanvas.style.height = bottomRight.y - topLeft.y + 'px';
+        },
+      });
+      isoOverlayRef.current = new (CanvasLayer as any)().addTo(map);
+    }
+
+    // Re-render the isochrone on map move/zoom. In animation ('frame') mode the
+    // store owns what is on screen, so a viewport change is forwarded to it —
+    // it re-projects the current frame rather than redrawing the average view.
     function renderIso() {
+      if (animationStore.getMode() === 'frame') {
+        animationStore.rerenderCurrentFrame();
+        return;
+      }
       const s = stateRef.current;
       if (!s.travelTimes || !s.nodeCoords || !map) return;
       if (!glStateRef.current) {
@@ -458,67 +539,30 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
         s.sampleCounts,
         s.totalSamples
       );
-      if (result) {
-        if (isoOverlayRef.current) {
-          // Layer already added — just update its bounds and reposition
-          (isoOverlayRef.current as any)._isoCanvas = result.canvas;
-          (isoOverlayRef.current as any)._isoBounds = result.renderBounds;
-          (isoOverlayRef.current as any)._reset();
-        } else {
-          const CanvasLayer = L.Layer.extend({
-            _isoCanvas: result.canvas as HTMLCanvasElement,
-            _isoBounds: result.renderBounds as L.LatLngBounds,
-            onAdd(m: L.Map) {
-              this._map = m;
-              this._zoomAnimated = (m as any)._zoomAnimated;
-              const pane = m.getPane('overlayPane')!;
-              this._isoCanvas.style.position = 'absolute';
-              this._isoCanvas.style.pointerEvents = 'none';
-              if (this._zoomAnimated) {
-                L.DomUtil.addClass(this._isoCanvas, 'leaflet-zoom-animated');
-              }
-              pane.appendChild(this._isoCanvas);
-              this._reset();
-              return this;
-            },
-            onRemove() {
-              this._isoCanvas.remove();
-              return this;
-            },
-            getEvents() {
-              const events: Record<string, (e: any) => void> = {
-                zoom: this._reset,
-                viewreset: this._reset,
-              };
-              if (this._zoomAnimated) {
-                events.zoomanim = this._animateZoom;
-              }
-              return events;
-            },
-            _animateZoom(e: any) {
-              const m: L.Map = this._map;
-              const scale = m.getZoomScale(e.zoom);
-              const offset = (m as any)._latLngBoundsToNewLayerBounds(
-                this._isoBounds,
-                e.zoom,
-                e.center
-              ).min;
-              L.DomUtil.setTransform(this._isoCanvas, offset, scale);
-            },
-            _reset() {
-              const m: L.Map = this._map;
-              if (!m) return;
-              const topLeft = m.latLngToLayerPoint(this._isoBounds.getNorthWest());
-              const bottomRight = m.latLngToLayerPoint(this._isoBounds.getSouthEast());
-              L.DomUtil.setTransform(this._isoCanvas, topLeft, 1);
-              this._isoCanvas.style.width = bottomRight.x - topLeft.x + 'px';
-              this._isoCanvas.style.height = bottomRight.y - topLeft.y + 'px';
-            },
-          });
-          isoOverlayRef.current = new (CanvasLayer as any)().addTo(map);
-        }
-      }
+      if (result) applyIsoResult(result);
     }
+
+    // Frame renderer registered with the animation store. The rAF playback
+    // loop (and seek/step) call this directly with each departure-time frame,
+    // bypassing React entirely.
+    function renderFrame(frame: Uint16Array) {
+      const s = stateRef.current;
+      if (!s.nodeCoords || !map) return;
+      if (!glStateRef.current) {
+        glStateRef.current = initWebGL();
+      }
+      if (!glStateRef.current) return;
+      const result = renderIsochroneFrame(
+        glStateRef.current,
+        map,
+        frame,
+        s.nodeCoords,
+        s.maxTimeMin * 60,
+        L
+      );
+      if (result) applyIsoResult(result);
+    }
+    animationStore.setFrameRenderer(renderFrame);
 
     // Store render function in ref for external trigger
     renderIsoRef.current = renderIso;
@@ -545,6 +589,7 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
       map.off('mouseout', onMouseOut);
       map.off('moveend', onMoveEnd);
       map.off('zoomend', onMoveEnd);
+      animationStore.setFrameRenderer(null);
     };
   }, [dispatch]);
 
@@ -605,6 +650,32 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
     renderIsoRef.current();
   }, [state.travelTimes, state.maxTimeMin]);
 
+  // When animation exits back to the average view, redraw the 2D average
+  // isochrone — the store has stopped pushing frames. Entering 'frame' mode
+  // needs no action here: the store's enter() pushes the first frame itself.
+  const animMode = useAnimMode();
+  const animDep = useAnimRenderedDeparture();
+  useEffect(() => {
+    if (animMode === 'average') renderIsoRef.current?.();
+  }, [animMode]);
+
+  // Keep the route-path resolver current. In average mode the map shows the
+  // whole Pareto fan; in playback it shows only the path optimal for the
+  // rendered departure — the same path the HoverInfo panel describes.
+  resolveRoutePathsRef.current = (hd: HoverData): HoverPath[] => {
+    if (animMode === 'frame') {
+      const p = deriveDisplayPath(
+        hd,
+        animDep,
+        state.windowStart,
+        state.windowEnd,
+        state.maxTimeMin * 60
+      );
+      return p && p.segments.length > 0 ? [p] : [];
+    }
+    return hd.allPaths.filter((p) => p.segments.length > 0);
+  };
+
   // Clear destination marker and routes when unpinned
   useEffect(() => {
     if (state.pinnedDest === null) {
@@ -612,22 +683,16 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
     }
   }, [state.pinnedDest, clearDestination]);
 
-  // Redraw routes when the pinned hover data or the selected sample changes.
-  // With a selection, show only that path; otherwise show the full Pareto set.
-  // Gated on `pinnedDest` only — hover routes are drawn imperatively in
-  // `showDestination`, not by this effect.
+  // Redraw the pinned destination's routes whenever its hover data changes or
+  // the animation playhead moves. In playback this swaps the drawn route to
+  // the one optimal for the new departure time; in the average view it redraws
+  // the full Pareto fan. Hover routes are handled imperatively in
+  // `showDestination`, not here.
   useEffect(() => {
     const pinnedHoverData = state.pinnedDest?.hoverData;
     if (!drawRouteLayersRef.current || !pinnedHoverData) return;
-    const { selectedSampleIdx } = state;
-    const paths =
-      selectedSampleIdx !== null
-        ? [pinnedHoverData.allPaths[selectedSampleIdx]].filter(
-            (p): p is HoverPath => !!p && p.segments.length > 0
-          )
-        : pinnedHoverData.allPaths.filter((p: HoverPath) => p.segments.length > 0);
-    drawRouteLayersRef.current(paths);
-  }, [state.selectedSampleIdx, state.pinnedDest]);
+    drawRouteLayersRef.current(resolveRoutePathsRef.current(pinnedHoverData));
+  }, [state.pinnedDest, animMode, animDep]);
 
   // Draw source marker when sourceNode is set externally (URL restore)
   useEffect(() => {
@@ -651,9 +716,7 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
       pane: 'transitLines',
     }).addTo(mapRef.current);
     if (drawRouteLayersRef.current) {
-      drawRouteLayersRef.current(
-        pinnedDest.hoverData.allPaths.filter((p: HoverPath) => p.segments.length > 0)
-      );
+      drawRouteLayersRef.current(resolveRoutePathsRef.current(pinnedDest.hoverData));
     }
   }, [state.pinnedDest]);
 

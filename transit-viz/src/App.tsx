@@ -7,6 +7,7 @@ import MapView from './components/MapView';
 import type { MapViewHandle } from './components/MapView';
 import Legend from './components/Legend';
 import HoverInfo from './components/HoverInfo';
+import Timeline from './components/Timeline';
 import LocationSearch from './components/LocationSearch';
 import MobileTopBar from './components/MobileTopBar';
 import MobileBottomSheet from './components/MobileBottomSheet';
@@ -18,6 +19,7 @@ import { runQuery, snapToNode } from './utils/router';
 import { buildHoverData, getMedianPath, flattenDisplayLines } from './utils/hoverInfo';
 import type { RunQueryParams } from './utils/router';
 import { getHashParams, setHashParams } from './utils/urlHash';
+import { animationStore } from './state/animationStore';
 import './styles.css';
 
 function AppInner() {
@@ -62,7 +64,7 @@ function AppInner() {
     if (hash.src) {
       dispatch({ type: 'QUEUE_PENDING_SOURCE', latLng: hash.src });
       if (hash.dst) {
-        dispatch({ type: 'QUEUE_PENDING_DEST', latLng: hash.dst, trip: hash.trip ?? null });
+        dispatch({ type: 'QUEUE_PENDING_DEST', latLng: hash.dst });
       }
     }
 
@@ -92,14 +94,14 @@ function AppInner() {
     })();
   }, [state.loadingState, state.pendingSource, dispatch]);
 
-  // Restore pinned destination (and locked trip) after the first query
-  // completes. Reads the queued intent from state so URL-restore and
-  // in-load click both flow through the same path.
+  // Restore pinned destination after the first query completes. Reads the
+  // queued intent from state so URL-restore and in-load click both flow
+  // through the same path.
   useEffect(() => {
     if (state.computeStatus !== 'done' || !state.pendingDest) return;
     const { nodeCoords } = state;
     if (!nodeCoords) return;
-    const { latLng: latlng, trip } = state.pendingDest;
+    const { latLng: latlng } = state.pendingDest;
     dispatch({ type: 'CONSUME_PENDING_DEST' });
     (async () => {
       const [lat, lng] = latlng;
@@ -112,9 +114,6 @@ function AppInner() {
         type: 'PIN_DESTINATION',
         dest: { node, latLng, hoverData },
       });
-      if (trip !== null && trip < hoverData.allPaths.length) {
-        dispatch({ type: 'LOCK_SAMPLE', idx: trip });
-      }
     })();
   }, [state.computeStatus, state.pendingDest, dispatch]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -125,7 +124,6 @@ function AppInner() {
     setHashParams({
       src: state.sourceLatLng,
       dst: state.pinnedDest?.latLng ?? undefined,
-      trip: state.lockedSampleIdx ?? undefined,
       style: state.mapStyle,
       date: state.date,
       time: state.windowStart,
@@ -138,7 +136,6 @@ function AppInner() {
   }, [
     state.sourceLatLng,
     state.pinnedDest,
-    state.lockedSampleIdx,
     state.mapStyle,
     state.date,
     state.windowStart,
@@ -163,6 +160,9 @@ function AppInner() {
       };
 
       dispatch({ type: 'COMPUTING' });
+      // The worker's profile is about to be replaced; drop the animation
+      // store's cached frames and stop any playback before the new query.
+      animationStore.reset();
       const start = performance.now();
       runQuery(params, (done, total) => {
         dispatch({ type: 'COMPUTE_PROGRESS', done, total });
@@ -176,6 +176,9 @@ function AppInner() {
             timeMs: performance.now() - start,
             numThreads: result.numThreads,
           });
+          // A fresh profile is now in the worker — arm the timeline over the
+          // departure window this query was run for.
+          animationStore.setWindow(params.windowStart, params.windowEnd);
           // Don't unpin here — parameter-only changes should keep the destination
           // pin and sample selection. Pin teardown happens in `SET_SOURCE`.
 
@@ -196,8 +199,6 @@ function AppInner() {
             if (latestS.computeStatus !== 'done' || latestS.pinnedDest?.node !== node) return;
 
             dispatch({ type: 'SET_PINNED_HOVER_DATA', hoverData });
-            // Clear any locked sample since the array of paths has likely changed
-            dispatch({ type: 'LOCK_SAMPLE', idx: null });
           }
         })
         .catch((e) => {
@@ -354,6 +355,7 @@ function AppInner() {
           />
         </>
       )}
+      <Timeline />
     </>
   );
 }

@@ -1,9 +1,15 @@
 import React, { useEffect, useRef, useState, useCallback, useId } from 'react';
 import { useAppState } from '../state/AppContext';
-import type { HoverPath, PathSegment } from '../utils/router';
+import type { HoverPath } from '../utils/router';
 import { currentDest, type HoverData } from '../state/reducer';
 import { getMedianPath } from '../utils/hoverInfo';
 import { formatTime } from '../utils/format';
+import {
+  animationStore,
+  useAnimMode,
+  useAnimTime,
+  useAnimRenderedDeparture,
+} from '../state/animationStore';
 import PathSegmentList from './PathSegmentList';
 
 // ─── chart data types ────────────────────────────────────────────────────────
@@ -83,6 +89,7 @@ interface ChartTheme {
   walkLine: string;
   walkLineSelected: string;
   selectionRing: string;
+  playhead: string;
 }
 
 const DARK_THEME: ChartTheme = {
@@ -94,6 +101,7 @@ const DARK_THEME: ChartTheme = {
   walkLine: '#555',
   walkLineSelected: '#ccc',
   selectionRing: '#ddd',
+  playhead: '#60a5fa',
 };
 
 const LIGHT_THEME: ChartTheme = {
@@ -105,6 +113,7 @@ const LIGHT_THEME: ChartTheme = {
   walkLine: '#9ca3af',
   walkLineSelected: '#374151',
   selectionRing: '#374151',
+  playhead: '#2563eb',
 };
 
 // Returns a counter that increments whenever `ref.current` is resized. List it
@@ -148,7 +157,8 @@ function drawChart(
   canvas: HTMLCanvasElement,
   info: ChartInfo,
   selectedIdx: number | null,
-  theme: ChartTheme
+  theme: ChartTheme,
+  playheadTime: number | null
 ): void {
   const rect = canvas.getBoundingClientRect();
   const size = Math.round(rect.width);
@@ -336,15 +346,33 @@ function drawChart(
       ctx.stroke();
     }
   }
+
+  // Playhead: a vertical line marking the current departure time. The chart
+  // doubles as a scrubber, so this is the same playhead the Timeline bar shows.
+  if (playheadTime !== null && playheadTime >= windowStart && playheadTime <= windowEnd) {
+    const px = xToC(playheadTime);
+    ctx.strokeStyle = theme.playhead;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(px, pT);
+    ctx.lineTo(px, pT + plotH);
+    ctx.stroke();
+  }
 }
 
-// ─── x-position → path index ─────────────────────────────────────────────────
+// ─── time ↔ x-position ↔ path index ──────────────────────────────────────────
 
-function pathIdxAtCanvasX(canvasX: number, canvasWidth: number, info: ChartInfo): number | null {
-  const { tips, walkPathIdx, windowStart, windowEnd, yMax, walkTime } = info;
+/** Map a canvas x-pixel to the departure time it represents on the chart. */
+function timeAtCanvasX(canvasX: number, canvasWidth: number, info: ChartInfo): number {
   const { left: pL, right: pR } = PAD;
   const plotW = canvasWidth - pL - pR;
-  const t = windowStart + ((canvasX - pL) / plotW) * (windowEnd - windowStart);
+  const frac = (canvasX - pL) / plotW;
+  return info.windowStart + frac * (info.windowEnd - info.windowStart);
+}
+
+/** Which path in `allPaths` is optimal when departing at time `t`. */
+function pathIdxAtTime(t: number, info: ChartInfo): number | null {
+  const { tips, walkPathIdx, windowStart, yMax, walkTime } = info;
   const clipY = walkTime !== null ? Math.min(walkTime, yMax) : yMax;
 
   for (let i = 0; i < tips.length; i++) {
@@ -419,44 +447,36 @@ interface HoverInfoProps {
 
 // ── Shared helpers + components reused by the mobile bottom sheet ──────────
 
+// Resolve the path to show in the detail panel. With no departure time chosen
+// (average view) this is the representative/median path; with one chosen it is
+// the path optimal for that departure — found by replaying the chart's
+// time→path-index mapping. Unlike the old per-sample view, the leading wait is
+// *kept*: when you pick a clock time, the wait until the vehicle arrives is
+// real time you'd spend, so it belongs in the trip.
 export function deriveDisplayPath(
   hoverData: HoverData,
-  selectedSampleIdx: number | null
+  departureTime: number | null,
+  windowStart: number,
+  windowEnd: number,
+  maxTimeSec: number
 ): HoverPath | null {
   const { allPaths, representativeIndex } = hoverData;
-  const path =
-    selectedSampleIdx !== null
-      ? allPaths[selectedSampleIdx]
-        ? { ...allPaths[selectedSampleIdx] }
-        : null
-      : representativeIndex !== null && allPaths[representativeIndex]
-        ? { ...allPaths[representativeIndex] }
-        : getMedianPath(allPaths);
-
-  // When a specific Pareto path is selected, strip the first wait so the user
-  // sees the in-vehicle trip time from the chosen departure rather than
-  // "time since earliest viable leave".
-  if (selectedSampleIdx !== null && path) {
-    const firstTransitIndex = path.segments.findIndex((s: PathSegment) => s.edgeType === 1);
-    if (firstTransitIndex !== -1) {
-      const firstTransit = path.segments[firstTransitIndex];
-      const waitTime = firstTransit.waitTime;
-      path.segments = path.segments.map((s: PathSegment, i: number) =>
-        i === firstTransitIndex ? { ...s, waitTime: 0 } : s
-      );
-      if (path.totalTime !== null) path.totalTime -= waitTime;
-      path.departureTime += waitTime;
-    }
+  if (departureTime === null) {
+    return representativeIndex !== null && allPaths[representativeIndex]
+      ? { ...allPaths[representativeIndex] }
+      : getMedianPath(allPaths);
   }
-  return path;
+  const info = computeChartInfo(allPaths, windowStart, windowEnd, maxTimeSec);
+  const idx = pathIdxAtTime(departureTime, info);
+  return idx !== null && allPaths[idx] ? { ...allPaths[idx] } : null;
 }
 
 export function deriveTitleText(
   hoverData: HoverData,
-  selectedSampleIdx: number | null,
+  departureTime: number | null,
   displayPath: HoverPath | null
 ): string {
-  if (selectedSampleIdx !== null) {
+  if (departureTime !== null) {
     if (displayPath?.totalTime != null) {
       const depStr = formatTime(displayPath.departureTime);
       return `Travel time: ${Math.round(displayPath.totalTime / 60)} min  (depart ${depStr})`;
@@ -480,17 +500,19 @@ interface TripChartProps {
   height?: string;
 }
 
-// Sawtooth chart canvas + selection wiring. No outer chrome — callers decide
-// the wrapping container and padding. The chart reads `state.hoverData`,
-// `state.selectedSampleIdx`, `state.lockedSampleIdx`, `state.windowStart`,
-// `state.windowEnd`, `state.maxTimeMin` directly.
+// Sawtooth chart canvas. No outer chrome — callers decide the wrapping
+// container and padding. The chart doubles as a scrubber: clicking or dragging
+// on it seeks the AnimationStore playhead, exactly like the Timeline bar. When
+// the playhead is active it draws a vertical playhead line and highlights the
+// path optimal for that departure time.
 export function TripChart({ aspectRatio = '1/1', height }: TripChartProps = {}): React.ReactNode {
-  const { state, dispatch } = useAppState();
+  const { state } = useAppState();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const chartInfoRef = useRef<ChartInfo | null>(null);
-  const { maxTimeMin, selectedSampleIdx, lockedSampleIdx } = state;
+  const { maxTimeMin } = state;
   const hoverData = currentDest(state)?.hoverData ?? null;
-  const isPinned = state.pinnedDest !== null;
+  const animMode = useAnimMode();
+  const animTime = useAnimTime();
   const prefersDark = usePrefersDark();
   const sizeTick = useResizeTick(canvasRef);
 
@@ -503,40 +525,48 @@ export function TripChart({ aspectRatio = '1/1', height }: TripChartProps = {}):
       maxTimeMin * 60
     );
     chartInfoRef.current = info;
-    drawChart(canvasRef.current, info, selectedSampleIdx, prefersDark ? DARK_THEME : LIGHT_THEME);
+    const playheadTime = animMode === 'frame' ? animTime : null;
+    const highlightIdx = playheadTime !== null ? pathIdxAtTime(playheadTime, info) : null;
+    drawChart(
+      canvasRef.current,
+      info,
+      highlightIdx,
+      prefersDark ? DARK_THEME : LIGHT_THEME,
+      playheadTime
+    );
   }, [
     hoverData,
     maxTimeMin,
     state.windowStart,
     state.windowEnd,
-    selectedSampleIdx,
+    animMode,
+    animTime,
     prefersDark,
     sizeTick,
   ]);
 
-  const handleMouseMove = useCallback(
-    (e: React.MouseEvent<HTMLCanvasElement>) => {
-      if (lockedSampleIdx !== null || !isPinned || !chartInfoRef.current) return;
-      const rect = (e.currentTarget as HTMLCanvasElement).getBoundingClientRect();
-      const idx = pathIdxAtCanvasX(e.clientX - rect.left, rect.width, chartInfoRef.current);
-      dispatch({ type: 'SELECT_SAMPLE', idx });
+  // Seek the playhead to wherever the pointer is on the chart. Pointer capture
+  // (set on pointerdown) keeps drag events flowing even past the canvas edge.
+  const seekToEvent = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!chartInfoRef.current) return;
+    const rect = (e.currentTarget as HTMLCanvasElement).getBoundingClientRect();
+    animationStore.seek(timeAtCanvasX(e.clientX - rect.left, rect.width, chartInfoRef.current));
+  }, []);
+
+  const handlePointerDown = useCallback(
+    (e: React.PointerEvent<HTMLCanvasElement>) => {
+      if (!animationStore.isReady()) return;
+      e.currentTarget.setPointerCapture(e.pointerId);
+      seekToEvent(e);
     },
-    [lockedSampleIdx, isPinned, dispatch]
+    [seekToEvent]
   );
 
-  const handleMouseLeave = useCallback(() => {
-    if (lockedSampleIdx !== null || !isPinned) return;
-    dispatch({ type: 'SELECT_SAMPLE', idx: null });
-  }, [lockedSampleIdx, isPinned, dispatch]);
-
-  const handleClick = useCallback(
-    (e: React.MouseEvent<HTMLCanvasElement>) => {
-      if (!isPinned || !chartInfoRef.current) return;
-      const rect = (e.currentTarget as HTMLCanvasElement).getBoundingClientRect();
-      const idx = pathIdxAtCanvasX(e.clientX - rect.left, rect.width, chartInfoRef.current);
-      dispatch({ type: 'LOCK_SAMPLE', idx: lockedSampleIdx === idx ? null : idx });
+  const handlePointerMove = useCallback(
+    (e: React.PointerEvent<HTMLCanvasElement>) => {
+      if (e.currentTarget.hasPointerCapture(e.pointerId)) seekToEvent(e);
     },
-    [lockedSampleIdx, isPinned, dispatch]
+    [seekToEvent]
   );
 
   return (
@@ -545,12 +575,14 @@ export function TripChart({ aspectRatio = '1/1', height }: TripChartProps = {}):
       style={{
         width: '100%',
         display: 'block',
-        cursor: 'crosshair',
+        cursor: 'pointer',
+        // Suppress the browser's touch panning so a drag-seek on a phone
+        // scrubs the chart instead of scrolling the page.
+        touchAction: 'none',
         ...(height ? { height } : { aspectRatio }),
       }}
-      onMouseMove={handleMouseMove}
-      onMouseLeave={handleMouseLeave}
-      onClick={handleClick}
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
     />
   );
 }
@@ -562,7 +594,11 @@ export default function HoverInfo({ isFront, onActivate }: HoverInfoProps): Reac
   // chart keeps a fixed height, giving the sawtooth more horizontal room.
   const [expanded, setExpanded] = useState(false);
 
-  const { selectedSampleIdx } = state;
+  const animMode = useAnimMode();
+  const animDep = useAnimRenderedDeparture();
+  // In frame mode, the panel describes the trip for the rendered departure;
+  // in average mode it shows the window-averaged representative trip.
+  const departureTime = animMode === 'frame' ? animDep : null;
   const hoverData = currentDest(state)?.hoverData ?? null;
 
   if (!hoverData) return null;
@@ -590,8 +626,14 @@ export default function HoverInfo({ isFront, onActivate }: HoverInfoProps): Reac
       </button>
     );
   }
-  const displayPath = deriveDisplayPath(hoverData, selectedSampleIdx);
-  const titleText = deriveTitleText(hoverData, selectedSampleIdx, displayPath);
+  const displayPath = deriveDisplayPath(
+    hoverData,
+    departureTime,
+    state.windowStart,
+    state.windowEnd,
+    state.maxTimeMin * 60
+  );
+  const titleText = deriveTitleText(hoverData, departureTime, displayPath);
 
   return (
     <div
