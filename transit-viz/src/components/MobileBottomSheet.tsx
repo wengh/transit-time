@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { useAppState } from '../state/AppContext';
 import { useAnimMode, useAnimRenderedDeparture } from '../state/animationStore';
 import PathSegmentList from './PathSegmentList';
-import { TripChart, deriveDisplayPath, deriveTitleText } from './HoverInfo';
+import { TripChart, ChartPlaybackControls, deriveDisplayPath, deriveTitleText } from './HoverInfo';
 
 // Bottom info strip + expandable drawer. Only renders when a destination is
 // pinned (mobile has no hover, so the pinned destination is the only source
@@ -80,7 +80,8 @@ export default function MobileBottomSheet(): React.ReactNode {
       {expanded && (
         <div className="overflow-y-auto px-3 pb-3 text-[12px]">
           {displayPath && displayPath.segments.length > 0 && <PathSegmentList path={displayPath} />}
-          <div className="mt-2">
+          <div className="mt-2 relative">
+            <ChartPlaybackControls />
             <TripChart aspectRatio="5/2" />
           </div>
         </div>

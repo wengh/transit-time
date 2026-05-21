@@ -9,6 +9,8 @@ import {
   useAnimMode,
   useAnimTime,
   useAnimRenderedDeparture,
+  useAnimPlaying,
+  useAnimReady,
 } from '../state/animationStore';
 import PathSegmentList from './PathSegmentList';
 
@@ -545,29 +547,42 @@ export function TripChart({ aspectRatio = '1/1', height }: TripChartProps = {}):
     sizeTick,
   ]);
 
-  // Seek the playhead to wherever the pointer is on the chart. Pointer capture
-  // (set on pointerdown) keeps drag events flowing even past the canvas edge.
-  const seekToEvent = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (!chartInfoRef.current) return;
-    const rect = (e.currentTarget as HTMLCanvasElement).getBoundingClientRect();
-    animationStore.seek(timeAtCanvasX(e.clientX - rect.left, rect.width, chartInfoRef.current));
+  // Map a pointer event to the departure time under it, or null if the chart
+  // geometry isn't ready yet.
+  const timeFromEvent = useCallback((e: React.PointerEvent<HTMLCanvasElement>): number | null => {
+    if (!chartInfoRef.current) return null;
+    const rect = e.currentTarget.getBoundingClientRect();
+    return timeAtCanvasX(e.clientX - rect.left, rect.width, chartInfoRef.current);
   }, []);
 
+  // pointerdown commits a seek and captures the pointer so a drag past the
+  // canvas edge keeps scrubbing.
   const handlePointerDown = useCallback(
     (e: React.PointerEvent<HTMLCanvasElement>) => {
       if (!animationStore.isReady()) return;
+      const t = timeFromEvent(e);
+      if (t === null) return;
       e.currentTarget.setPointerCapture(e.pointerId);
-      seekToEvent(e);
+      animationStore.seek(t);
     },
-    [seekToEvent]
+    [timeFromEvent]
   );
 
+  // While captured (dragging) a move commits a seek; otherwise it's a hover —
+  // a non-committing live preview that restores on pointerleave.
   const handlePointerMove = useCallback(
     (e: React.PointerEvent<HTMLCanvasElement>) => {
-      if (e.currentTarget.hasPointerCapture(e.pointerId)) seekToEvent(e);
+      const t = timeFromEvent(e);
+      if (t === null) return;
+      if (e.currentTarget.hasPointerCapture(e.pointerId)) animationStore.seek(t);
+      else animationStore.setPreview(t);
     },
-    [seekToEvent]
+    [timeFromEvent]
   );
+
+  const handlePointerLeave = useCallback(() => {
+    animationStore.clearPreview();
+  }, []);
 
   return (
     <canvas
@@ -583,7 +598,52 @@ export function TripChart({ aspectRatio = '1/1', height }: TripChartProps = {}):
       }}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
+      onPointerLeave={handlePointerLeave}
     />
+  );
+}
+
+// ─── chart playback controls ────────────────────────────────────────────────
+
+// Play/pause (and exit-to-average) cluster anchored to the bottom-left of the
+// sawtooth plot. Once a destination is pinned the chart becomes the scrubber,
+// so these controls live on it instead of in the standalone Timeline bar.
+// Caller must place this inside a `relative` container.
+export function ChartPlaybackControls(): React.ReactNode {
+  const ready = useAnimReady();
+  const playing = useAnimPlaying();
+  const mode = useAnimMode();
+  if (!ready) return null;
+
+  const btn =
+    'flex-shrink-0 w-[18px] h-[18px] text-[10px] leading-none cursor-pointer ' +
+    'rounded-full p-0 flex items-center justify-center ' +
+    'bg-transparent border border-zinc-600 text-zinc-500 ' +
+    'dark:border-zinc-600 dark:text-zinc-500';
+
+  return (
+    <div className="absolute bottom-[26px] left-9 z-[5] flex items-center gap-1">
+      <button
+        type="button"
+        aria-label={playing ? 'Pause' : 'Play'}
+        title={playing ? 'Pause (space)' : 'Play (space)'}
+        onClick={() => animationStore.togglePlay()}
+        className={btn}
+      >
+        {playing ? '❚❚' : '▶'}
+      </button>
+      {mode === 'frame' && (
+        <button
+          type="button"
+          aria-label="Exit playback, show window average"
+          title="Show window average"
+          onClick={() => animationStore.exit()}
+          className={btn}
+        >
+          ✕
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -699,6 +759,7 @@ export default function HoverInfo({ isFront, onActivate }: HoverInfoProps): Reac
           </button>
           <ChartHintButton />
         </div>
+        <ChartPlaybackControls />
         {/* Fixed height (vs aspect-ratio) so toggling expand only changes the
             panel's width, not its height. */}
         <TripChart height="280px" />
