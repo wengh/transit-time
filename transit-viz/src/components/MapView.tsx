@@ -360,7 +360,9 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
         return;
       }
       const node = await snapToNode(lat, lng);
-      if (node !== null) showDestination(node, true);
+      // Snap failed: clear any existing pin rather than leaving a stale one.
+      if (node === null) dispatch({ type: 'UNPIN_DESTINATION' });
+      else showDestination(node, true);
     }
     setDestinationRef.current = setDestination;
 
@@ -405,9 +407,11 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
           setSource(e.latlng.lat, e.latlng.lng);
           return;
         }
-        // Dest mode: replace any existing pin with the tapped node.
+        // Dest mode: replace any existing pin with the tapped node. A failed
+        // snap clears the pin instead of leaving the previous one behind.
         const node = await snapToNode(e.latlng.lat, e.latlng.lng);
-        if (node !== null) showDestination(node, true);
+        if (node === null) dispatch({ type: 'UNPIN_DESTINATION' });
+        else showDestination(node, true);
         return;
       }
 
@@ -441,7 +445,17 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
       // The cursor may have left the map during the snap round-trip — bail so
       // we don't re-show a hover that onMouseOut has already cleared.
       if (!pointerInMap) return;
-      if (node === lastHoveredNodeRef.current || node === null) return;
+      if (node === null) {
+        // Cursor is over a spot with no graph node nearby — drop the hover so
+        // a stale destination doesn't linger while pointing at empty space.
+        if (lastHoveredNodeRef.current !== null) {
+          lastHoveredNodeRef.current = null;
+          clearRouteOverlay();
+          dispatch({ type: 'CLEAR_HOVER' });
+        }
+        return;
+      }
+      if (node === lastHoveredNodeRef.current) return;
       lastHoveredNodeRef.current = node;
       showDestination(node, false);
     }
