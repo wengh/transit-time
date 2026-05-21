@@ -365,6 +365,25 @@ class AnimationStore {
   getRenderedDeparture = (): number => this.renderedDeparture;
   getWindowStart = (): number => this.windowStart;
   getWindowEnd = (): number => this.windowEnd;
+
+  // ── Playhead, split into committed vs. preview ──
+  //
+  // The sawtooth chart draws two vertical lines: a solid one for the committed
+  // departure (where the map will return on hover-end) and a dashed one for the
+  // live hover preview. Both are exposed as plain numbers (not an object) so
+  // `useSyncExternalStore` sees a stable snapshot — a fresh object every call
+  // would loop forever. A value of -1 means "no line".
+
+  /** Committed playhead: the departure that survives a hover-preview exit. */
+  getCommittedPlayhead = (): number => {
+    if (this.previewSaved !== null) {
+      return this.previewSaved.mode === 'frame' ? this.previewSaved.time : -1;
+    }
+    return this.mode === 'frame' ? this.throttledTime : -1;
+  };
+
+  /** Preview playhead: the live hovered departure, or -1 when not hovering. */
+  getPreviewPlayhead = (): number => (this.previewSaved !== null ? this.throttledTime : -1);
 }
 
 export const animationStore = new AnimationStore();
@@ -391,4 +410,14 @@ export function useAnimTime(): number {
 /** Departure of the frame currently drawn on the map. */
 export function useAnimRenderedDeparture(): number {
   return useSyncExternalStore(animationStore.subscribe, animationStore.getRenderedDeparture);
+}
+
+/** Committed playhead departure (solid chart line), or -1 when in average mode. */
+export function useAnimCommittedPlayhead(): number {
+  return useSyncExternalStore(animationStore.subscribe, animationStore.getCommittedPlayhead);
+}
+
+/** Live hover-preview departure (dashed chart line), or -1 when not hovering. */
+export function useAnimPreviewPlayhead(): number {
+  return useSyncExternalStore(animationStore.subscribe, animationStore.getPreviewPlayhead);
 }

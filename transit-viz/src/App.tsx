@@ -7,7 +7,6 @@ import MapView from './components/MapView';
 import type { MapViewHandle } from './components/MapView';
 import Legend from './components/Legend';
 import HoverInfo from './components/HoverInfo';
-import Timeline from './components/Timeline';
 import LocationSearch from './components/LocationSearch';
 import MobileTopBar from './components/MobileTopBar';
 import MobileBottomSheet from './components/MobileBottomSheet';
@@ -21,6 +20,9 @@ import type { RunQueryParams } from './utils/router';
 import { getHashParams, setHashParams } from './utils/urlHash';
 import { animationStore } from './state/animationStore';
 import './styles.css';
+
+// Frames skipped by a Shift+Arrow jump (30 min at FRAME_STEP=300).
+const JUMP_FRAMES = 6;
 
 function AppInner() {
   const { state, dispatch } = useAppState();
@@ -291,6 +293,43 @@ function AppInner() {
     return () => document.removeEventListener('keydown', onKeyDown);
   }, [copyInfo]);
 
+  // Global playback transport. Mounted once at the app root so it works on both
+  // desktop and mobile regardless of which panels are on screen — the timeline
+  // used to own this, but it no longer exists as a standalone element. Guarded
+  // so typing in a form field never hijacks the spacebar or arrow keys.
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (!animationStore.isReady()) return;
+      const tag = (e.target as HTMLElement).tagName;
+      if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+
+      switch (e.key) {
+        case ' ':
+          e.preventDefault();
+          animationStore.togglePlay();
+          break;
+        case 'ArrowLeft':
+          e.preventDefault();
+          animationStore.stepFrames(e.shiftKey ? -JUMP_FRAMES : -1);
+          break;
+        case 'ArrowRight':
+          e.preventDefault();
+          animationStore.stepFrames(e.shiftKey ? JUMP_FRAMES : 1);
+          break;
+        case 'Home':
+          e.preventDefault();
+          animationStore.jumpToStart();
+          break;
+        case 'End':
+          e.preventDefault();
+          animationStore.jumpToEnd();
+          break;
+      }
+    }
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, []);
+
   const isMobile = useIsMobile();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const handleCopy = () => {
@@ -355,7 +394,6 @@ function AppInner() {
           />
         </>
       )}
-      <Timeline />
     </>
   );
 }

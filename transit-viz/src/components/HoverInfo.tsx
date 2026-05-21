@@ -11,6 +11,8 @@ import {
   useAnimRenderedDeparture,
   useAnimPlaying,
   useAnimReady,
+  useAnimCommittedPlayhead,
+  useAnimPreviewPlayhead,
 } from '../state/animationStore';
 import PathSegmentList from './PathSegmentList';
 
@@ -81,6 +83,9 @@ function computeChartInfo(
 // ─── chart drawing ────────────────────────────────────────────────────────────
 
 const PAD = { top: 8, right: 8, bottom: 22, left: 34 };
+// Left gutter used when the chart has no destination: the y-axis is dropped, so
+// only a thin margin remains. Matches PAD.right for visual symmetry.
+const NO_AXIS_PAD = 8;
 
 interface ChartTheme {
   bg: string;
@@ -92,6 +97,7 @@ interface ChartTheme {
   walkLineSelected: string;
   selectionRing: string;
   playhead: string;
+  playheadPreview: string;
 }
 
 const DARK_THEME: ChartTheme = {
@@ -104,6 +110,7 @@ const DARK_THEME: ChartTheme = {
   walkLineSelected: '#ccc',
   selectionRing: '#ddd',
   playhead: '#60a5fa',
+  playheadPreview: '#fbbf24',
 };
 
 const LIGHT_THEME: ChartTheme = {
@@ -116,6 +123,7 @@ const LIGHT_THEME: ChartTheme = {
   walkLineSelected: '#374151',
   selectionRing: '#374151',
   playhead: '#2563eb',
+  playheadPreview: '#d97706',
 };
 
 // Returns a counter that increments whenever `ref.current` is resized. List it
@@ -160,7 +168,9 @@ function drawChart(
   info: ChartInfo,
   selectedIdx: number | null,
   theme: ChartTheme,
-  playheadTime: number | null
+  committedTime: number,
+  previewTime: number,
+  hasData: boolean
 ): void {
   const rect = canvas.getBoundingClientRect();
   const size = Math.round(rect.width);
@@ -180,7 +190,10 @@ function drawChart(
   const { tips, walkTime, walkPathIdx, windowStart, windowEnd, yMax } = info;
   const W = size,
     H = height;
-  const { top: pT, right: pR, bottom: pB, left: pL } = PAD;
+  const { top: pT, right: pR, bottom: pB } = PAD;
+  // No destination → no y-axis, so the left gutter shrinks and the plot
+  // reclaims that width.
+  const pL = hasData ? PAD.left : NO_AXIS_PAD;
   const plotW = W - pL - pR;
   const plotH = H - pT - pB;
   const clipY = walkTime !== null ? Math.min(walkTime, yMax) : yMax;
@@ -195,7 +208,8 @@ function drawChart(
   // Unreachable zones: only shade when there is no walk path (if walking works, nowhere
   // is truly unreachable). Use yMax (not walkTime) as the threshold so "transit slower
   // than walking" zones are not marked unreachable — the dashed walk line covers those.
-  if (walkTime === null || walkTime > yMax) {
+  // Skipped with no destination, else the whole empty plot would shade grey.
+  if (hasData && (walkTime === null || walkTime > yMax)) {
     ctx.fillStyle = theme.unreachable;
     const reachable: [number, number][] = [];
     for (const { tipX, tipY } of tips) {
@@ -241,21 +255,28 @@ function drawChart(
     ctx.stroke();
   }
   const step = yTickStep(yMax);
-  for (let y = 0; y <= yMax; y += step) {
-    const cy = yToC(y);
-    ctx.beginPath();
-    ctx.moveTo(pL, cy);
-    ctx.lineTo(pL + plotW, cy);
-    ctx.stroke();
+  if (hasData) {
+    for (let y = 0; y <= yMax; y += step) {
+      const cy = yToC(y);
+      ctx.beginPath();
+      ctx.moveTo(pL, cy);
+      ctx.lineTo(pL + plotW, cy);
+      ctx.stroke();
+    }
   }
 
-  // Axes
+  // Axes — y-axis line only when there's a destination to scale it to.
   ctx.strokeStyle = theme.axis;
   ctx.lineWidth = 1;
   ctx.beginPath();
-  ctx.moveTo(pL, pT);
-  ctx.lineTo(pL, pT + plotH);
-  ctx.lineTo(pL + plotW, pT + plotH);
+  if (hasData) {
+    ctx.moveTo(pL, pT);
+    ctx.lineTo(pL, pT + plotH);
+    ctx.lineTo(pL + plotW, pT + plotH);
+  } else {
+    ctx.moveTo(pL, pT + plotH);
+    ctx.lineTo(pL + plotW, pT + plotH);
+  }
   ctx.stroke();
 
   // X-axis labels
@@ -278,12 +299,14 @@ function drawChart(
     ctx.fillText(label, x, H - 4);
   }
 
-  // Y-axis labels (minutes)
-  ctx.textAlign = 'right';
-  ctx.textBaseline = 'middle';
-  for (let y = 0; y <= yMax; y += step) {
-    const cy = yToC(y);
-    ctx.fillText(y === 0 ? '0' : `${Math.round(y / 60)}m`, pL - 3, cy);
+  // Y-axis labels (minutes) — only with a destination.
+  if (hasData) {
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    for (let y = 0; y <= yMax; y += step) {
+      const cy = yToC(y);
+      ctx.fillText(y === 0 ? '0' : `${Math.round(y / 60)}m`, pL - 3, cy);
+    }
   }
 
   // Walk line (dashed gray, drawn behind transit lines)
@@ -349,25 +372,37 @@ function drawChart(
     }
   }
 
-  // Playhead: a vertical line marking the current departure time. The chart
-  // doubles as a scrubber, so this is the same playhead the Timeline bar shows.
-  if (playheadTime !== null && playheadTime >= windowStart && playheadTime <= windowEnd) {
-    const px = xToC(playheadTime);
-    ctx.strokeStyle = theme.playhead;
+  // Playhead lines: the chart doubles as a scrubber. The committed line (solid)
+  // is the departure the map returns to when a hover ends; the preview line
+  // (dashed amber) tracks the live hovered departure. Splitting them keeps a
+  // transient hover from visually clobbering the pinned time. t < 0 means none.
+  const drawPlayhead = (t: number, color: string, dashed: boolean) => {
+    if (t < 0 || t < windowStart || t > windowEnd) return;
+    const px = xToC(t);
+    ctx.strokeStyle = color;
     ctx.lineWidth = 1.5;
+    ctx.setLineDash(dashed ? [3, 3] : []);
     ctx.beginPath();
     ctx.moveTo(px, pT);
     ctx.lineTo(px, pT + plotH);
     ctx.stroke();
-  }
+    ctx.setLineDash([]);
+  };
+  drawPlayhead(committedTime, theme.playhead, false);
+  drawPlayhead(previewTime, theme.playheadPreview, true);
 }
 
 // ─── time ↔ x-position ↔ path index ──────────────────────────────────────────
 
 /** Map a canvas x-pixel to the departure time it represents on the chart. */
-function timeAtCanvasX(canvasX: number, canvasWidth: number, info: ChartInfo): number {
-  const { left: pL, right: pR } = PAD;
-  const plotW = canvasWidth - pL - pR;
+function timeAtCanvasX(
+  canvasX: number,
+  canvasWidth: number,
+  info: ChartInfo,
+  hasData: boolean
+): number {
+  const pL = hasData ? PAD.left : NO_AXIS_PAD;
+  const plotW = canvasWidth - pL - PAD.right;
   const frac = (canvasX - pL) / plotW;
   return info.windowStart + frac * (info.windowEnd - info.windowStart);
 }
@@ -513,47 +548,60 @@ export function TripChart({ aspectRatio = '1/1', height }: TripChartProps = {}):
   const chartInfoRef = useRef<ChartInfo | null>(null);
   const { maxTimeMin } = state;
   const hoverData = currentDest(state)?.hoverData ?? null;
+  const hasData = hoverData !== null;
   const animMode = useAnimMode();
   const animTime = useAnimTime();
+  const committedPlayhead = useAnimCommittedPlayhead();
+  const previewPlayhead = useAnimPreviewPlayhead();
   const prefersDark = usePrefersDark();
   const sizeTick = useResizeTick(canvasRef);
 
   useEffect(() => {
-    if (!canvasRef.current || !hoverData) return;
+    if (!canvasRef.current) return;
+    // With no destination the chart still draws (an empty, y-axis-less strip)
+    // and stays scrubbable — computeChartInfo over an empty path list still
+    // yields a valid x-range from the window bounds.
     const info = computeChartInfo(
-      hoverData.allPaths,
+      hoverData?.allPaths ?? [],
       state.windowStart,
       state.windowEnd,
       maxTimeMin * 60
     );
     chartInfoRef.current = info;
-    const playheadTime = animMode === 'frame' ? animTime : null;
-    const highlightIdx = playheadTime !== null ? pathIdxAtTime(playheadTime, info) : null;
+    const highlightIdx = hasData && animMode === 'frame' ? pathIdxAtTime(animTime, info) : null;
     drawChart(
       canvasRef.current,
       info,
       highlightIdx,
       prefersDark ? DARK_THEME : LIGHT_THEME,
-      playheadTime
+      committedPlayhead,
+      previewPlayhead,
+      hasData
     );
   }, [
     hoverData,
+    hasData,
     maxTimeMin,
     state.windowStart,
     state.windowEnd,
     animMode,
     animTime,
+    committedPlayhead,
+    previewPlayhead,
     prefersDark,
     sizeTick,
   ]);
 
   // Map a pointer event to the departure time under it, or null if the chart
   // geometry isn't ready yet.
-  const timeFromEvent = useCallback((e: React.PointerEvent<HTMLCanvasElement>): number | null => {
-    if (!chartInfoRef.current) return null;
-    const rect = e.currentTarget.getBoundingClientRect();
-    return timeAtCanvasX(e.clientX - rect.left, rect.width, chartInfoRef.current);
-  }, []);
+  const timeFromEvent = useCallback(
+    (e: React.PointerEvent<HTMLCanvasElement>): number | null => {
+      if (!chartInfoRef.current) return null;
+      const rect = e.currentTarget.getBoundingClientRect();
+      return timeAtCanvasX(e.clientX - rect.left, rect.width, chartInfoRef.current, hasData);
+    },
+    [hasData]
+  );
 
   // pointerdown commits a seek and captures the pointer so a drag past the
   // canvas edge keeps scrubbing.
@@ -613,6 +661,9 @@ export function ChartPlaybackControls(): React.ReactNode {
   const ready = useAnimReady();
   const playing = useAnimPlaying();
   const mode = useAnimMode();
+  // Exact (un-snapped) scrub time — see useAnimTime. The readout shows the
+  // precise hovered/seeked instant, while the map still renders snapped frames.
+  const time = useAnimTime();
   if (!ready) return null;
 
   const btn =
@@ -643,6 +694,15 @@ export function ChartPlaybackControls(): React.ReactNode {
           ✕
         </button>
       )}
+      <span
+        className="px-1 rounded text-[11px] leading-none tabular-nums
+          bg-zinc-900/70 dark:bg-zinc-900/70
+          [@media(prefers-color-scheme:light)]:bg-white/70
+          text-zinc-400 dark:text-zinc-400
+          [@media(prefers-color-scheme:light)]:text-zinc-600"
+      >
+        {mode === 'frame' ? formatTime(time) : 'Avg'}
+      </span>
     </div>
   );
 }
@@ -654,6 +714,7 @@ export default function HoverInfo({ isFront, onActivate }: HoverInfoProps): Reac
   // chart keeps a fixed height, giving the sawtooth more horizontal room.
   const [expanded, setExpanded] = useState(false);
 
+  const ready = useAnimReady();
   const animMode = useAnimMode();
   const animDep = useAnimRenderedDeparture();
   // In frame mode, the panel describes the trip for the rendered departure;
@@ -661,9 +722,12 @@ export default function HoverInfo({ isFront, onActivate }: HoverInfoProps): Reac
   const departureTime = animMode === 'frame' ? animDep : null;
   const hoverData = currentDest(state)?.hoverData ?? null;
 
-  if (!hoverData) return null;
+  // Nothing to show until a query has armed the animation window. After that
+  // the panel stays on screen permanently: an empty scrubbable strip with no
+  // destination, the full panel once one is hovered or pinned.
+  if (!hoverData && !ready) return null;
 
-  if (hidden) {
+  if (hoverData && hidden) {
     return (
       <button
         id="hover-info"
@@ -686,6 +750,30 @@ export default function HoverInfo({ isFront, onActivate }: HoverInfoProps): Reac
       </button>
     );
   }
+
+  // No destination: a minimal always-on panel — just the playback controls and
+  // a short, y-axis-less chart strip that still scrubs the isochrone.
+  if (!hoverData) {
+    return (
+      <div
+        id="hover-info"
+        onPointerDownCapture={() => {
+          if (!isFront) onActivate();
+        }}
+        className={`absolute bottom-5 right-2.5 ${isFront ? 'z-[1001]' : 'z-[1000]'}
+          bg-zinc-900 dark:bg-zinc-900
+          [@media(prefers-color-scheme:light)]:bg-white
+          p-3 rounded-lg shadow-[0_2px_12px_rgba(0,0,0,0.5)]
+          w-[320px]`}
+      >
+        <div className="relative">
+          <ChartPlaybackControls />
+          <TripChart height="96px" />
+        </div>
+      </div>
+    );
+  }
+
   const displayPath = deriveDisplayPath(
     hoverData,
     departureTime,

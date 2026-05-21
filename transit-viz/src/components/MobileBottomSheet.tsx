@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useAppState } from '../state/AppContext';
-import { useAnimMode, useAnimRenderedDeparture } from '../state/animationStore';
+import { useAnimMode, useAnimReady, useAnimRenderedDeparture } from '../state/animationStore';
 import PathSegmentList from './PathSegmentList';
 import { TripChart, ChartPlaybackControls, deriveDisplayPath, deriveTitleText } from './HoverInfo';
 
@@ -14,11 +14,34 @@ export default function MobileBottomSheet(): React.ReactNode {
 
   const animMode = useAnimMode();
   const animDep = useAnimRenderedDeparture();
+  const ready = useAnimReady();
   const departureTime = animMode === 'frame' ? animDep : null;
 
   const pinnedHoverData = state.pinnedDest?.hoverData ?? null;
-  if (state.loadingState !== 'ready' || !pinnedHoverData) {
+
+  // Nothing until a query arms the animation window. After that the sheet is
+  // always on screen: a slim scrubbable plot strip with nothing pinned, the
+  // full drawer once a destination is pinned.
+  if (state.loadingState !== 'ready' || !ready) {
     return null;
+  }
+
+  if (!pinnedHoverData) {
+    return (
+      <div
+        className="fixed left-0 right-0 bottom-0 z-[1100]
+          bg-[rgba(255,255,255,0.97)] dark:bg-[rgba(18,18,20,0.97)] backdrop-blur-md
+          border-t border-zinc-200 dark:border-zinc-800
+          text-zinc-900 dark:text-zinc-100
+          rounded-t-xl shadow-[0_-4px_16px_rgba(0,0,0,0.15)] dark:shadow-[0_-4px_16px_rgba(0,0,0,0.5)]
+          pb-[max(env(safe-area-inset-bottom),0.5rem)]"
+      >
+        <div className="relative px-3 pt-2">
+          <ChartPlaybackControls />
+          <TripChart height="96px" />
+        </div>
+      </div>
+    );
   }
 
   const displayPath = deriveDisplayPath(
