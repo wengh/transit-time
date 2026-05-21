@@ -18,6 +18,7 @@ export type WorkerRequest =
   | { id: number; type: 'loadRouter'; cityFile: string }
   | { id: number; type: 'runQuery'; params: RunQueryWorkerParams; cancelBuf: SharedArrayBuffer }
   | { id: number; type: 'getHoverData'; node: number }
+  | { id: number; type: 'travelTimesAt'; departure: number }
   | { id: number; type: 'snapToNode'; lat: number; lon: number }
   | { id: number; type: 'numPatternsForDate'; date: number }
   | { id: number; type: 'freeProfile' };
@@ -244,6 +245,16 @@ function handleGetHoverData(node: number) {
   return { paths, representativeIndex: data.representativeIndex };
 }
 
+// Per-node travel times for a single departure — one animation frame.
+// `u16::MAX` (65535) marks unreachable nodes. wasm-bindgen marshals the
+// Rust `Vec<u16>` into a freshly-allocated `Uint16Array`, so its backing
+// buffer is safe to transfer (the worker keeps no reference).
+function handleTravelTimesAt(departure: number): Uint16Array {
+  if (!profile) throw new Error('No profile loaded');
+  if ((profile as any).__wbg_ptr === 0) throw new Error('Profile freed');
+  return profile.travel_times_at(departure);
+}
+
 function freeCurrentProfile() {
   if (!profile) return;
   try {
@@ -260,6 +271,8 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
   const { id, type } = e.data;
   try {
     let value: any;
+    // Transferables for the response — zero-copy hand-off of large buffers.
+    const transfer: Transferable[] = [];
     switch (type) {
       case 'initWasm':
         await handleInitWasm();
@@ -275,6 +288,10 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
       case 'getHoverData':
         value = handleGetHoverData(e.data.node);
         break;
+      case 'travelTimesAt':
+        value = handleTravelTimesAt(e.data.departure);
+        transfer.push(value.buffer);
+        break;
       case 'snapToNode':
         value = router?.snap_to_node(e.data.lat, e.data.lon) ?? null;
         break;
@@ -286,7 +303,7 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
         value = null;
         break;
     }
-    postMessage({ id, type: 'result', value } satisfies WorkerResponse);
+    postMessage({ id, type: 'result', value } satisfies WorkerResponse, { transfer });
   } catch (err: any) {
     postMessage({ id, type: 'error', message: String(err) } satisfies WorkerResponse);
   }

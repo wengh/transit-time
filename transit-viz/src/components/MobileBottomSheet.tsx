@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useAppState } from '../state/AppContext';
+import { useAnimMode, useAnimRenderedDeparture } from '../state/animationStore';
 import PathSegmentList from './PathSegmentList';
 import { TripChart, deriveDisplayPath, deriveTitleText } from './HoverInfo';
 
@@ -11,13 +12,23 @@ export default function MobileBottomSheet(): React.ReactNode {
   const { state, dispatch } = useAppState();
   const [expanded, setExpanded] = useState(false);
 
+  const animMode = useAnimMode();
+  const animDep = useAnimRenderedDeparture();
+  const departureTime = animMode === 'frame' ? animDep : null;
+
   const pinnedHoverData = state.pinnedDest?.hoverData ?? null;
   if (state.loadingState !== 'ready' || !pinnedHoverData) {
     return null;
   }
 
-  const displayPath = deriveDisplayPath(pinnedHoverData, state.selectedSampleIdx);
-  const titleText = deriveTitleText(pinnedHoverData, state.selectedSampleIdx, displayPath);
+  const displayPath = deriveDisplayPath(
+    pinnedHoverData,
+    departureTime,
+    state.windowStart,
+    state.windowEnd,
+    state.maxTimeMin * 60
+  );
+  const titleText = deriveTitleText(pinnedHoverData, departureTime, displayPath);
 
   function toggle() {
     setExpanded((v) => !v);

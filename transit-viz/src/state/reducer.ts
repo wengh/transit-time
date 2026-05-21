@@ -40,12 +40,6 @@ export interface AppState {
   // SET_SOURCE { keepDest: true } and the post-requery patch from App.tsx.
   pinnedDest: Destination | null;
   hoverDest: Destination | null;
-  // Which Pareto path the user is inspecting in the chart. `selected` is
-  // ephemeral (follows the cursor); `locked` pins it across cursor moves and
-  // survives unpin/repin. Both are indices into the displayed destination's
-  // `hoverData.allPaths` or null.
-  selectedSampleIdx: number | null;
-  lockedSampleIdx: number | null;
 
   // UI feedback
   showCopiedMessage: boolean;
@@ -60,7 +54,7 @@ export interface AppState {
   // the first query completes). Each click while loading replaces the prior
   // pending intent so "last click wins".
   pendingSource: { latLng: [number, number] } | null;
-  pendingDest: { latLng: [number, number]; trip: number | null } | null;
+  pendingDest: { latLng: [number, number] } | null;
 }
 
 export interface Destination {
@@ -124,13 +118,11 @@ export type Action =
   | { type: 'SET_PINNED_HOVER_DATA'; hoverData: HoverData }
   | { type: 'SET_HOVER_DEST'; dest: Destination }
   | { type: 'CLEAR_HOVER' }
-  | { type: 'SELECT_SAMPLE'; idx: number | null }
-  | { type: 'LOCK_SAMPLE'; idx: number | null }
   | { type: 'SHOW_COPIED_MESSAGE' }
   | { type: 'HIDE_COPIED_MESSAGE' }
   | { type: 'SET_INTERACTION_MODE'; mode: 'origin' | 'dest' }
   | { type: 'QUEUE_PENDING_SOURCE'; latLng: [number, number] }
-  | { type: 'QUEUE_PENDING_DEST'; latLng: [number, number]; trip: number | null }
+  | { type: 'QUEUE_PENDING_DEST'; latLng: [number, number] }
   | { type: 'CONSUME_PENDING_SOURCE' }
   | { type: 'CONSUME_PENDING_DEST' };
 
@@ -169,8 +161,6 @@ export const initialState: AppState = {
   // Destination
   pinnedDest: null,
   hoverDest: null,
-  selectedSampleIdx: null,
-  lockedSampleIdx: null,
 
   // UI feedback
   showCopiedMessage: false,
@@ -244,8 +234,6 @@ export function reducer(state: AppState, action: Action): AppState {
         sampleCounts: null,
         pinnedDest: keepDest && state.pinnedDest ? { ...state.pinnedDest, hoverData: null } : null,
         hoverDest: null,
-        selectedSampleIdx: null,
-        lockedSampleIdx: null,
         // Auto-switch to dest mode so the next map tap pins a destination.
         interactionMode: 'dest',
       };
@@ -293,20 +281,12 @@ export function reducer(state: AppState, action: Action): AppState {
         ...state,
         pinnedDest: action.dest,
         hoverDest: null,
-        // Pinning a new destination should show its median trip from the
-        // chart, not whichever Pareto sample the user had locked from the
-        // previous destination (which would be wrong data anyway since
-        // the new dest's allPaths come from a different node).
-        selectedSampleIdx: null,
-        lockedSampleIdx: null,
       };
     case 'UNPIN_DESTINATION':
       return {
         ...state,
         pinnedDest: null,
         hoverDest: null,
-        selectedSampleIdx: null,
-        lockedSampleIdx: null,
       };
     case 'SET_PINNED_HOVER_DATA':
       if (state.pinnedDest === null) return state;
@@ -321,15 +301,7 @@ export function reducer(state: AppState, action: Action): AppState {
       return {
         ...state,
         hoverDest: null,
-        // Selected sample is only meaningful while the chart is showing the
-        // hover preview; clear it when the preview goes away. Locked sample
-        // belongs to the pin (if any) and stays.
-        selectedSampleIdx: state.pinnedDest ? state.selectedSampleIdx : null,
       };
-    case 'SELECT_SAMPLE':
-      return { ...state, selectedSampleIdx: action.idx };
-    case 'LOCK_SAMPLE':
-      return { ...state, lockedSampleIdx: action.idx, selectedSampleIdx: action.idx };
     case 'SHOW_COPIED_MESSAGE':
       return { ...state, showCopiedMessage: true };
     case 'HIDE_COPIED_MESSAGE':
@@ -339,7 +311,7 @@ export function reducer(state: AppState, action: Action): AppState {
     case 'QUEUE_PENDING_SOURCE':
       return { ...state, pendingSource: { latLng: action.latLng } };
     case 'QUEUE_PENDING_DEST':
-      return { ...state, pendingDest: { latLng: action.latLng, trip: action.trip } };
+      return { ...state, pendingDest: { latLng: action.latLng } };
     case 'CONSUME_PENDING_SOURCE':
       return { ...state, pendingSource: null };
     case 'CONSUME_PENDING_DEST':

@@ -168,6 +168,13 @@ export async function getProfileHoverData(node: number): Promise<HoverDataResult
   return call({ type: 'getHoverData', node });
 }
 
+/// Per-node travel times (seconds) for one departure — a single animation
+/// frame. Length = num_nodes; `65535` (u16::MAX) marks unreachable nodes.
+/// The worker transfers the backing buffer, so this is a zero-copy receive.
+export async function getTravelTimesAt(departure: number): Promise<Uint16Array> {
+  return call({ type: 'travelTimesAt', departure });
+}
+
 export async function snapToNode(lat: number, lon: number): Promise<number | null> {
   return call({ type: 'snapToNode', lat, lon });
 }
