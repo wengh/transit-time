@@ -275,6 +275,10 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
 
       const hoverData = await buildHoverData(node, s.travelTimes, s.sampleCounts, s.totalSamples);
 
+      // A hover that resolves after the cursor already left the map must not
+      // resurrect the cleared hover state. Pins are exempt — they persist.
+      if (!pin && !pointerInMap) return;
+
       // For hovers, skip the imperative route draw if a pin landed during the
       // await. Otherwise the hover's polylines would paint over the pin's
       // routes (which were already drawn by the URL-restore effect). The
@@ -362,6 +366,10 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
 
     // Desktop: double-click sets source
     let lastPinTime = 0;
+    // Tracks whether the cursor is currently over the map. Flipped false the
+    // moment it leaves (onto a GUI overlay or off-window) so an in-flight
+    // hover resolved afterward can bail instead of resurrecting a stale hover.
+    let pointerInMap = true;
     function onDblClick(e: L.LeafletMouseEvent) {
       // Mobile uses the Origin/Dest toggle in the top bar instead.
       if (isMobileRef.current) return;
@@ -425,16 +433,21 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
 
     // Hover: show route (desktop, no pinned dest)
     async function onMouseMove(e: L.LeafletMouseEvent) {
+      pointerInMap = true;
       const s = stateRef.current;
       if (!s.travelTimes || s.pinnedDest !== null) return;
 
       const node = await snapToNode(e.latlng.lat, e.latlng.lng);
+      // The cursor may have left the map during the snap round-trip — bail so
+      // we don't re-show a hover that onMouseOut has already cleared.
+      if (!pointerInMap) return;
       if (node === lastHoveredNodeRef.current || node === null) return;
       lastHoveredNodeRef.current = node;
       showDestination(node, false);
     }
 
     function onMouseOut() {
+      pointerInMap = false;
       lastHoveredNodeRef.current = null;
       if (stateRef.current.pinnedDest === null) {
         clearRouteOverlay();
@@ -573,7 +586,7 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
     map.on('dblclick', onDblClick);
     map.on('click', onClick);
     map.on('mousemove', onMouseMove);
-    map.on('mouseout', onMouseOut);
+    map.getContainer().addEventListener('mouseleave', onMouseOut);
     map.on('moveend', onMoveEnd);
     map.on('zoomend', onMoveEnd);
 
@@ -581,7 +594,7 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
       map.off('dblclick', onDblClick);
       map.off('click', onClick);
       map.off('mousemove', onMouseMove);
-      map.off('mouseout', onMouseOut);
+      map.getContainer().removeEventListener('mouseleave', onMouseOut);
       map.off('moveend', onMoveEnd);
       map.off('zoomend', onMoveEnd);
       animationStore.setFrameRenderer(null);
