@@ -467,6 +467,35 @@ function ChartHintButton(): React.ReactNode {
   );
 }
 
+// Toggles the desktop "wide mode" (see HoverInfo's `expanded` state). Sits on
+// the chart's bottom-right corner beside the hint button. Extracted so both the
+// full panel and the no-destination strip can mount it — the scrubber should be
+// widenable whether or not a destination is picked.
+function ChartExpandButton({
+  expanded,
+  onToggle,
+}: {
+  expanded: boolean;
+  onToggle: () => void;
+}): React.ReactNode {
+  return (
+    <button
+      type="button"
+      aria-label={expanded ? 'Shrink chart width' : 'Expand chart to full width'}
+      aria-pressed={expanded}
+      title={expanded ? 'Shrink chart width' : 'Expand chart to full width'}
+      onClick={onToggle}
+      className="hidden sm:block
+        flex-shrink-0 w-[18px] h-[18px] text-[11px] leading-[16px] cursor-pointer
+        rounded-full p-0
+        bg-transparent border border-zinc-600 text-zinc-500
+        dark:border-zinc-600 dark:text-zinc-500"
+    >
+      ⛶
+    </button>
+  );
+}
+
 // ─── component ────────────────────────────────────────────────────────────────
 
 interface HoverInfoProps {
@@ -696,6 +725,13 @@ export function ChartPlaybackControls(): React.ReactNode {
   );
 }
 
+// Shared panel "card" surface: opaque background, rounded corners, drop shadow.
+// Wraps the whole panel when collapsed; in wide mode it's applied to the
+// details and chart sections individually so they read as detached cards.
+const CARD_CHROME =
+  'bg-zinc-900 dark:bg-zinc-900 [@media(prefers-color-scheme:light)]:bg-white ' +
+  'rounded-lg shadow-[0_2px_12px_rgba(0,0,0,0.5)]';
+
 export default function HoverInfo({ isFront, onActivate }: HoverInfoProps): React.ReactNode {
   const { state } = useAppState();
   const [hidden, setHidden] = useState(false);
@@ -740,8 +776,9 @@ export default function HoverInfo({ isFront, onActivate }: HoverInfoProps): Reac
     );
   }
 
-  // No destination: a minimal always-on panel — just the playback controls and
-  // a short, y-axis-less chart strip that still scrubs the isochrone.
+  // No destination: a minimal always-on panel — the playback controls, the
+  // expand/hint buttons, and a short y-axis-less chart strip that still scrubs
+  // the isochrone. When expanded it widens like the full panel.
   if (!hoverData) {
     return (
       <div
@@ -750,12 +787,15 @@ export default function HoverInfo({ isFront, onActivate }: HoverInfoProps): Reac
           if (!isFront) onActivate();
         }}
         className={`absolute bottom-5 right-2.5 ${isFront ? 'z-[1001]' : 'z-[1000]'}
-          bg-zinc-900 dark:bg-zinc-900
-          [@media(prefers-color-scheme:light)]:bg-white
-          p-3 rounded-lg shadow-[0_2px_12px_rgba(0,0,0,0.5)]
-          w-[320px]`}
+          ${CARD_CHROME} p-3
+          w-[320px]
+          ${expanded ? 'sm:left-2.5 sm:right-2.5 sm:w-auto' : ''}`}
       >
         <div className="relative">
+          <div className="absolute bottom-[26px] right-2 z-[5] flex items-center gap-1">
+            <ChartExpandButton expanded={expanded} onToggle={() => setExpanded((v) => !v)} />
+            <ChartHintButton />
+          </div>
           <ChartPlaybackControls />
           <TripChart height="96px" />
         </div>
@@ -779,15 +819,31 @@ export default function HoverInfo({ isFront, onActivate }: HoverInfoProps): Reac
         if (!isFront) onActivate();
       }}
       className={`absolute bottom-5 right-2.5 ${isFront ? 'z-[1001]' : 'z-[1000]'}
-        bg-zinc-900 dark:bg-zinc-900
-        [@media(prefers-color-scheme:light)]:bg-white
-        p-3 rounded-lg shadow-[0_2px_12px_rgba(0,0,0,0.5)]
-        min-w-[220px] flex flex-col
-        ${expanded ? 'sm:left-2.5 sm:right-2.5 sm:max-w-none' : 'max-w-[320px]'}
+        flex flex-col
+        ${
+          expanded
+            ? // Wide mode: the panel itself is a transparent positioning shell.
+              // Details and chart split into two detached cards stacked with a
+              // gap, so the plot can claim full width while the trip text stays
+              // a fixed 320px card floating above it.
+              //
+              // pointer-events-none lets the shell's empty regions (right of the
+              // 320px details card, and the gap strip) fall through to the map
+              // below — without it the full-width transparent shell silently
+              // swallows hover events there. The two cards re-enable hit-testing
+              // for themselves with pointer-events-auto.
+              'sm:left-2.5 sm:right-2.5 gap-2 sm:pointer-events-none'
+            : `${CARD_CHROME} p-3 min-w-[220px] max-w-[320px]`
+        }
         max-sm:bottom-auto max-sm:top-2.5 max-sm:left-2.5 max-sm:right-2.5
         max-sm:max-w-none max-sm:max-h-[calc(100vh-90px)] max-sm:overflow-y-auto`}
     >
-      <div id="hover-info-details" className="overflow-y-auto max-h-[30vh]">
+      <div
+        id="hover-info-details"
+        className={`overflow-y-auto max-h-[30vh] ${
+          expanded ? `${CARD_CHROME} p-3 w-[320px] sm:pointer-events-auto` : ''
+        }`}
+      >
         {displayPath && displayPath.segments.length > 0 && <PathSegmentList path={displayPath} />}
         <div className="flex items-start justify-between gap-2 mt-1.5">
           <div
@@ -810,30 +866,22 @@ export default function HoverInfo({ isFront, onActivate }: HoverInfoProps): Reac
 
       <div
         id="hover-info-chart"
-        className="flex-shrink-0 relative border-t border-zinc-800 dark:border-zinc-800
-          [@media(prefers-color-scheme:light)]:border-zinc-200
-          pt-2 mt-1.5
-          max-sm:[&_canvas]:[aspect-ratio:5/2]"
+        className={`relative flex-shrink-0 max-sm:[&_canvas]:[aspect-ratio:5/2]
+          ${
+            expanded
+              ? // Own card: the canvas fills it edge-to-edge, so overflow-hidden
+                // clips the square canvas corners to the card's rounded ones.
+                `${CARD_CHROME} overflow-hidden sm:pointer-events-auto`
+              : `border-t border-zinc-800 dark:border-zinc-800
+                 [@media(prefers-color-scheme:light)]:border-zinc-200 pt-2 mt-1.5`
+          }`}
       >
         {/* Bottom-right of the plot, sitting just above the x-axis. The
             chart's PAD.bottom is 22px (axis-label gutter), so a 26px bottom
             offset clears the axis line by ~4px. PAD.right is 8px → right-2
             aligns the group's right edge with the plot's right edge. */}
         <div className="absolute bottom-[26px] right-2 z-[5] flex items-center gap-1">
-          <button
-            type="button"
-            aria-label={expanded ? 'Shrink chart width' : 'Expand chart to full width'}
-            aria-pressed={expanded}
-            title={expanded ? 'Shrink chart width' : 'Expand chart to full width'}
-            onClick={() => setExpanded((v) => !v)}
-            className="hidden sm:block
-              flex-shrink-0 w-[18px] h-[18px] text-[11px] leading-[16px] cursor-pointer
-              rounded-full p-0
-              bg-transparent border border-zinc-600 text-zinc-500
-              dark:border-zinc-600 dark:text-zinc-500"
-          >
-            ⛶
-          </button>
+          <ChartExpandButton expanded={expanded} onToggle={() => setExpanded((v) => !v)} />
           <ChartHintButton />
         </div>
         <ChartPlaybackControls />
