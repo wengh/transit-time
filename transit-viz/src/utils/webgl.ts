@@ -4,11 +4,9 @@ import type L from 'leaflet';
 // u16::MAX marks an unreachable node in a `travel_times_at` frame.
 const UNREACHABLE = 65535;
 
-// Per-node dot opacity. The average view is semi-transparent so overlapping
-// dots from the fraction dimension read as a gradient; a single animation
-// frame is a hard reachable/not-reachable cut, so it is drawn more opaque.
+// Per-node dot opacity.
 const AVG_ALPHA = 153;
-const FRAME_ALPHA = 200;
+const FRAME_ALPHA = 153;
 
 export interface GLState {
   canvas: HTMLCanvasElement;
