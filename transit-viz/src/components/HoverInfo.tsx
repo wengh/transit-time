@@ -83,9 +83,6 @@ function computeChartInfo(
 // ─── chart drawing ────────────────────────────────────────────────────────────
 
 const PAD = { top: 8, right: 8, bottom: 22, left: 34 };
-// Left gutter used when the chart has no destination: the y-axis is dropped, so
-// only a thin margin remains. Matches PAD.right for visual symmetry.
-const NO_AXIS_PAD = 8;
 
 interface ChartTheme {
   bg: string;
@@ -190,10 +187,11 @@ function drawChart(
   const { tips, walkTime, walkPathIdx, windowStart, windowEnd, yMax } = info;
   const W = size,
     H = height;
-  const { top: pT, right: pR, bottom: pB } = PAD;
-  // No destination → no y-axis, so the left gutter shrinks and the plot
-  // reclaims that width.
-  const pL = hasData ? PAD.left : NO_AXIS_PAD;
+  const { top: pT, right: pR, bottom: pB, left: pL } = PAD;
+  // The left gutter is constant whether or not there's a destination: with no
+  // y-axis it simply stays empty. Keeping pL fixed means the plot region — and
+  // thus the time→x mapping — is identical in both states, so the playhead and
+  // x-axis ticks never shift sideways when a destination is pinned or cleared.
   const plotW = W - pL - pR;
   const plotH = H - pT - pB;
   const clipY = walkTime !== null ? Math.min(walkTime, yMax) : yMax;
@@ -395,15 +393,9 @@ function drawChart(
 // ─── time ↔ x-position ↔ path index ──────────────────────────────────────────
 
 /** Map a canvas x-pixel to the departure time it represents on the chart. */
-function timeAtCanvasX(
-  canvasX: number,
-  canvasWidth: number,
-  info: ChartInfo,
-  hasData: boolean
-): number {
-  const pL = hasData ? PAD.left : NO_AXIS_PAD;
-  const plotW = canvasWidth - pL - PAD.right;
-  const frac = (canvasX - pL) / plotW;
+function timeAtCanvasX(canvasX: number, canvasWidth: number, info: ChartInfo): number {
+  const plotW = canvasWidth - PAD.left - PAD.right;
+  const frac = (canvasX - PAD.left) / plotW;
   return info.windowStart + frac * (info.windowEnd - info.windowStart);
 }
 
@@ -594,14 +586,11 @@ export function TripChart({ aspectRatio = '1/1', height }: TripChartProps = {}):
 
   // Map a pointer event to the departure time under it, or null if the chart
   // geometry isn't ready yet.
-  const timeFromEvent = useCallback(
-    (e: React.PointerEvent<HTMLCanvasElement>): number | null => {
-      if (!chartInfoRef.current) return null;
-      const rect = e.currentTarget.getBoundingClientRect();
-      return timeAtCanvasX(e.clientX - rect.left, rect.width, chartInfoRef.current, hasData);
-    },
-    [hasData]
-  );
+  const timeFromEvent = useCallback((e: React.PointerEvent<HTMLCanvasElement>): number | null => {
+    if (!chartInfoRef.current) return null;
+    const rect = e.currentTarget.getBoundingClientRect();
+    return timeAtCanvasX(e.clientX - rect.left, rect.width, chartInfoRef.current);
+  }, []);
 
   // pointerdown commits a seek and captures the pointer so a drag past the
   // canvas edge keeps scrubbing.
