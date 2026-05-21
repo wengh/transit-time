@@ -460,8 +460,16 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
       showDestination(node, false);
     }
 
-    function onMouseOut() {
+    function onMouseOut(e: MouseEvent) {
       pointerInMap = false;
+      // Moving onto our own HoverInfo panel is not "leaving onto another GUI
+      // element" — it's the panel showing this very hover. Clearing there
+      // causes a flicker loop: snapping a destination grows the panel under
+      // the cursor, which fires this mouseleave, which would clear the dest,
+      // which shrinks the panel back off the cursor… forever. So keep the
+      // hover (and its node ref) when the pointer lands on the panel.
+      const related = e.relatedTarget;
+      if (related instanceof Element && related.closest('#hover-info')) return;
       lastHoveredNodeRef.current = null;
       if (stateRef.current.pinnedDest === null) {
         clearRouteOverlay();
