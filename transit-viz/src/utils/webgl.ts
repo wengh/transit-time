@@ -1,19 +1,138 @@
-import { isochroneColor, travelTimeColor } from './colors';
 import type L from 'leaflet';
 
-// u16::MAX marks an unreachable node in a `travel_times_at` frame.
-const UNREACHABLE = 65535;
+// ─────────────────────────────────────────────────────────────────────────────
+// GPU-side isochrone renderer.
+//
+// Every per-node quantity is computed on the GPU:
+//   • position — node lat/lon is projected to Web-Mercator ONCE per city into a
+//     static buffer (`projBuffer`); the vertex shader applies the per-frame
+//     viewport transform from uniforms.
+//   • colour   — derived in the vertex shader from the node's travel time and
+//     reachable fraction.
+//   • culling  — unreachable / over-budget nodes collapse to a clipped,
+//     zero-size point; the GPU discards them for free.
+//
+// The CPU per-frame cost is therefore just: upload one travel-time array,
+// set ~5 uniforms, issue one `drawArrays`. A pan/zoom that reuses the same
+// frame skips the upload entirely (see the identity guards on `GLState`).
+// ─────────────────────────────────────────────────────────────────────────────
 
-// Per-node dot opacity.
-const AVG_ALPHA = 153;
-const FRAME_ALPHA = 153;
+// Both the average and the single-frame view drew dots at alpha 153/255.
+const DOT_ALPHA = 0.6;
+
+// a_travelTime carries raw seconds; u16::MAX (65535) marks an unreachable node
+// in a frame and is culled by the `> u_maxTime` test (it exceeds any budget).
+const VERTEX_SRC = `
+  precision highp float;
+
+  attribute vec2 a_proj;        // static Web-Mercator position, normalised [0,1]
+  attribute float a_travelTime; // seconds; 65535 = unreachable (frame view)
+  attribute float a_fraction;   // reachable fraction [0,1]; 1.0 for frame view
+
+  uniform float u_scale;        // 256 * 2^zoom
+  uniform vec2 u_origin;        // viewport NW corner, in [0,1] Mercator space
+  uniform vec2 u_invHalf;       // (2/cssWidth, 2/cssHeight)
+  uniform float u_pointSize;
+  uniform float u_maxTime;      // travel-time budget, seconds
+
+  varying vec4 v_color;
+
+  // Warm ramp (green→yellow→orange→dark red): port of travelTimeColor.
+  vec3 warmColor(float t) {
+    if (t < 0.25) {
+      float s = t / 0.25;
+      return vec3(s, 1.0, 0.0);
+    } else if (t < 0.5) {
+      float s = (t - 0.25) / 0.25;
+      return vec3(1.0, 1.0 - s * 0.47, 0.0);
+    } else if (t < 0.75) {
+      float s = (t - 0.5) / 0.25;
+      return vec3(1.0 - s * (119.0 / 255.0), (136.0 / 255.0) * (1.0 - s), 0.0);
+    }
+    float s = (t - 0.75) / 0.25;
+    return vec3((136.0 - s * 68.0) / 255.0, 0.0, 0.0);
+  }
+
+  // Cool ramp (cyan→blue→purple→dark purple): port of coolColor.
+  vec3 coolColor(float t) {
+    if (t < 0.25) {
+      float s = t / 0.25;
+      return vec3(s * 60.0, 200.0 - s * 80.0, 255.0) / 255.0;
+    } else if (t < 0.5) {
+      float s = (t - 0.25) / 0.25;
+      return vec3(60.0 + s * 40.0, 120.0 - s * 80.0, 255.0 - s * 35.0) / 255.0;
+    } else if (t < 0.75) {
+      float s = (t - 0.5) / 0.25;
+      return vec3(100.0 - s * 20.0, 40.0 - s * 40.0, 220.0 - s * 60.0) / 255.0;
+    }
+    float s = (t - 0.75) / 0.25;
+    return vec3(80.0 - s * 40.0, 0.0, 160.0 - s * 80.0) / 255.0;
+  }
+
+  void main() {
+    // Cull order matters: an unreachable node in the average view has
+    // fraction 0 AND a NaN travel time. Test fraction first and return, so the
+    // NaN never reaches the (NaN-unsafe) maxTime comparison below.
+    if (a_fraction <= 0.0) {
+      gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+      gl_PointSize = 0.0;
+      return;
+    }
+    if (a_travelTime > u_maxTime) {
+      gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+      gl_PointSize = 0.0;
+      return;
+    }
+
+    // Subtract the viewport origin BEFORE scaling: a_proj and u_origin are both
+    // in [0,1] and close together for on-screen nodes, so the difference stays
+    // f32-clean. Doing scale*a_proj - scale*origin instead would subtract two
+    // ~3e7 values and lose precision. Residual error is sub-pixel except at the
+    // very highest zoom, where it is ~1-2px on a semi-transparent dot.
+    vec2 px = (a_proj - u_origin) * u_scale;
+    gl_Position = vec4(px.x * u_invHalf.x - 1.0, 1.0 - px.y * u_invHalf.y, 0.0, 1.0);
+    gl_PointSize = u_pointSize;
+
+    float t = clamp(a_travelTime / u_maxTime, 0.0, 1.0);
+    float f = clamp(a_fraction, 0.0, 1.0);
+    // 2D colour: warm when fully reachable, cool when rarely reachable.
+    vec3 rgb = mix(coolColor(t), warmColor(t), f);
+    v_color = vec4(rgb, ${DOT_ALPHA});
+  }`;
+
+const FRAGMENT_SRC = `
+  precision mediump float;
+  varying vec4 v_color;
+  void main() {
+    gl_FragColor = v_color;
+  }`;
 
 export interface GLState {
   canvas: HTMLCanvasElement;
   gl: WebGLRenderingContext;
   program: WebGLProgram;
-  posBuffer: WebGLBuffer;
-  colorBuffer: WebGLBuffer;
+  /** Static Web-Mercator node positions; uploaded once per city. */
+  projBuffer: WebGLBuffer;
+  /** Per-frame travel times (u16 for a frame, f32 for the average view). */
+  travelBuffer: WebGLBuffer;
+  /** Per-query reachable fractions; only used by the average view. */
+  fractionBuffer: WebGLBuffer;
+  loc: {
+    aProj: number;
+    aTravel: number;
+    aFraction: number;
+    uScale: WebGLUniformLocation | null;
+    uOrigin: WebGLUniformLocation | null;
+    uInvHalf: WebGLUniformLocation | null;
+    uPointSize: WebGLUniformLocation | null;
+    uMaxTime: WebGLUniformLocation | null;
+  };
+  // Identity guards — skip a buffer re-upload when the source array is the
+  // same object as last time (a pan/zoom re-renders the same data).
+  uploadedNodes: Float32Array | null;
+  nodeCount: number;
+  uploadedTravel: Uint16Array | Float32Array | null;
+  uploadedFractionSource: Float32Array | null;
 }
 
 export interface RenderResult {
@@ -30,77 +149,69 @@ export function initWebGL(): GLState | null {
   });
   if (!gl) return null;
 
-  const vsrc = `
-    attribute vec2 a_pos;
-    attribute vec4 a_color;
-    uniform float u_pointSize;
-    varying vec4 v_color;
-    void main() {
-      gl_Position = vec4(a_pos, 0.0, 1.0);
-      gl_PointSize = u_pointSize;
-      v_color = a_color;
-    }`;
-  const fsrc = `
-    precision mediump float;
-    varying vec4 v_color;
-    void main() {
-      gl_FragColor = v_color;
-    }`;
-
   function compile(type: number, src: string): WebGLShader {
     const s = gl!.createShader(type);
     if (!s) throw new Error('Failed to create shader');
     gl!.shaderSource(s, src);
     gl!.compileShader(s);
+    if (!gl!.getShaderParameter(s, gl!.COMPILE_STATUS)) {
+      throw new Error('Shader compile failed: ' + gl!.getShaderInfoLog(s));
+    }
     return s;
   }
   const program = gl.createProgram();
   if (!program) throw new Error('Failed to create program');
-  gl.attachShader(program, compile(gl.VERTEX_SHADER, vsrc));
-  gl.attachShader(program, compile(gl.FRAGMENT_SHADER, fsrc));
+  gl.attachShader(program, compile(gl.VERTEX_SHADER, VERTEX_SRC));
+  gl.attachShader(program, compile(gl.FRAGMENT_SHADER, FRAGMENT_SRC));
   gl.linkProgram(program);
+  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+    throw new Error('Program link failed: ' + gl.getProgramInfoLog(program));
+  }
   gl.useProgram(program);
 
-  const posBuffer = gl.createBuffer();
-  const colorBuffer = gl.createBuffer();
-  if (!posBuffer || !colorBuffer) throw new Error('Failed to create buffers');
+  const projBuffer = gl.createBuffer();
+  const travelBuffer = gl.createBuffer();
+  const fractionBuffer = gl.createBuffer();
+  if (!projBuffer || !travelBuffer || !fractionBuffer) {
+    throw new Error('Failed to create buffers');
+  }
 
   return {
     canvas,
     gl,
     program,
-    posBuffer,
-    colorBuffer,
+    projBuffer,
+    travelBuffer,
+    fractionBuffer,
+    loc: {
+      aProj: gl.getAttribLocation(program, 'a_proj'),
+      aTravel: gl.getAttribLocation(program, 'a_travelTime'),
+      aFraction: gl.getAttribLocation(program, 'a_fraction'),
+      uScale: gl.getUniformLocation(program, 'u_scale'),
+      uOrigin: gl.getUniformLocation(program, 'u_origin'),
+      uInvHalf: gl.getUniformLocation(program, 'u_invHalf'),
+      uPointSize: gl.getUniformLocation(program, 'u_pointSize'),
+      uMaxTime: gl.getUniformLocation(program, 'u_maxTime'),
+    },
+    uploadedNodes: null,
+    nodeCount: 0,
+    uploadedTravel: null,
+    uploadedFractionSource: null,
   };
 }
 
-// Scratch vertex buffers, reused across every render so the per-frame
-// animation loop does not allocate (and trigger GC) at 60 Hz. Grown to fit
-// the largest city seen; never shrunk.
-let scratchPos = new Float32Array(0);
-let scratchCol = new Uint8Array(0);
-
-function ensureScratch(numNodes: number): void {
-  if (scratchPos.length < numNodes * 2) {
-    scratchPos = new Float32Array(numNodes * 2);
-    scratchCol = new Uint8Array(numNodes * 4);
-  }
-}
-
-// Viewport + GL setup shared by the average and per-frame renderers. Holds the
-// Web-Mercator projection constants the per-node loop needs.
+// Viewport + GL state shared by both renderers. The shader needs the viewport
+// expressed in normalised Mercator space, so `origin` is the NW corner divided
+// by `scale`.
 interface Viewport {
-  glState: GLState;
   renderBounds: L.LatLngBounds;
-  w: number;
-  h: number;
-  dpr: number;
-  dotSize: number;
   scale: number;
-  ox: number;
-  oy: number;
+  originX: number;
+  originY: number;
   invW2: number;
   invH2: number;
+  dotSize: number;
+  dpr: number;
 }
 
 function computeViewport(
@@ -144,46 +255,99 @@ function computeViewport(
   const dotSize = Math.max(minPx, Math.max(2, Math.min(6, 14 - zoom)));
 
   return {
-    glState,
     renderBounds,
-    w,
-    h,
-    dpr,
-    dotSize,
     scale,
-    ox: topLeft.x,
-    oy: topLeft.y,
+    // topLeft is in pixel space; dividing by scale puts the origin in the same
+    // normalised [0,1] Mercator space as the precomputed `a_proj` attribute.
+    originX: topLeft.x / scale,
+    originY: topLeft.y / scale,
     invW2: 2 / w,
     invH2: 2 / h,
+    dotSize,
+    dpr,
   };
 }
 
-// Upload the first `count` packed vertices from the scratch buffers and draw.
-function finishDraw(v: Viewport, count: number): RenderResult | null {
-  if (count === 0) return null;
-  const { canvas, gl, program, posBuffer, colorBuffer } = v.glState;
-
-  const posLoc = gl.getAttribLocation(program, 'a_pos');
-  gl.bindBuffer(gl.ARRAY_BUFFER, posBuffer);
-  gl.bufferData(gl.ARRAY_BUFFER, scratchPos.subarray(0, count * 2), gl.DYNAMIC_DRAW);
-  gl.enableVertexAttribArray(posLoc);
-  gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
-
-  const colorLoc = gl.getAttribLocation(program, 'a_color');
-  gl.bindBuffer(gl.ARRAY_BUFFER, colorBuffer);
-  gl.bufferData(gl.ARRAY_BUFFER, scratchCol.subarray(0, count * 4), gl.DYNAMIC_DRAW);
-  gl.enableVertexAttribArray(colorLoc);
-  gl.vertexAttribPointer(colorLoc, 4, gl.UNSIGNED_BYTE, true, 0, 0);
-
-  // gl_PointSize is in viewport (= physical) pixels. Scale by dpr so a dot
-  // visually occupies the same number of CSS pixels as it would at DPR=1.
-  gl.uniform1f(gl.getUniformLocation(program, 'u_pointSize'), v.dotSize * v.dpr);
-  gl.drawArrays(gl.POINTS, 0, count);
-  gl.flush();
-
-  return { canvas, renderBounds: v.renderBounds };
+// Project node lat/lon to normalised Web-Mercator and upload as a static
+// buffer. The transcendental projection runs once per city, never per frame.
+function ensureProjBuffer(glState: GLState, nodeCoords: Float32Array): void {
+  if (glState.uploadedNodes === nodeCoords) return;
+  const { gl } = glState;
+  const numNodes = nodeCoords.length / 2;
+  const proj = new Float32Array(numNodes * 2);
+  for (let i = 0; i < numNodes; i++) {
+    const lat = nodeCoords[i * 2];
+    const lon = nodeCoords[i * 2 + 1];
+    proj[i * 2] = lon / 360 + 0.5;
+    proj[i * 2 + 1] = 0.5 - Math.log(Math.tan(Math.PI / 4 + (lat * Math.PI) / 360)) / (2 * Math.PI);
+  }
+  gl.bindBuffer(gl.ARRAY_BUFFER, glState.projBuffer);
+  gl.bufferData(gl.ARRAY_BUFFER, proj, gl.STATIC_DRAW);
+  glState.uploadedNodes = nodeCoords;
+  glState.nodeCount = numNodes;
 }
 
+// Bind the static position attribute, push the viewport uniforms, and draw
+// every node as a point. Culled nodes are clipped by the vertex shader.
+function drawScene(glState: GLState, v: Viewport, maxTimeSec: number): RenderResult {
+  const { gl, loc } = glState;
+
+  gl.bindBuffer(gl.ARRAY_BUFFER, glState.projBuffer);
+  gl.enableVertexAttribArray(loc.aProj);
+  gl.vertexAttribPointer(loc.aProj, 2, gl.FLOAT, false, 0, 0);
+
+  gl.uniform1f(loc.uScale, v.scale);
+  gl.uniform2f(loc.uOrigin, v.originX, v.originY);
+  gl.uniform2f(loc.uInvHalf, v.invW2, v.invH2);
+  // gl_PointSize is in physical pixels; scale by dpr so a dot occupies a
+  // constant number of CSS pixels regardless of display density.
+  gl.uniform1f(loc.uPointSize, v.dotSize * v.dpr);
+  gl.uniform1f(loc.uMaxTime, maxTimeSec);
+
+  gl.drawArrays(gl.POINTS, 0, glState.nodeCount);
+  gl.flush();
+
+  return { canvas: glState.canvas, renderBounds: v.renderBounds };
+}
+
+// Render a single departure-time frame: `frame[i]` is the node's travel time
+// in seconds, `65535` if unreachable for this departure.
+export function renderIsochroneFrame(
+  glState: GLState,
+  map: L.Map,
+  frame: Uint16Array,
+  nodeCoords: Float32Array,
+  maxTimeSec: number,
+  L: typeof import('leaflet')
+): RenderResult | null {
+  if (!frame || !map || !nodeCoords) return null;
+  const v = computeViewport(glState, map, L);
+  if (!v) return null;
+  const { gl, loc } = glState;
+
+  ensureProjBuffer(glState, nodeCoords);
+
+  // Per-frame travel times: the raw u16 array goes straight onto the GPU; the
+  // shader reads each value as a float (UNSIGNED_SHORT, non-normalised).
+  gl.bindBuffer(gl.ARRAY_BUFFER, glState.travelBuffer);
+  if (glState.uploadedTravel !== frame) {
+    gl.bufferData(gl.ARRAY_BUFFER, frame, gl.DYNAMIC_DRAW);
+    glState.uploadedTravel = frame;
+  }
+  gl.enableVertexAttribArray(loc.aTravel);
+  gl.vertexAttribPointer(loc.aTravel, 1, gl.UNSIGNED_SHORT, false, 0, 0);
+
+  // A frame has no "fraction" dimension — every reachable node counts fully.
+  // Feed a constant generic attribute instead of a buffer.
+  gl.disableVertexAttribArray(loc.aFraction);
+  gl.vertexAttrib1f(loc.aFraction, 1.0);
+
+  return drawScene(glState, v, maxTimeSec);
+}
+
+// Render the window-average view: `travelTimes[i]` is the node's mean travel
+// time (NaN if never reachable), `sampleCounts[i]` the quantised reachable
+// fraction over `totalSamples`.
 export function renderIsochrone(
   glState: GLState,
   map: L.Map,
@@ -197,95 +361,35 @@ export function renderIsochrone(
   if (!travelTimes || !map || !nodeCoords) return null;
   const v = computeViewport(glState, map, L);
   if (!v) return null;
+  const { gl, loc } = glState;
 
-  const numNodes = nodeCoords.length / 2;
-  ensureScratch(numNodes);
-  const { w, h, dotSize, scale, ox, oy, invW2, invH2 } = v;
-  let count = 0;
+  ensureProjBuffer(glState, nodeCoords);
 
-  for (let i = 0; i < numNodes; i++) {
-    const tt = travelTimes[i];
-    if (!(tt >= 0 && tt <= maxTimeSec)) continue;
-
-    const fraction =
-      sampleCounts != null && totalSamples != null && totalSamples > 1
-        ? sampleCounts[i] / totalSamples
-        : 1.0;
-    const color = isochroneColor(tt, maxTimeSec, fraction);
-    const ci2 = i * 2;
-    const lat = nodeCoords[ci2];
-    const lon = nodeCoords[ci2 + 1];
-
-    const x = scale * (lon / 360 + 0.5) - ox;
-    const y =
-      scale * (0.5 - Math.log(Math.tan(Math.PI / 4 + (lat * Math.PI) / 360)) / (2 * Math.PI)) - oy;
-
-    if (x < -dotSize || x > w + dotSize || y < -dotSize || y > h + dotSize) continue;
-
-    const ci = count * 2;
-    scratchPos[ci] = x * invW2 - 1;
-    scratchPos[ci + 1] = 1 - y * invH2;
-
-    const cc = count * 4;
-    scratchCol[cc] = color[0];
-    scratchCol[cc + 1] = color[1];
-    scratchCol[cc + 2] = color[2];
-    scratchCol[cc + 3] = AVG_ALPHA;
-
-    count++;
+  gl.bindBuffer(gl.ARRAY_BUFFER, glState.travelBuffer);
+  if (glState.uploadedTravel !== travelTimes) {
+    gl.bufferData(gl.ARRAY_BUFFER, travelTimes, gl.DYNAMIC_DRAW);
+    glState.uploadedTravel = travelTimes;
   }
+  gl.enableVertexAttribArray(loc.aTravel);
+  gl.vertexAttribPointer(loc.aTravel, 1, gl.FLOAT, false, 0, 0);
 
-  return finishDraw(v, count);
-}
-
-// Render a single departure-time frame: a 1D travel-time ramp with unreachable
-// nodes culled outright, so the reachable area visibly pulses as the playhead
-// advances. `frame[i]` is the node's travel time in seconds, `UNREACHABLE` if
-// the node cannot be reached for this departure.
-export function renderIsochroneFrame(
-  glState: GLState,
-  map: L.Map,
-  frame: Uint16Array,
-  nodeCoords: Float32Array,
-  maxTimeSec: number,
-  L: typeof import('leaflet')
-): RenderResult | null {
-  if (!frame || !map || !nodeCoords) return null;
-  const v = computeViewport(glState, map, L);
-  if (!v) return null;
-
-  const numNodes = nodeCoords.length / 2;
-  ensureScratch(numNodes);
-  const { w, h, dotSize, scale, ox, oy, invW2, invH2 } = v;
-  let count = 0;
-
-  for (let i = 0; i < numNodes; i++) {
-    const tt = frame[i];
-    if (tt === UNREACHABLE || tt > maxTimeSec) continue;
-
-    const color = travelTimeColor(tt, maxTimeSec);
-    const ci2 = i * 2;
-    const lat = nodeCoords[ci2];
-    const lon = nodeCoords[ci2 + 1];
-
-    const x = scale * (lon / 360 + 0.5) - ox;
-    const y =
-      scale * (0.5 - Math.log(Math.tan(Math.PI / 4 + (lat * Math.PI) / 360)) / (2 * Math.PI)) - oy;
-
-    if (x < -dotSize || x > w + dotSize || y < -dotSize || y > h + dotSize) continue;
-
-    const ci = count * 2;
-    scratchPos[ci] = x * invW2 - 1;
-    scratchPos[ci + 1] = 1 - y * invH2;
-
-    const cc = count * 4;
-    scratchCol[cc] = color[0];
-    scratchCol[cc + 1] = color[1];
-    scratchCol[cc + 2] = color[2];
-    scratchCol[cc + 3] = FRAME_ALPHA;
-
-    count++;
+  // Reachable fraction per node. Built once per query (keyed on the travelTimes
+  // identity, which co-changes with sampleCounts) — a pan reuses it.
+  if (glState.uploadedFractionSource !== travelTimes) {
+    const numNodes = glState.nodeCount;
+    const fraction = new Float32Array(numNodes);
+    const useFraction = sampleCounts != null && totalSamples != null && totalSamples > 1;
+    for (let i = 0; i < numNodes; i++) {
+      fraction[i] = useFraction ? sampleCounts![i] / totalSamples! : 1.0;
+    }
+    gl.bindBuffer(gl.ARRAY_BUFFER, glState.fractionBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, fraction, gl.DYNAMIC_DRAW);
+    glState.uploadedFractionSource = travelTimes;
+  } else {
+    gl.bindBuffer(gl.ARRAY_BUFFER, glState.fractionBuffer);
   }
+  gl.enableVertexAttribArray(loc.aFraction);
+  gl.vertexAttribPointer(loc.aFraction, 1, gl.FLOAT, false, 0, 0);
 
-  return finishDraw(v, count);
+  return drawScene(glState, v, maxTimeSec);
 }

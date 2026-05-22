@@ -1,7 +1,6 @@
 import React, { useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import ControlsBody from './ControlsBody';
-import { LegendContent } from './Legend';
 import { useAppState } from '../state/AppContext';
 
 interface MobileSettingsSheetProps {
@@ -70,10 +69,6 @@ export default function MobileSettingsSheet({
         </div>
 
         <ControlsBody onRunQuery={onRunQuery} onCopy={onCopy} compact onChangeCity={onClose} />
-
-        <div className="mt-3 pt-3 border-t border-zinc-200 dark:border-zinc-700">
-          <LegendContent maxMin={state.maxTimeMin} />
-        </div>
       </div>
     </div>,
     document.body
