@@ -5,7 +5,6 @@ import LoadingOverlay from './components/LoadingOverlay';
 import Controls from './components/Controls';
 import MapView from './components/MapView';
 import type { MapViewHandle } from './components/MapView';
-import Legend from './components/Legend';
 import HoverInfo from './components/HoverInfo';
 import LocationSearch from './components/LocationSearch';
 import MobileTopBar from './components/MobileTopBar';
@@ -387,7 +386,6 @@ function AppInner() {
             isFront={frontPanel === 'controls'}
             onActivate={() => setFrontPanel('controls')}
           />
-          <Legend />
           <HoverInfo
             isFront={frontPanel === 'hoverInfo'}
             onActivate={() => setFrontPanel('hoverInfo')}
