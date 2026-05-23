@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react';
-import { FrameCache } from '../utils/frameCache';
+import { getTravelTimesAt } from '../utils/router';
 
 // ── Hybrid animation store ──────────────────────────────────────────────────
 //
@@ -32,13 +32,6 @@ const PLAYBACK_DURATION_MS = 25000;
 // and WebGL frame are driven at the full rAF rate.
 const TIME_THROTTLE_MS = 80;
 
-// Speculative frames to prefetch ahead of the playhead.
-const PREFETCH_AHEAD = 6;
-
-// Prefetch governor: never let more than this many WASM requests be in flight
-// at once, so a fast scrub can't build an unbounded request backlog.
-const MAX_INFLIGHT = 2;
-
 export type AnimMode = 'average' | 'frame';
 
 type FrameRenderer = (frame: Uint16Array) => void;
@@ -48,8 +41,6 @@ function clamp(v: number, lo: number, hi: number): number {
 }
 
 class AnimationStore {
-  private cache = new FrameCache();
-
   // ── Public-ish state (read via getters / hooks) ──
   private mode: AnimMode = 'average';
   private playing = false;
@@ -77,6 +68,10 @@ class AnimationStore {
   // and chased on resolve, so a fast drag costs ~2 fetches, not ~100.
   private primaryInflight = false;
   private pendingPrimary = -1;
+  // Departure currently being fetched from the worker (-1 = none). Lets a
+  // burst of rAF ticks parked on the same grid frame collapse to one request
+  // instead of re-issuing it every tick.
+  private inflightDep = -1;
   // Hover-preview snapshot. Non-null while the sawtooth chart is being hovered
   // (not dragged): holds the committed {mode,currentTime} to restore on exit.
   private previewSaved: { mode: AnimMode; time: number } | null = null;
@@ -104,9 +99,9 @@ class AnimationStore {
 
   /**
    * Departure of the frame to render for the current playhead. Playback snaps
-   * to the 5-minute grid so prefetched/cached frames are reused and the map
-   * redraws only on boundary crossings; a manual scrub or hover renders the
-   * exact playhead time, rounded to the nearest second for stable cache keys.
+   * to the 5-minute grid so the map redraws only on boundary crossings; a
+   * manual scrub or hover renders the exact playhead time, rounded to the
+   * nearest second.
    */
   private depForCurrent(): number {
     return this.playing ? this.snapToFrame(this.currentTime) : Math.round(this.currentTime);
@@ -116,7 +111,6 @@ class AnimationStore {
 
   /** Called when a query completes: a fresh profile is now in the worker. */
   setWindow(windowStart: number, windowEnd: number): void {
-    this.cache.invalidate();
     this.windowStart = windowStart;
     this.windowEnd = windowEnd;
     this.currentTime = windowStart;
@@ -125,6 +119,7 @@ class AnimationStore {
     this.lastRenderedDep = -1;
     this.primaryInflight = false;
     this.pendingPrimary = -1;
+    this.inflightDep = -1;
     this.previewSaved = null;
     this.ready = true;
     this.mode = 'average';
@@ -135,7 +130,6 @@ class AnimationStore {
 
   /** Called when the profile becomes unavailable (city change, new query). */
   reset(): void {
-    this.cache.invalidate();
     this.stopRaf();
     this.ready = false;
     this.playing = false;
@@ -143,6 +137,7 @@ class AnimationStore {
     this.lastRenderedDep = -1;
     this.primaryInflight = false;
     this.pendingPrimary = -1;
+    this.inflightDep = -1;
     this.previewSaved = null;
     this.notifyReact();
   }
@@ -295,23 +290,16 @@ class AnimationStore {
     if (this.mode !== 'frame' || !this.frameRenderer) return;
     const dep = this.depForCurrent();
     if (dep === this.lastRenderedDep && !force) return;
-
-    const frame = this.cache.get(dep);
-    if (frame) {
-      this.lastRenderedDep = dep;
-      this.renderedDeparture = dep;
-      this.frameRenderer(frame);
-    } else {
-      // Stale-while-revalidate: the previously rendered frame stays on screen
-      // (or the average view, if nothing has rendered yet) while we fetch.
-      this.requestFrame(dep);
-    }
-    // Prefetch speculates along the 5-minute grid — useful for playback, but a
-    // free-form manual scrub rarely follows it, so only prefetch while playing.
-    if (this.playing) this.prefetch(dep);
+    // Every frame is fetched on demand from the worker. Stale-while-revalidate:
+    // the previously rendered frame stays on screen (or the average view, if
+    // nothing has rendered yet) until the worker returns this departure.
+    this.requestFrame(dep);
   }
 
   private requestFrame(dep: number): void {
+    // Already fetching this exact departure — a burst of rAF ticks parked on
+    // the same grid frame collapses to one worker request.
+    if (dep === this.inflightDep) return;
     // Single-flight: while a primary fetch runs, just remember the latest
     // target. A fast manual scrub emits dozens of distinct exact-second
     // departures; queuing them all would back up the serial worker. When the
@@ -321,36 +309,30 @@ class AnimationStore {
       return;
     }
     this.primaryInflight = true;
-    this.cache
-      .fetch(dep)
+    this.inflightDep = dep;
+    getTravelTimesAt(dep)
       .then((frame) => this.onPrimaryResolved(dep, frame))
       .catch(() => this.onPrimaryResolved(dep, null));
   }
 
   private onPrimaryResolved(dep: number, frame: Uint16Array | null): void {
     this.primaryInflight = false;
+    this.inflightDep = -1;
     // Paint only if the playhead is still on this frame and still in frame mode
-    // (null frame = superseded query or worker error — drop silently).
+    // (null frame = worker error, or the profile was replaced — drop silently).
     if (frame && this.mode === 'frame' && this.frameRenderer && this.depForCurrent() === dep) {
       this.lastRenderedDep = dep;
       this.renderedDeparture = dep;
       this.frameRenderer(frame);
       this.notifyReact();
     }
-    // Chase wherever the scrub moved while the worker was busy.
+    // Chase wherever the scrub moved while the worker was busy. Skip a target
+    // already on screen so a scrub that lands back on the current frame
+    // doesn't trigger a redundant refetch.
     const next = this.pendingPrimary;
     this.pendingPrimary = -1;
-    if (next >= 0 && this.mode === 'frame') this.requestFrame(next);
-  }
-
-  private prefetch(dep: number): void {
-    const end = this.lastFrameTime();
-    for (let k = 1; k <= PREFETCH_AHEAD; k++) {
-      if (this.cache.inflightCount >= MAX_INFLIGHT) break;
-      const next = dep + k * FRAME_STEP;
-      if (next > end) break;
-      if (this.cache.has(next)) continue;
-      void this.cache.fetch(next).catch(() => {});
+    if (next >= 0 && next !== this.lastRenderedDep && this.mode === 'frame') {
+      this.requestFrame(next);
     }
   }
 
