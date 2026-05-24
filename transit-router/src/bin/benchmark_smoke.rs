@@ -9,6 +9,11 @@ use std::time::{Duration, Instant};
 use chrono::{Duration as ChronoDuration, NaiveDate};
 use transit_router::{IsochroneParams, Router, SinceMidnight, TimeWindow};
 
+/// Step (s) used by the scrub sweep below. The frontend's playback grid is
+/// 300 s; we step 60 s here to exercise the validity-window cache more
+/// aggressively (most steps stay inside one plateau).
+const SCRUB_STEP_SECS: u32 = 60;
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 4 {
@@ -145,6 +150,63 @@ fn main() {
     println!("Nodes reached: {} / {}", reachable.len(), mean.len());
 
     println!("{}", iso.stats());
+
+    // Scrub sweep — exercises the validity-window cache in `travel_times_at`.
+    // First pass is "cold" (cache miss for every node, every step). Second pass
+    // is "warm" (most departures land inside the plateau cached by pass 1, so
+    // the chain walk is skipped for the majority of nodes).
+    {
+        let step = SCRUB_STEP_SECS;
+        let n_steps = (window_minutes * 60 / step).max(1);
+        let mut cold_times = Vec::with_capacity(n_steps as usize);
+        let mut warm_times = Vec::with_capacity(n_steps as usize);
+        let mut frames_cold: Vec<Vec<u16>> = Vec::with_capacity(n_steps as usize);
+
+        let t_cold0 = Instant::now();
+        for k in 0..n_steps {
+            let dep = SinceMidnight::from_seconds(window_start + k * step);
+            let t0 = Instant::now();
+            let frame = iso.travel_times_at(dep);
+            cold_times.push(t0.elapsed());
+            frames_cold.push(frame);
+        }
+        let cold_total = t_cold0.elapsed();
+
+        let t_warm0 = Instant::now();
+        for k in 0..n_steps {
+            let dep = SinceMidnight::from_seconds(window_start + k * step);
+            let t0 = Instant::now();
+            let frame = iso.travel_times_at(dep);
+            warm_times.push(t0.elapsed());
+            // Correctness: cache must produce byte-identical output to cold pass.
+            assert_eq!(
+                frame,
+                frames_cold[k as usize],
+                "cache mismatch at step {k} (dep={})",
+                window_start + k * step
+            );
+        }
+        let warm_total = t_warm0.elapsed();
+
+        let summarise = |label: &str, total: Duration, per: &[Duration]| {
+            let avg = total / per.len() as u32;
+            let min = *per.iter().min().unwrap();
+            let max = *per.iter().max().unwrap();
+            println!(
+                "Scrub sweep {label}: {} steps, total {:.3} s, avg {:.3} ms, min {:.3} ms, max {:.3} ms",
+                per.len(),
+                total.as_secs_f64(),
+                avg.as_secs_f64() * 1e3,
+                min.as_secs_f64() * 1e3,
+                max.as_secs_f64() * 1e3,
+            );
+        };
+        println!();
+        summarise("cold (cache miss per node)", cold_total, &cold_times);
+        summarise("warm (cache hit on plateau)", warm_total, &warm_times);
+        let speedup = cold_total.as_secs_f64() / warm_total.as_secs_f64().max(1e-9);
+        println!("Scrub sweep cache speedup: {:.2}×", speedup);
+    }
 
     if !reachable.is_empty() {
         let min_t = reachable.iter().copied().min().unwrap_or(0);

@@ -18,7 +18,7 @@ use std::{
     cmp::Reverse,
     ops::ControlFlow,
     sync::{
-        Arc,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc,
     },
@@ -808,6 +808,63 @@ pub struct ProfileRouting {
     patterns: Arc<Index>,
     /// Can be set to empty once no longer needed
     destination_totals: Vec<DestinationTotals>,
+    /// Per-node cursor cache for `travel_times_at`. Each slot is a `u32`
+    /// naming *the currently-applicable Pareto entry* for that node — either
+    /// an index into `Frontier::arena`, or one of the named sentinels
+    /// [`SLOT_MISSING`], [`SLOT_HEAD`], [`SLOT_WALK_ONLY_TAIL`].
+    ///
+    /// A cache hit is **two memory accesses**: one for the slot, one for the
+    /// entry it points at (in `arena` or in the inline `NodeFrontier::head`).
+    /// We then check `entry.home_departure_delta >= delta_t` to decide
+    /// "use" vs "advance forward through `sibling_entry_idx`".
+    ///
+    /// Each slot holds the *previous* entry in the chain (one step before the
+    /// currently-applicable one). That gives both ends of the validity window
+    /// from a single u32: `begin = arena[prev].HDD + 1` (lower), `end =
+    /// arena[arena[prev].sibling].HDD` (upper). Two derefs per hit, but
+    /// backward queries are detected per-slot — no global reset.
+    travel_cache: OnceLock<Mutex<Vec<u32>>>,
+}
+
+/// Single sentinel for [`ProfileRouting::travel_cache`]: a slot is either
+/// `SLOT_MISSING` or a real arena index of the *previous* entry in the chain
+/// (one step before the currently applicable entry).
+///
+/// We only cache when the resolved current entry is at least two steps past
+/// the head, so its prev is a real arena index. The head-adjacent cases —
+/// chain empty, current = head, current = `head.sibling` — would need extra
+/// sentinels (head isn't in the arena), and they're each re-derivable from
+/// scratch in ≤3 derefs. Paying a one-extra-match-arm dispatch on every query
+/// of every node isn't worth saving those derefs on a minority of calls.
+const SLOT_MISSING: u32 = u32::MAX;
+
+/// Combine the walk-only fallback with the (optional) transit answer for one
+/// node at a single departure. Mirrors the original `travel_times_at` logic:
+/// `end` sentinel passed to [`combine_walk_and_transit`] meaning "no transit
+/// entry covers this departure — answer with walk only." Picked to be the
+/// largest `u16` so it cannot collide with a real `home_departure_delta`
+/// (chunks assert `window ≤ MAX_DELTA`, which is below `u16::MAX`).
+const WALK_ONLY_SENTINEL: u16 = u16::MAX;
+
+/// transit only counts when its travel time fits inside `max_time`; walk is
+/// always considered (already `None` when it exceeds `max_time`).
+#[inline(always)]
+fn combine_walk_and_transit(
+    walk: Option<u16>,
+    end: u16,
+    arrival: u16,
+    delta_t: u16,
+    max_time: u16,
+) -> u16 {
+    let mut best = walk;
+    if end != WALK_ONLY_SENTINEL {
+        // `arrival >= end >= delta_t` here, so the subtraction never underflows.
+        let travel = arrival - delta_t;
+        if travel <= max_time {
+            best = Some(best.map_or(travel, |b| b.min(travel)));
+        }
+    }
+    best.unwrap_or(u16::MAX)
 }
 
 impl ProfileRouting {
@@ -1039,6 +1096,7 @@ impl ProfileRouting {
             query: *query,
             patterns: index,
             destination_totals,
+            travel_cache: OnceLock::new(),
         })
     }
 
@@ -1067,25 +1125,171 @@ impl ProfileRouting {
             t_abs >= self.query.window_start && t_abs <= self.query.window_end,
             "departure must lie within the chunk window"
         );
+        let n = self.frontier.nodes.len();
         let delta_t = (t_abs - self.query.window_start) as u16;
         let max_time = self.query.max_time.min(u16::MAX as u32) as u16;
-        maybe_par_collect(0..self.frontier.nodes.len() as u32, |node_id| {
-            let mut best = self.patterns.walk_time(node_id);
-            // Entries ascend by home_departure; the first with home_departure
-            // ≥ delta_t gives the earliest arrival.
-            for entry in self.frontier.iter(node_id) {
-                if entry.home_departure_delta >= delta_t {
-                    let travel = entry.arrival_delta - delta_t;
-                    if travel <= max_time {
-                        best = Some(best.map_or(travel, |b| b.min(travel)));
+
+        let cache_mutex = self
+            .travel_cache
+            .get_or_init(|| Mutex::new(vec![SLOT_MISSING; n]));
+        // Uncontended in normal use — one `travel_times_at` runs at a time on
+        // the Isochrone. Holding the guard for the whole parallel region lets
+        // us hand rayon disjoint `&mut u32` slot references without any
+        // per-slot synchronisation.
+        let mut guard = cache_mutex.lock().unwrap_or_else(|p| p.into_inner());
+
+        let arena = &self.frontier.arena;
+        let nodes = &self.frontier.nodes;
+        crate::maybe_par_map_mut_collect(&mut guard, |node_id, slot| {
+            let node_id = node_id as u32;
+            let walk = self.patterns.walk_time(node_id);
+
+            // Cached fast path: slot stores the arena index of the previous
+            // entry in the chain. Two memory accesses on a hit — `*slot`,
+            // then `arena[prev]` (which carries both `prev.HDD` for `begin`
+            // and `prev.sibling_entry_idx` to fetch the current entry).
+            if *slot != SLOT_MISSING {
+                let pe = &arena[*slot as usize];
+                let begin = pe.entry.home_departure_delta + 1;
+                let next_idx = pe.sibling_entry_idx;
+
+                if delta_t >= begin {
+                    // (end, arrival) — walk-only-tail when the chain ends here.
+                    let (end, arrival) = if next_idx == LAST_ENTRY {
+                        (WALK_ONLY_SENTINEL, 0u16)
+                    } else {
+                        let cur = &arena[next_idx as usize].entry;
+                        (cur.home_departure_delta, cur.arrival_delta)
+                    };
+
+                    if delta_t <= end {
+                        // Hit.
+                        return combine_walk_and_transit(walk, end, arrival, delta_t, max_time);
                     }
-                    break;
+
+                    // Forward miss: advance prev to current and keep walking.
+                    // `end != WALK_ONLY_SENTINEL` here (else delta_t > u16::MAX
+                    // is impossible), so `next_idx` is a real arena index.
+                    let mut new_prev = next_idx;
+                    let mut cur = arena[next_idx as usize].sibling_entry_idx;
+                    while cur != LAST_ENTRY {
+                        let ae = &arena[cur as usize];
+                        if ae.entry.home_departure_delta >= delta_t {
+                            *slot = new_prev;
+                            return combine_walk_and_transit(
+                                walk,
+                                ae.entry.home_departure_delta,
+                                ae.entry.arrival_delta,
+                                delta_t,
+                                max_time,
+                            );
+                        }
+                        new_prev = cur;
+                        cur = ae.sibling_entry_idx;
+                    }
+                    *slot = new_prev;
+                    return combine_walk_and_transit(
+                        walk,
+                        WALK_ONLY_SENTINEL,
+                        0,
+                        delta_t,
+                        max_time,
+                    );
                 }
+                // Backward miss (delta_t < begin): fall through to the cold
+                // path, which will overwrite or clear the slot.
             }
-            best.unwrap_or(u16::MAX)
+
+            // Cold path / backward miss / head-adjacent case: resolve from
+            // scratch. We update `slot` only when the resolved current entry
+            // is at least two steps past the head (i.e. prev is a real arena
+            // index); otherwise we leave `slot = SLOT_MISSING` and pay the
+            // ≤3-deref re-derivation on the next call.
+            resolve_from_head(walk, nodes, arena, node_id, slot, delta_t, max_time)
         })
     }
+}
 
+/// Cold/backward-miss path for [`ProfileRouting::travel_times_at`]: walk the
+/// chain from the head, return the answer, and update `slot` only when the
+/// resolved current entry is at least two steps past the head (so its prev is
+/// a real arena index). Otherwise `slot` stays `SLOT_MISSING`.
+#[inline]
+fn resolve_from_head(
+    walk: Option<u16>,
+    nodes: &[NodeFrontier],
+    arena: &[ArenaEntry],
+    node_id: u32,
+    slot: &mut u32,
+    delta_t: u16,
+    max_time: u16,
+) -> u16 {
+    *slot = SLOT_MISSING;
+    let nf = &nodes[node_id as usize];
+
+    // Case 1: empty chain.
+    if !nf.has_head() {
+        return combine_walk_and_transit(walk, WALK_ONLY_SENTINEL, 0, delta_t, max_time);
+    }
+
+    // Case 2: current = head (uncacheable — head isn't in the arena).
+    let head = &nf.head;
+    if head.entry.home_departure_delta >= delta_t {
+        return combine_walk_and_transit(
+            walk,
+            head.entry.home_departure_delta,
+            head.entry.arrival_delta,
+            delta_t,
+            max_time,
+        );
+    }
+
+    // Case 3: head is past. If the chain has nothing past head, walk-only-tail
+    // with prev=head — also uncacheable.
+    let first_idx = head.sibling_entry_idx;
+    if first_idx == LAST_ENTRY {
+        return combine_walk_and_transit(walk, WALK_ONLY_SENTINEL, 0, delta_t, max_time);
+    }
+    let first = &arena[first_idx as usize];
+
+    // Case 4: current = head.sibling (uncacheable — prev would be head).
+    if first.entry.home_departure_delta >= delta_t {
+        return combine_walk_and_transit(
+            walk,
+            first.entry.home_departure_delta,
+            first.entry.arrival_delta,
+            delta_t,
+            max_time,
+        );
+    }
+
+    // Case 5: current is at least two steps past the head. `prev` is some
+    // real arena index — cacheable. Walk forward, tracking the new prev.
+    let mut new_prev = first_idx;
+    let mut cur = first.sibling_entry_idx;
+    while cur != LAST_ENTRY {
+        let ae = &arena[cur as usize];
+        if ae.entry.home_departure_delta >= delta_t {
+            *slot = new_prev;
+            return combine_walk_and_transit(
+                walk,
+                ae.entry.home_departure_delta,
+                ae.entry.arrival_delta,
+                delta_t,
+                max_time,
+            );
+        }
+        new_prev = cur;
+        cur = ae.sibling_entry_idx;
+    }
+
+    // Case 6: walk-only-tail past the head-adjacent region. prev = last entry
+    // of the chain, cacheable.
+    *slot = new_prev;
+    combine_walk_and_transit(walk, WALK_ONLY_SENTINEL, 0, delta_t, max_time)
+}
+
+impl ProfileRouting {
     fn reconstruct_path(
         &self,
         context: &ProfileQueryContext,
