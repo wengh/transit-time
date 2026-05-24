@@ -49,6 +49,27 @@ where
     }
 }
 
+/// Map `f(i, &mut slice[i])` over a slice, mutating each element in place and
+/// collecting the per-index return value into a fresh `Vec<R>`. Uses rayon
+/// when available. The companion to `maybe_par_collect` for the case where
+/// the closure also needs to update some persistent per-index state.
+pub fn maybe_par_map_mut_collect<T, R, F>(slice: &mut [T], f: F) -> Vec<R>
+where
+    T: Send,
+    R: Send,
+    F: Fn(usize, &mut T) -> R + Sync + Send,
+{
+    if crate::rayon_available() {
+        slice
+            .par_iter_mut()
+            .enumerate()
+            .map(|(i, x)| f(i, x))
+            .collect()
+    } else {
+        slice.iter_mut().enumerate().map(|(i, x)| f(i, x)).collect()
+    }
+}
+
 /// Map `f` over `iter`, using rayon if available.
 pub fn maybe_par_unzip<I, R1, R2, F>(iter: I, f: F) -> (Vec<R1>, Vec<R2>)
 where
