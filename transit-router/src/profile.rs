@@ -188,10 +188,25 @@ pub trait ProfileRouter: Sized {
     /// Pareto-optimal transit path within the budget.
     fn has_any_transit_paths(&self, destination: u32) -> bool;
 
+    /// Number of nodes the route graph covers — also the required length of
+    /// the `out` slice for [`travel_times_at_into`].
+    fn num_nodes(&self) -> usize;
+
     /// Per-node travel time (seconds) for a single home departure at absolute
     /// second-of-day `t_abs`, clamped into the window — one animation frame.
-    /// `u16::MAX` marks unreachable nodes. Length = `data.num_nodes`.
-    fn travel_times_at(&self, t_abs: u32) -> Vec<u16>;
+    /// Writes into `out` (must be `num_nodes()` long). `u16::MAX` marks
+    /// unreachable nodes. Reusing the same `out` across calls avoids the
+    /// per-frame `Vec<u16>` allocation that dominates short-frame workloads.
+    fn travel_times_at_into(&self, t_abs: u32, out: &mut [u16]);
+
+    /// Convenience wrapper: allocate a fresh `Vec<u16>` and delegate to
+    /// [`travel_times_at_into`]. Prefer the `_into` variant when calling on
+    /// a hot path (animation playback) — it reuses the caller's buffer.
+    fn travel_times_at(&self, t_abs: u32) -> Vec<u16> {
+        let mut out = vec![0u16; self.num_nodes()];
+        self.travel_times_at_into(t_abs, &mut out);
+        out
+    }
 
     fn stats(&self) -> String;
 }
@@ -573,7 +588,15 @@ impl ProfileRouter for SplitProfileRouting {
         format!("Total profile entries: {total_entries}")
     }
 
-    fn travel_times_at(&self, t_abs: u32) -> Vec<u16> {
+    fn num_nodes(&self) -> usize {
+        // Every chunk shares the same node count (one node per route-graph node).
+        self.chunks
+            .first()
+            .map(|c| c.frontier.nodes.len())
+            .unwrap_or(0)
+    }
+
+    fn travel_times_at_into(&self, t_abs: u32, out: &mut [u16]) {
         let lo = self.chunks.first().unwrap().query.window_start;
         let hi = self.chunks.last().unwrap().query.window_end;
         let t = t_abs.clamp(lo, hi);
@@ -583,7 +606,7 @@ impl ProfileRouter for SplitProfileRouting {
             .iter()
             .find(|c| t >= c.query.window_start && t <= c.query.window_end)
             .expect("clamped departure must fall in some chunk");
-        chunk.travel_times_at(t)
+        chunk.travel_times_at_into(t, out);
     }
 }
 
@@ -1088,15 +1111,27 @@ impl ProfileRouting {
         })
     }
 
+    // Only reached through the trait default `travel_times_at`, which itself
+    // is unused on the inner type — `SplitProfileRouting` forwards directly
+    // to `chunk.travel_times_at_into`. Kept to satisfy the trait so the
+    // shared default is still callable via `&dyn ProfileRouting`.
+    #[allow(dead_code)]
+    fn num_nodes(&self) -> usize {
+        self.frontier.nodes.len()
+    }
+
     /// Per-node `travel(t) = arrival − t` for home departure `t_abs`, which
     /// must lie within this chunk's window. Capped at `query.max_time`;
-    /// `WALK_UNREACHABLE` for nodes unreachable within the budget.
-    fn travel_times_at(&self, t_abs: u32) -> Vec<u16> {
+    /// `WALK_UNREACHABLE` for nodes unreachable within the budget. Writes into
+    /// `out` (length must match `num_nodes()`); reuse the same buffer across
+    /// frames to avoid a per-call 4 MB-class allocation on large cities.
+    fn travel_times_at_into(&self, t_abs: u32, out: &mut [u16]) {
         debug_assert!(
             t_abs >= self.query.window_start && t_abs <= self.query.window_end,
             "departure must lie within the chunk window"
         );
         let n = self.frontier.nodes.len();
+        assert_eq!(out.len(), n, "output buffer must be num_nodes() long");
         let at_delta = (t_abs - self.query.window_start) as u16;
         let max_time = self.query.max_time.try_into().unwrap_or(u16::MAX);
 
@@ -1108,7 +1143,7 @@ impl ProfileRouting {
 
         let arena = &self.frontier.arena;
         let nodes = &self.frontier.nodes;
-        crate::maybe_par_map_mut_collect(&mut guard, |node_id, slot| {
+        crate::maybe_par_for_each_mut2(&mut guard, out, |node_id, slot, out_elem| {
             let walk = self.patterns.walk_only_time[node_id as usize];
 
             let (mut curr, mut next_slot) = 'get_curr: {
@@ -1118,31 +1153,33 @@ impl ProfileRouting {
                     if begin_delta <= at_delta {
                         let curr_idx = prev.sibling_entry_idx;
                         if curr_idx == LAST_ENTRY {
-                            return walk;
+                            *out_elem = walk;
+                            return;
                         }
                         break 'get_curr (arena[curr_idx as usize], curr_idx);
                     }
                 }
                 let node = nodes[node_id as usize];
                 if !node.has_head() {
-                    return walk;
+                    *out_elem = walk;
+                    return;
                 }
                 (node.head, SLOT_MISSING)
             };
 
-            loop {
+            *out_elem = loop {
                 if at_delta <= curr.entry.home_departure_delta {
-                    return walk.min(max_time).min(curr.entry.arrival_delta - at_delta);
+                    break walk.min(max_time).min(curr.entry.arrival_delta - at_delta);
                 }
                 let next_idx = curr.sibling_entry_idx;
                 if next_idx == LAST_ENTRY {
-                    return walk;
+                    break walk;
                 }
                 *slot = next_slot;
                 curr = arena[next_idx as usize];
                 next_slot = next_idx;
             }
-        })
+        });
     }
 }
 

@@ -170,7 +170,12 @@ export async function getProfileHoverData(node: number): Promise<HoverDataResult
 
 /// Per-node travel times (seconds) for one departure — a single animation
 /// frame. Length = num_nodes; `65535` (u16::MAX) marks unreachable nodes.
-/// The worker transfers the backing buffer, so this is a zero-copy receive.
+///
+/// The returned `Uint16Array` is a view directly onto WASM linear memory
+/// (a `SharedArrayBuffer`, since `wasm-bindgen-rayon` is enabled). No bytes
+/// are copied across the worker boundary. The worker rewrites the same
+/// backing buffer on the next `getTravelTimesAt` call, so consumers must
+/// finish reading (e.g. `gl.bufferSubData`) before awaiting the next frame.
 export async function getTravelTimesAt(departure: number): Promise<Uint16Array> {
   return call({ type: 'travelTimesAt', departure });
 }

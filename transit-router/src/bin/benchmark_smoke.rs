@@ -158,42 +158,87 @@ fn main() {
     {
         let step = SCRUB_STEP_SECS;
         let n_steps = (window_minutes * 60 / step).max(1);
-        let mut cold_times = Vec::with_capacity(n_steps as usize);
-        let mut warm_times = Vec::with_capacity(n_steps as usize);
+        // Four passes:
+        //   alloc-cold / alloc-warm: legacy `travel_times_at` — fresh Vec<u16>
+        //     per call (~4 MB on Tokyo).
+        //   reuse-cold / reuse-warm: new `travel_times_at_into` — single
+        //     pre-allocated scratch buffer reused across every frame.
+        // We snapshot the alloc-cold frames once for correctness comparison
+        // against every other pass; this `Vec<Vec<u16>>` is *not* part of the
+        // measured path.
+        let mut alloc_cold_times = Vec::with_capacity(n_steps as usize);
+        let mut alloc_warm_times = Vec::with_capacity(n_steps as usize);
+        let mut reuse_cold_times = Vec::with_capacity(n_steps as usize);
+        let mut reuse_warm_times = Vec::with_capacity(n_steps as usize);
         let mut frames_cold: Vec<Vec<u16>> = Vec::with_capacity(n_steps as usize);
 
-        let t_cold0 = Instant::now();
+        // Pass 1: allocating cold. Snapshot each frame for cross-pass checks.
+        let t_alloc_cold0 = Instant::now();
         for k in 0..n_steps {
             let dep = SinceMidnight::from_seconds(window_start + k * step);
             let t0 = Instant::now();
             let frame = iso.travel_times_at(dep);
-            cold_times.push(t0.elapsed());
+            alloc_cold_times.push(t0.elapsed());
             frames_cold.push(frame);
         }
-        let cold_total = t_cold0.elapsed();
+        let alloc_cold_total = t_alloc_cold0.elapsed();
 
-        let t_warm0 = Instant::now();
+        // Pass 2: allocating warm. Same API, slots already populated.
+        let t_alloc_warm0 = Instant::now();
         for k in 0..n_steps {
             let dep = SinceMidnight::from_seconds(window_start + k * step);
             let t0 = Instant::now();
             let frame = iso.travel_times_at(dep);
-            warm_times.push(t0.elapsed());
-            // Correctness: cache must produce byte-identical output to cold pass.
+            alloc_warm_times.push(t0.elapsed());
             assert_eq!(
                 frame,
                 frames_cold[k as usize],
-                "cache mismatch at step {k} (dep={})",
+                "alloc-warm mismatch at step {k} (dep={})",
                 window_start + k * step
             );
         }
-        let warm_total = t_warm0.elapsed();
+        let alloc_warm_total = t_alloc_warm0.elapsed();
+
+        // Drop the cache so the reuse passes also start cold — otherwise
+        // we'd be measuring "post-warm reuse" vs "cold alloc" and that's
+        // not the comparison we want.
+        let mut scratch = vec![0u16; iso.num_nodes()];
+
+        // Pass 3: reuse cold. Single buffer, no per-call allocation.
+        let t_reuse_cold0 = Instant::now();
+        for k in 0..n_steps {
+            let dep = SinceMidnight::from_seconds(window_start + k * step);
+            let t0 = Instant::now();
+            iso.travel_times_at_into(dep, &mut scratch);
+            reuse_cold_times.push(t0.elapsed());
+            // Sanity: should match alloc pass since cache state is identical.
+            debug_assert_eq!(
+                scratch, frames_cold[k as usize],
+                "reuse-cold mismatch at step {k}"
+            );
+        }
+        let reuse_cold_total = t_reuse_cold0.elapsed();
+
+        // Pass 4: reuse warm. The truly hot animation-frame path.
+        let t_reuse_warm0 = Instant::now();
+        for k in 0..n_steps {
+            let dep = SinceMidnight::from_seconds(window_start + k * step);
+            let t0 = Instant::now();
+            iso.travel_times_at_into(dep, &mut scratch);
+            reuse_warm_times.push(t0.elapsed());
+            assert_eq!(
+                scratch, frames_cold[k as usize],
+                "reuse-warm mismatch at step {k}"
+            );
+        }
+        let reuse_warm_total = t_reuse_warm0.elapsed();
 
         let summarise = |label: &str, total: Duration, per: &[Duration]| {
             let avg = total / per.len() as u32;
             let min = *per.iter().min().unwrap();
             let max = *per.iter().max().unwrap();
             println!(
-                "Scrub sweep {label}: {} steps, total {:.3} s, avg {:.3} ms, min {:.3} ms, max {:.3} ms",
+                "Scrub sweep {label:<22}: {} steps, total {:.3} s, avg {:.3} ms, min {:.3} ms, max {:.3} ms",
                 per.len(),
                 total.as_secs_f64(),
                 avg.as_secs_f64() * 1e3,
@@ -202,10 +247,15 @@ fn main() {
             );
         };
         println!();
-        summarise("cold (cache miss per node)", cold_total, &cold_times);
-        summarise("warm (cache hit on plateau)", warm_total, &warm_times);
-        let speedup = cold_total.as_secs_f64() / warm_total.as_secs_f64().max(1e-9);
-        println!("Scrub sweep cache speedup: {:.2}×", speedup);
+        summarise("alloc-cold", alloc_cold_total, &alloc_cold_times);
+        summarise("alloc-warm", alloc_warm_total, &alloc_warm_times);
+        summarise("reuse-cold", reuse_cold_total, &reuse_cold_times);
+        summarise("reuse-warm", reuse_warm_total, &reuse_warm_times);
+        println!(
+            "Scrub sweep alloc→reuse savings: cold {:.2}×, warm {:.2}×",
+            alloc_cold_total.as_secs_f64() / reuse_cold_total.as_secs_f64().max(1e-9),
+            alloc_warm_total.as_secs_f64() / reuse_warm_total.as_secs_f64().max(1e-9),
+        );
     }
 
     if !reachable.is_empty() {
