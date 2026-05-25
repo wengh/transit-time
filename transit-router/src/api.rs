@@ -325,6 +325,19 @@ impl Isochrone {
         self.inner.travel_times_at(departure.as_seconds())
     }
 
+    /// In-place counterpart of [`Isochrone::travel_times_at`]: writes per-node
+    /// travel times into `out` (length must equal [`Isochrone::num_nodes`]).
+    /// Reuse the same `out` across frames to avoid the ~4 MB-per-call
+    /// allocation that dominates Tokyo-class playback workloads.
+    pub fn travel_times_at_into(&self, departure: SinceMidnight, out: &mut [u16]) {
+        self.inner.travel_times_at_into(departure.as_seconds(), out);
+    }
+
+    /// Number of nodes a `travel_times_at_into` output buffer must hold.
+    pub fn num_nodes(&self) -> usize {
+        self.inner.num_nodes()
+    }
+
     /// Pareto frontier for `dest`, ascending by [`Entry::departure`]. Empty
     /// when `dest` is unreachable by transit within the budget (walking-only
     /// reachability is *not* yielded here — check

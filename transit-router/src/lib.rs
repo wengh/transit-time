@@ -70,6 +70,31 @@ where
     }
 }
 
+/// Walk two equal-length mutable slices in lockstep, applying `f(i, &mut a[i],
+/// &mut b[i])` to each index. Uses rayon when available. Useful when one
+/// slice is persistent state (e.g. a per-node cache) and the other is a
+/// caller-supplied output buffer being filled in place — neither needs an
+/// allocation, and they're zipped without intermediate collection.
+pub fn maybe_par_for_each_mut2<A, B, F>(a: &mut [A], b: &mut [B], f: F)
+where
+    A: Send,
+    B: Send,
+    F: Fn(usize, &mut A, &mut B) + Sync + Send,
+{
+    assert_eq!(a.len(), b.len(), "slices must be the same length");
+    if crate::rayon_available() {
+        a.par_iter_mut()
+            .zip(b.par_iter_mut())
+            .enumerate()
+            .for_each(|(i, (a, b))| f(i, a, b));
+    } else {
+        a.iter_mut()
+            .zip(b.iter_mut())
+            .enumerate()
+            .for_each(|(i, (a, b))| f(i, a, b));
+    }
+}
+
 /// Map `f` over `iter`, using rayon if available.
 pub fn maybe_par_unzip<I, R1, R2, F>(iter: I, f: F) -> (Vec<R1>, Vec<R2>)
 where
