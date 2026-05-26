@@ -12,7 +12,7 @@ import { getTravelTimesAt } from '../utils/router';
 //  • The scrubber thumb is moved imperatively by raw subscribers (`onRaf`),
 //    also at the full frame rate.
 //  • React-rendered text (time label, chart highlight) subscribes through
-//    `useSyncExternalStore`, but time notifications are throttled to ~12 Hz
+//    `useSyncExternalStore`, but time notifications are throttled to ~30 Hz
 //    so a play loop can't trigger a render storm.
 //  • Discrete events (play/pause/enter/exit) notify React immediately.
 //
@@ -23,14 +23,14 @@ import { getTravelTimesAt } from '../utils/router';
 // the isochrone redraws only when the playhead crosses a 5-minute boundary; a
 // manual scrub or hover instead renders the exact playhead time, rounded to the
 // nearest second.
-export const FRAME_STEP = 300;
+export const FRAME_STEP = 15;
 
 // Wall-clock duration of a full-window playback pass.
 const PLAYBACK_DURATION_MS = 25000;
 
-// React time-label refresh interval (~12 fps). Governs only text; the thumb
+// React time-label refresh interval (~30 fps). Governs only text; the thumb
 // and WebGL frame are driven at the full rAF rate.
-const TIME_THROTTLE_MS = 80;
+const TIME_THROTTLE_MS = 33;
 
 export type AnimMode = 'average' | 'frame';
 
