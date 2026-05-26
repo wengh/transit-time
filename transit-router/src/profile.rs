@@ -188,20 +188,14 @@ pub trait ProfileRouter: Sized {
     /// Pareto-optimal transit path within the budget.
     fn has_any_transit_paths(&self, destination: u32) -> bool;
 
-    /// Number of nodes the route graph covers — also the required length of
-    /// the `out` slice for [`travel_times_at_into`].
+    /// Number of nodes — the required length of `out` for `travel_times_at_into`.
     fn num_nodes(&self) -> usize;
 
-    /// Per-node travel time (seconds) for a single home departure at absolute
-    /// second-of-day `t_abs`, clamped into the window — one animation frame.
-    /// Writes into `out` (must be `num_nodes()` long). `u16::MAX` marks
-    /// unreachable nodes. Reusing the same `out` across calls avoids the
-    /// per-frame `Vec<u16>` allocation that dominates short-frame workloads.
+    /// Per-node travel time at home departure `t_abs` (clamped into the window)
+    /// written into `out`. `u16::MAX` for unreachable nodes.
     fn travel_times_at_into(&self, t_abs: u32, out: &mut [u16]);
 
-    /// Convenience wrapper: allocate a fresh `Vec<u16>` and delegate to
-    /// [`travel_times_at_into`]. Prefer the `_into` variant when calling on
-    /// a hot path (animation playback) — it reuses the caller's buffer.
+    /// Allocating wrapper around `travel_times_at_into`.
     fn travel_times_at(&self, t_abs: u32) -> Vec<u16> {
         let mut out = vec![0u16; self.num_nodes()];
         self.travel_times_at_into(t_abs, &mut out);
@@ -831,34 +825,24 @@ pub struct ProfileRouting {
     patterns: Arc<Index>,
     /// Can be set to empty once no longer needed
     destination_totals: Vec<DestinationTotals>,
-    /// Per-node cursor cache for `travel_times_at`. Each slot is a `u32`
-    /// naming *the currently-applicable Pareto entry* for that node — either
-    /// an index into `Frontier::arena`, or one of the named sentinels
-    /// [`SLOT_MISSING`], [`SLOT_HEAD`], [`SLOT_WALK_ONLY_TAIL`].
+    /// Per-node cursor cache for `travel_times_at`. Each slot is either
+    /// [`SLOT_MISSING`] or an arena index pointing at the *previous* entry of
+    /// the currently-applicable Pareto step (one step before the entry whose
+    /// validity window contains the last queried departure).
     ///
-    /// A cache hit is **two memory accesses**: one for the slot, one for the
-    /// entry it points at (in `arena` or in the inline `NodeFrontier::head`).
-    /// We then check `entry.home_departure_delta >= delta_t` to decide
-    /// "use" vs "advance forward through `sibling_entry_idx`".
-    ///
-    /// Each slot holds the *previous* entry in the chain (one step before the
-    /// currently-applicable one). That gives both ends of the validity window
-    /// from a single u32: `begin = arena[prev].HDD + 1` (lower), `end =
-    /// arena[arena[prev].sibling].HDD` (upper). Two derefs per hit, but
-    /// backward queries are detected per-slot — no global reset.
+    /// Holding the *previous* entry — rather than the current one — gives
+    /// both ends of the validity window from a single `u32` slot:
+    /// `begin = arena[slot].HDD + 1` (lower bound, exclusive of `slot`'s own
+    /// home-departure-delta) and `end = arena[arena[slot].sibling].HDD` (upper
+    /// bound, the current entry's HDD). A backward scrub past `begin` falls
+    /// out of the per-slot validity check on its own — no global reset.
     travel_cache: OnceLock<Mutex<Vec<u32>>>,
 }
 
-/// Single sentinel for [`ProfileRouting::travel_cache`]: a slot is either
-/// `SLOT_MISSING` or a real arena index of the *previous* entry in the chain
-/// (one step before the currently applicable entry).
-///
-/// We only cache when the resolved current entry is at least two steps past
-/// the head, so its prev is a real arena index. The head-adjacent cases —
-/// chain empty, current = head, current = `head.sibling` — would need extra
-/// sentinels (head isn't in the arena), and they're each re-derivable from
-/// scratch in ≤3 derefs. Paying a one-extra-match-arm dispatch on every query
-/// of every node isn't worth saving those derefs on a minority of calls.
+/// Cache miss / not-cacheable sentinel for [`ProfileRouting::travel_cache`].
+/// Used for the head-adjacent cases (chain empty, current = head, current =
+/// `head.sibling`) since `head` isn't in the arena and they're cheap to
+/// re-derive on cold; not worth distinct sentinels.
 const SLOT_MISSING: u32 = u32::MAX;
 
 impl ProfileRouting {
@@ -1111,20 +1095,13 @@ impl ProfileRouting {
         })
     }
 
-    // Only reached through the trait default `travel_times_at`, which itself
-    // is unused on the inner type — `SplitProfileRouting` forwards directly
-    // to `chunk.travel_times_at_into`. Kept to satisfy the trait so the
-    // shared default is still callable via `&dyn ProfileRouting`.
+    // Only reached via the trait default; `SplitProfileRouting` calls
+    // `chunk.travel_times_at_into` directly.
     #[allow(dead_code)]
     fn num_nodes(&self) -> usize {
         self.frontier.nodes.len()
     }
 
-    /// Per-node `travel(t) = arrival − t` for home departure `t_abs`, which
-    /// must lie within this chunk's window. Capped at `query.max_time`;
-    /// `WALK_UNREACHABLE` for nodes unreachable within the budget. Writes into
-    /// `out` (length must match `num_nodes()`); reuse the same buffer across
-    /// frames to avoid a per-call 4 MB-class allocation on large cities.
     fn travel_times_at_into(&self, t_abs: u32, out: &mut [u16]) {
         debug_assert!(
             t_abs >= self.query.window_start && t_abs <= self.query.window_end,

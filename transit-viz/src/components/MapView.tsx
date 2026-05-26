@@ -73,7 +73,6 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
     zoomOut: () => mapRef.current?.zoomOut(),
   }));
 
-  // Keep current state in refs for event handlers
   const stateRef = useRef(state);
   stateRef.current = state;
 
@@ -93,7 +92,6 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
     else map.doubleClickZoom.disable();
   }, [isMobile]);
 
-  // Clear destination marker and routes
   const clearDestination = useCallback(() => {
     if (destMarkerRef.current) {
       destMarkerRef.current.remove();

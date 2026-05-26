@@ -9,9 +9,8 @@ use std::time::{Duration, Instant};
 use chrono::{Duration as ChronoDuration, NaiveDate};
 use transit_router::{IsochroneParams, Router, SinceMidnight, TimeWindow};
 
-/// Step (s) used by the scrub sweep below. The frontend's playback grid is
-/// 300 s; we step 60 s here to exercise the validity-window cache more
-/// aggressively (most steps stay inside one plateau).
+/// Scrub-sweep step (s). Smaller than the frontend's 300 s playback grid to
+/// keep most steps inside a single cursor-cache plateau.
 const SCRUB_STEP_SECS: u32 = 60;
 
 fn main() {
@@ -151,28 +150,18 @@ fn main() {
 
     println!("{}", iso.stats());
 
-    // Scrub sweep — exercises the validity-window cache in `travel_times_at`.
-    // First pass is "cold" (cache miss for every node, every step). Second pass
-    // is "warm" (most departures land inside the plateau cached by pass 1, so
-    // the chain walk is skipped for the majority of nodes).
+    // Scrub sweep. Pass 1 starts cold; pass 1 also snapshots each frame so
+    // every later pass can cross-check. "cold"/"warm" labels refer to the
+    // cursor cache; "alloc"/"reuse" to the output buffer.
     {
         let step = SCRUB_STEP_SECS;
         let n_steps = (window_minutes * 60 / step).max(1);
-        // Four passes:
-        //   alloc-cold / alloc-warm: legacy `travel_times_at` — fresh Vec<u16>
-        //     per call (~4 MB on Tokyo).
-        //   reuse-cold / reuse-warm: new `travel_times_at_into` — single
-        //     pre-allocated scratch buffer reused across every frame.
-        // We snapshot the alloc-cold frames once for correctness comparison
-        // against every other pass; this `Vec<Vec<u16>>` is *not* part of the
-        // measured path.
         let mut alloc_cold_times = Vec::with_capacity(n_steps as usize);
         let mut alloc_warm_times = Vec::with_capacity(n_steps as usize);
         let mut reuse_cold_times = Vec::with_capacity(n_steps as usize);
         let mut reuse_warm_times = Vec::with_capacity(n_steps as usize);
         let mut frames_cold: Vec<Vec<u16>> = Vec::with_capacity(n_steps as usize);
 
-        // Pass 1: allocating cold. Snapshot each frame for cross-pass checks.
         let t_alloc_cold0 = Instant::now();
         for k in 0..n_steps {
             let dep = SinceMidnight::from_seconds(window_start + k * step);
@@ -183,43 +172,31 @@ fn main() {
         }
         let alloc_cold_total = t_alloc_cold0.elapsed();
 
-        // Pass 2: allocating warm. Same API, slots already populated.
         let t_alloc_warm0 = Instant::now();
         for k in 0..n_steps {
             let dep = SinceMidnight::from_seconds(window_start + k * step);
             let t0 = Instant::now();
             let frame = iso.travel_times_at(dep);
             alloc_warm_times.push(t0.elapsed());
-            assert_eq!(
-                frame,
-                frames_cold[k as usize],
-                "alloc-warm mismatch at step {k} (dep={})",
-                window_start + k * step
-            );
+            assert_eq!(frame, frames_cold[k as usize], "alloc-warm mismatch at {k}");
         }
         let alloc_warm_total = t_alloc_warm0.elapsed();
 
-        // Drop the cache so the reuse passes also start cold — otherwise
-        // we'd be measuring "post-warm reuse" vs "cold alloc" and that's
-        // not the comparison we want.
         let mut scratch = vec![0u16; iso.num_nodes()];
 
-        // Pass 3: reuse cold. Single buffer, no per-call allocation.
         let t_reuse_cold0 = Instant::now();
         for k in 0..n_steps {
             let dep = SinceMidnight::from_seconds(window_start + k * step);
             let t0 = Instant::now();
             iso.travel_times_at_into(dep, &mut scratch);
             reuse_cold_times.push(t0.elapsed());
-            // Sanity: should match alloc pass since cache state is identical.
             debug_assert_eq!(
                 scratch, frames_cold[k as usize],
-                "reuse-cold mismatch at step {k}"
+                "reuse-cold mismatch at {k}"
             );
         }
         let reuse_cold_total = t_reuse_cold0.elapsed();
 
-        // Pass 4: reuse warm. The truly hot animation-frame path.
         let t_reuse_warm0 = Instant::now();
         for k in 0..n_steps {
             let dep = SinceMidnight::from_seconds(window_start + k * step);

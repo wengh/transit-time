@@ -8,10 +8,7 @@ import init, {
 let router: TransitRouter | null = null;
 let profile: WasmProfileRouting | null = null;
 let wasmReady = false;
-/// WASM linear memory — captured once after `init()`. Backs the zero-copy
-/// `Uint16Array` view that `handleTravelTimesAt` posts to the main thread.
-/// With `wasm-bindgen-rayon` enabled the buffer is a `SharedArrayBuffer`, so
-/// `postMessage` shares the bytes by reference instead of cloning them.
+/// Backs the zero-copy `Uint16Array` view returned by `handleTravelTimesAt`.
 let wasmMemory: WebAssembly.Memory | null = null;
 
 const PROFILE_FRACTION_SCALE = 0xffff;
@@ -48,8 +45,6 @@ export type WorkerResponse =
 async function handleInitWasm() {
   if (wasmReady) return;
   const wasm = await init();
-  // Stash the WebAssembly.Memory so `handleTravelTimesAt` can build a
-  // Uint16Array view straight onto its (Shared)ArrayBuffer.
   wasmMemory = wasm.memory;
   try {
     await initThreadPool(navigator.hardwareConcurrency || 4);
@@ -253,24 +248,10 @@ function handleGetHoverData(node: number) {
   return { paths, representativeIndex: data.representativeIndex };
 }
 
-// Per-node travel times for a single departure — one animation frame.
-// `u16::MAX` (65535) marks unreachable nodes.
-//
-// Zero-copy path: Rust writes into a persistent scratch buffer that lives
-// inside `WasmProfileRouting`. We hand the main thread a `Uint16Array` view
-// directly onto that buffer (which sits in WASM linear memory — a
-// `SharedArrayBuffer` once `wasm-bindgen-rayon` is up). `postMessage` of
-// a SAB view shares the bytes by reference, so no copy crosses the worker
-// boundary either.
-//
-// Race story: this is a request/response RPC. The main thread awaits the
-// response before sending the next `travelTimesAt`, and the WebGL upload
-// it does on receipt (`gl.bufferSubData`) reads the bytes synchronously
-// before the next request goes out. So the worker never overwrites the
-// scratch buffer while the main thread is mid-read.
-//
-// The view must be reconstructed every call: if `wasm.memory.grow` ever
-// fires it detaches existing views (the underlying SAB may be replaced).
+// Returns a Uint16Array view directly onto WASM linear memory — no copy.
+// The buffer is overwritten on the next call, so callers must finish reading
+// (e.g. upload to GL) before awaiting the next frame. Safe under the worker's
+// request/response RPC model; would race under any concurrent dispatch.
 function handleTravelTimesAt(departure: number): Uint16Array {
   if (!profile) throw new Error('No profile loaded');
   if ((profile as any).__wbg_ptr === 0) throw new Error('Profile freed');
@@ -315,11 +296,7 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
         value = handleGetHoverData(e.data.node);
         break;
       case 'travelTimesAt':
-        // The returned Uint16Array is a view over WASM linear memory (a
-        // SharedArrayBuffer). SABs are *cloned by reference* across
-        // postMessage rather than transferred, so we deliberately do NOT
-        // push `value.buffer` into `transfer` — listing a SAB there throws
-        // a DataCloneError.
+        // SAB-backed view; do NOT add to `transfer` — SABs throw on transfer.
         value = handleTravelTimesAt(e.data.departure);
         break;
       case 'snapToNode':

@@ -725,9 +725,7 @@ export function ChartPlaybackControls(): React.ReactNode {
   );
 }
 
-// Shared panel "card" surface: opaque background, rounded corners, drop shadow.
-// Wraps the whole panel when collapsed; in wide mode it's applied to the
-// details and chart sections individually so they read as detached cards.
+/** Card chrome — wraps the whole panel when collapsed; per-section in wide mode. */
 const CARD_CHROME =
   'bg-zinc-900 dark:bg-zinc-900 [@media(prefers-color-scheme:light)]:bg-white ' +
   'rounded-lg shadow-[0_2px_12px_rgba(0,0,0,0.5)]';
@@ -735,21 +733,15 @@ const CARD_CHROME =
 export default function HoverInfo({ isFront, onActivate }: HoverInfoProps): React.ReactNode {
   const { state } = useAppState();
   const [hidden, setHidden] = useState(false);
-  // Desktop-only "wide mode": panel spans the full viewport width while the
-  // chart keeps a fixed height, giving the sawtooth more horizontal room.
+  /** Desktop "wide mode": panel spans the full viewport for a roomier sawtooth. */
   const [expanded, setExpanded] = useState(false);
 
   const ready = useAnimReady();
   const animMode = useAnimMode();
   const animDep = useAnimRenderedDeparture();
-  // In frame mode, the panel describes the trip for the rendered departure;
-  // in average mode it shows the window-averaged representative trip.
   const departureTime = animMode === 'frame' ? animDep : null;
   const hoverData = currentDest(state)?.hoverData ?? null;
 
-  // Nothing to show until a query has armed the animation window. After that
-  // the panel stays on screen permanently: an empty scrubbable strip with no
-  // destination, the full panel once one is hovered or pinned.
   if (!hoverData && !ready) return null;
 
   if (hoverData && hidden) {
@@ -776,9 +768,8 @@ export default function HoverInfo({ isFront, onActivate }: HoverInfoProps): Reac
     );
   }
 
-  // No destination: a minimal always-on panel — the playback controls, the
-  // expand/hint buttons, and a short y-axis-less chart strip that still scrubs
-  // the isochrone. When expanded it widens like the full panel.
+  // No destination: minimal always-on panel with controls and a short
+  // scrubbable chart strip.
   if (!hoverData) {
     return (
       <div

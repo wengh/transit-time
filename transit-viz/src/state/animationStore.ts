@@ -1,35 +1,14 @@
 import { useSyncExternalStore } from 'react';
 import { getTravelTimesAt } from '../utils/router';
 
-// ── Hybrid animation store ──────────────────────────────────────────────────
-//
-// The isochrone animation updates the playhead every requestAnimationFrame
-// tick (~60 Hz). Routing that through React Context would re-render the whole
-// tree 60×/s, so this store sits *outside* React:
-//
-//  • The rAF loop mutates `currentTime` and pushes frames straight to WebGL
-//    via a registered renderer callback — zero React involvement.
-//  • The scrubber thumb is moved imperatively by raw subscribers (`onRaf`),
-//    also at the full frame rate.
-//  • React-rendered text (time label, chart highlight) subscribes through
-//    `useSyncExternalStore`, but time notifications are throttled to ~30 Hz
-//    so a play loop can't trigger a render storm.
-//  • Discrete events (play/pause/enter/exit) notify React immediately.
-//
-// This file is the single source of truth for the playhead; the app reducer
-// holds no per-frame state.
+// Animation state lives outside React: the rAF loop pushes WebGL frames and
+// moves the scrubber thumb at full rate; React-facing values are throttled
+// via `useSyncExternalStore` so playback doesn't restorm renders.
 
-// Departure-time granularity of an autoplay frame, in seconds. During playback
-// the isochrone redraws only when the playhead crosses a 5-minute boundary; a
-// manual scrub or hover instead renders the exact playhead time, rounded to the
-// nearest second.
+/** Departure-grid step during autoplay (seconds). Scrub/hover use exact time. */
 export const FRAME_STEP = 15;
-
-// Wall-clock duration of a full-window playback pass.
 const PLAYBACK_DURATION_MS = 25000;
-
-// React time-label refresh interval (~30 fps). Governs only text; the thumb
-// and WebGL frame are driven at the full rAF rate.
+/** React text-label refresh interval. Thumb and WebGL run at full rAF rate. */
 const TIME_THROTTLE_MS = 33;
 
 export type AnimMode = 'average' | 'frame';
@@ -47,33 +26,25 @@ class AnimationStore {
   private ready = false;
   private windowStart = 0;
   private windowEnd = 0;
-  // The live playhead, mutated every rAF tick. Read imperatively by `onRaf`
-  // subscribers (thumb) at full rate.
+  /** Live playhead, mutated every rAF tick. Read by `onRaf` subscribers (thumb). */
   private currentTime = 0;
-  // Throttled mirror of `currentTime` for React text — only this is what
-  // `useAnimTime` returns, so React renders at ~12 fps not 60.
+  /** Throttled mirror of `currentTime` for React text. */
   private throttledTime = 0;
-  // Departure of the frame actually drawn on the map. The readout shows this
-  // (not the scrubber target) so the label never claims a time the map isn't
-  // yet showing under stale-while-revalidate.
+  /** Departure of the frame actually drawn — what the readout reports. */
   private renderedDeparture = 0;
 
   // ── Internal ──
   private frameRenderer: FrameRenderer | null = null;
   private lastRenderedDep = -1;
-  // Single-flight gate for the primary (playhead) frame fetch. A manual scrub
-  // emits a distinct exact-second departure on every pointer move; without this
-  // they would all queue on the serial WASM worker. Only one fetch runs at a
-  // time — the latest target requested while busy is parked in `pendingPrimary`
-  // and chased on resolve, so a fast drag costs ~2 fetches, not ~100.
+  // Single-flight gate for primary frame fetches. A fast scrub emits a fresh
+  // exact-second target on every pointermove; without this they would all queue
+  // on the serial worker. The latest target requested while busy is parked in
+  // `pendingPrimary` and chased on resolve.
   private primaryInflight = false;
   private pendingPrimary = -1;
-  // Departure currently being fetched from the worker (-1 = none). Lets a
-  // burst of rAF ticks parked on the same grid frame collapse to one request
-  // instead of re-issuing it every tick.
+  /** Departure currently in flight (-1 = none); collapses rAF bursts on one grid frame. */
   private inflightDep = -1;
-  // Hover-preview snapshot. Non-null while the sawtooth chart is being hovered
-  // (not dragged): holds the committed {mode,currentTime} to restore on exit.
+  /** Saved {mode,currentTime} during sawtooth-chart hover; restored on exit. */
   private previewSaved: { mode: AnimMode; time: number } | null = null;
   private rafId = 0;
   private lastTickTime = 0;
@@ -157,7 +128,6 @@ class AnimationStore {
     if (!this.ready) return;
     this.previewSaved = null;
     this.mode = 'frame';
-    // Restart from the window start if the playhead is parked at the end.
     if (this.currentTime >= this.lastFrameTime()) {
       this.currentTime = this.windowStart;
     }
@@ -290,20 +260,13 @@ class AnimationStore {
     if (this.mode !== 'frame' || !this.frameRenderer) return;
     const dep = this.depForCurrent();
     if (dep === this.lastRenderedDep && !force) return;
-    // Every frame is fetched on demand from the worker. Stale-while-revalidate:
-    // the previously rendered frame stays on screen (or the average view, if
-    // nothing has rendered yet) until the worker returns this departure.
+    // Stale-while-revalidate: previously rendered frame stays on screen until
+    // the worker returns this one.
     this.requestFrame(dep);
   }
 
   private requestFrame(dep: number): void {
-    // Already fetching this exact departure — a burst of rAF ticks parked on
-    // the same grid frame collapses to one worker request.
     if (dep === this.inflightDep) return;
-    // Single-flight: while a primary fetch runs, just remember the latest
-    // target. A fast manual scrub emits dozens of distinct exact-second
-    // departures; queuing them all would back up the serial worker. When the
-    // in-flight fetch resolves we jump straight to wherever the scrub ended up.
     if (this.primaryInflight) {
       this.pendingPrimary = dep;
       return;
@@ -318,17 +281,14 @@ class AnimationStore {
   private onPrimaryResolved(dep: number, frame: Uint16Array | null): void {
     this.primaryInflight = false;
     this.inflightDep = -1;
-    // Paint only if the playhead is still on this frame and still in frame mode
-    // (null frame = worker error, or the profile was replaced — drop silently).
+    // Paint only if the playhead is still on this frame. null frame = worker
+    // error or the profile was replaced — drop silently.
     if (frame && this.mode === 'frame' && this.frameRenderer && this.depForCurrent() === dep) {
       this.lastRenderedDep = dep;
       this.renderedDeparture = dep;
       this.frameRenderer(frame);
       this.notifyReact();
     }
-    // Chase wherever the scrub moved while the worker was busy. Skip a target
-    // already on screen so a scrub that lands back on the current frame
-    // doesn't trigger a redundant refetch.
     const next = this.pendingPrimary;
     this.pendingPrimary = -1;
     if (next >= 0 && next !== this.lastRenderedDep && this.mode === 'frame') {
@@ -346,8 +306,7 @@ class AnimationStore {
     for (const cb of this.rafSubs) cb();
   }
 
-  // Throttle React time updates to ~12 fps. Trailing-edge timer guarantees the
-  // final position is delivered even if ticks stop between throttle windows.
+  // Throttle React time updates; trailing-edge timer delivers the final tick.
   private throttledNotify(): void {
     const now = performance.now();
     const elapsed = now - this.lastReactNotify;
@@ -387,13 +346,9 @@ class AnimationStore {
   getWindowStart = (): number => this.windowStart;
   getWindowEnd = (): number => this.windowEnd;
 
-  // ── Playhead, split into committed vs. preview ──
-  //
-  // The sawtooth chart draws two vertical lines: a solid one for the committed
-  // departure (where the map will return on hover-end) and a dashed one for the
-  // live hover preview. Both are exposed as plain numbers (not an object) so
-  // `useSyncExternalStore` sees a stable snapshot — a fresh object every call
-  // would loop forever. A value of -1 means "no line".
+  // Sawtooth chart shows a committed (solid) and preview (dashed) line.
+  // Returned as scalars so `useSyncExternalStore` sees stable snapshots; -1
+  // means "no line".
 
   /** Committed playhead: the departure that survives a hover-preview exit. */
   getCommittedPlayhead = (): number => {

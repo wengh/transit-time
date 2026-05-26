@@ -314,26 +314,18 @@ impl Isochrone {
         &self.inner.isochrone().reachable_fraction
     }
 
-    /// Per-node travel time (seconds) for a single `departure` — one frame of
-    /// an animated isochrone. Sweep `departure` across `params().window` to
-    /// animate; values outside the window are clamped into it.
-    ///
-    /// The per-departure counterpart of [`Isochrone::mean_travel_time`]. Nodes
-    /// unreachable within `params().max_time` get the sentinel [`u16::MAX`].
-    /// Length = `data().num_nodes`, indexed by [`NodeId`].
+    /// Per-node travel time (seconds) for a single `departure` — one animation
+    /// frame. `departure` is clamped into `params().window`; unreachable nodes
+    /// get `u16::MAX`. Length = `num_nodes()`, indexed by [`NodeId`].
     pub fn travel_times_at(&self, departure: SinceMidnight) -> Vec<u16> {
         self.inner.travel_times_at(departure.as_seconds())
     }
 
-    /// In-place counterpart of [`Isochrone::travel_times_at`]: writes per-node
-    /// travel times into `out` (length must equal [`Isochrone::num_nodes`]).
-    /// Reuse the same `out` across frames to avoid the ~4 MB-per-call
-    /// allocation that dominates Tokyo-class playback workloads.
+    /// In-place variant; `out.len()` must equal [`Isochrone::num_nodes`].
     pub fn travel_times_at_into(&self, departure: SinceMidnight, out: &mut [u16]) {
         self.inner.travel_times_at_into(departure.as_seconds(), out);
     }
 
-    /// Number of nodes a `travel_times_at_into` output buffer must hold.
     pub fn num_nodes(&self) -> usize {
         self.inner.num_nodes()
     }
