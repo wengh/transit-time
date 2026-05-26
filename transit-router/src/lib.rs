@@ -70,11 +70,7 @@ where
     }
 }
 
-/// Walk two equal-length mutable slices in lockstep, applying `f(i, &mut a[i],
-/// &mut b[i])` to each index. Uses rayon when available. Useful when one
-/// slice is persistent state (e.g. a per-node cache) and the other is a
-/// caller-supplied output buffer being filled in place — neither needs an
-/// allocation, and they're zipped without intermediate collection.
+/// Walk two equal-length mutable slices in lockstep with rayon when available.
 pub fn maybe_par_for_each_mut2<A, B, F>(a: &mut [A], b: &mut [B], f: F)
 where
     A: Send,

@@ -1,23 +1,12 @@
 import type L from 'leaflet';
 
-// ─────────────────────────────────────────────────────────────────────────────
-// GPU-side isochrone renderer.
-//
-// Every per-node quantity is computed on the GPU:
-//   • position — node lat/lon is projected to Web-Mercator ONCE per city into a
-//     static buffer (`projBuffer`); the vertex shader applies the per-frame
-//     viewport transform from uniforms.
-//   • colour   — derived in the vertex shader from the node's travel time and
-//     reachable fraction.
-//   • culling  — unreachable / over-budget nodes collapse to a clipped,
-//     zero-size point; the GPU discards them for free.
-//
-// The CPU per-frame cost is therefore just: upload one travel-time array,
-// set ~5 uniforms, issue one `drawArrays`. A pan/zoom that reuses the same
-// frame skips the upload entirely (see the identity guards on `GLState`).
-// ─────────────────────────────────────────────────────────────────────────────
+// GPU-side isochrone renderer. Lat/lon is projected to a static Web-Mercator
+// buffer once per city; the vertex shader applies the viewport transform and
+// derives colour from travel-time + reachable-fraction. Over-budget /
+// unreachable nodes collapse to a clipped zero-size point. CPU per-frame cost
+// is one buffer upload + a few uniforms + one drawArrays; pan/zoom on the
+// same frame skips the upload via the identity guards on `GLState`.
 
-// Both the average and the single-frame view drew dots at alpha 153/255.
 const DOT_ALPHA = 0.6;
 
 // a_travelTime carries raw seconds; u16::MAX (65535) marks an unreachable node
@@ -200,9 +189,7 @@ export function initWebGL(): GLState | null {
   };
 }
 
-// Viewport + GL state shared by both renderers. The shader needs the viewport
-// expressed in normalised Mercator space, so `origin` is the NW corner divided
-// by `scale`.
+/** Viewport expressed in normalised Mercator space (origin = NW / scale). */
 interface Viewport {
   renderBounds: L.LatLngBounds;
   scale: number;
@@ -287,8 +274,6 @@ function ensureProjBuffer(glState: GLState, nodeCoords: Float32Array): void {
   glState.nodeCount = numNodes;
 }
 
-// Bind the static position attribute, push the viewport uniforms, and draw
-// every node as a point. Culled nodes are clipped by the vertex shader.
 function drawScene(glState: GLState, v: Viewport, maxTimeSec: number): RenderResult {
   const { gl, loc } = glState;
 

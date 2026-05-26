@@ -36,11 +36,8 @@ pub fn mark_rayon_ready() {
 #[wasm_bindgen]
 pub struct WasmProfileRouting {
     inner: Isochrone,
-    /// Persistent scratch buffer for [`Self::travel_times_at_into`]. JS keeps
-    /// a `Uint16Array` view over this memory (via `travel_times_buffer_ptr`)
-    /// and reuses it across every animation frame — no per-frame Vec
-    /// allocation and no copy across the JS↔WASM boundary. Length is fixed
-    /// at `num_nodes` for the lifetime of this isochrone.
+    /// Scratch buffer for `travel_times_at_into`. JS holds a stable
+    /// `Uint16Array` view onto it via `travel_times_buffer_ptr`.
     scratch: RefCell<Vec<u16>>,
 }
 
@@ -64,13 +61,7 @@ impl WasmProfileRouting {
         self.inner.num_threads_used()
     }
 
-    /// Per-node travel time (seconds) for a single `departure` (seconds since
-    /// midnight) — one animation frame. `u16::MAX` marks unreachable nodes.
-    ///
-    /// Allocates and returns a fresh `Vec<u16>` every call. Prefer
-    /// [`Self::travel_times_at_into`] + [`Self::travel_times_buffer_ptr`] on
-    /// the hot animation path — this variant remains for callers that don't
-    /// hold a stable Uint16Array view.
+    /// Allocating variant. Prefer `travel_times_at_into` on the hot path.
     pub fn travel_times_at(&self, departure: u32) -> Vec<u16> {
         self.inner
             .travel_times_at(SinceMidnight::from_seconds(departure))
@@ -80,18 +71,13 @@ impl WasmProfileRouting {
         self.inner.num_nodes() as u32
     }
 
-    /// Raw pointer into WASM linear memory for the internal scratch buffer.
-    /// JS constructs `new Uint16Array(wasm.memory.buffer, ptr, num_nodes())`
-    /// once per query and reads it after every [`Self::travel_times_at_into`]
-    /// call — zero-copy. Re-fetch the view if `wasm.memory.buffer` is ever
-    /// replaced (memory growth detaches existing views).
+    /// Pointer to the scratch buffer; re-fetch after any `memory.grow`.
     pub fn travel_times_buffer_ptr(&self) -> *const u16 {
         self.scratch.borrow().as_ptr()
     }
 
-    /// Compute one animation frame into the persistent scratch buffer. JS
-    /// reads the result via the `Uint16Array` view it built from
-    /// [`Self::travel_times_buffer_ptr`]. No allocation, no copy.
+    /// Writes one animation frame into the scratch buffer. Read it via the
+    /// `Uint16Array` view built from `travel_times_buffer_ptr`.
     pub fn travel_times_at_into(&self, departure: u32) {
         let mut buf = self.scratch.borrow_mut();
         self.inner
@@ -351,8 +337,6 @@ impl TransitRouter {
             self.inner.isochrone(params, on_progress)
         };
         result.ok().map(|inner| {
-            // Pre-allocate the per-frame scratch buffer once. Calloc'd pages
-            // are nearly free on native and fault in lazily on wasm.
             let scratch = RefCell::new(vec![u16::MAX; inner.num_nodes()]);
             WasmProfileRouting { inner, scratch }
         })
