@@ -2,7 +2,8 @@
     "id": "waterloo",
     "bbbike_name": "Waterloo",
     "feed_ids": [
-        "f-dpwz-grandrivertransit",
+        "f-dpwz-grandrivertransit~bus",
+        "f-dpwz-grandrivertransit~lrt",
         "f-dpwz-guelphtransit",
         "f-dpz-gotransit"
     ],
