@@ -4,6 +4,7 @@
 /transit-viz/dist
 /cache
 *.bin
+/transit-viz/public/data/metadata.json
 /pkg
 /transit-router/pkg
 .env

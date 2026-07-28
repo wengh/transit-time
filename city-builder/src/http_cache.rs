@@ -70,15 +70,10 @@ impl Validators {
 
 /// Compare a stored validator against a freshly reported one. `None` when
 /// there's nothing comparable — no sidecar yet, or the origin switched which
-/// validator it exposes.
+/// validator it exposes. Shares the comparison ladder with the persisted
+/// build record so the cache layer and the rebuild decision can't drift apart.
 fn same_resource(local: &Validators, remote: &Validators) -> Option<bool> {
-    if let (Some(a), Some(b)) = (&local.etag, &remote.etag) {
-        return Some(a == b);
-    }
-    if let (Some(a), Some(b)) = (&local.last_modified, &remote.last_modified) {
-        return Some(a == b);
-    }
-    None
+    crate::metadata::SourceId::from(local).same_as(&crate::metadata::SourceId::from(remote))
 }
 
 /// `<cache dir>/etag/<cache file name>.etag`.
@@ -128,17 +123,38 @@ pub fn checked_days_ago(cache_path: &Path) -> u64 {
     cache::age_days(&sidecar_path(cache_path))
 }
 
+/// Drop the request URL from a `reqwest` error before it can reach a log.
+///
+/// `reqwest`'s `Display` appends `for url (<the full url>)`, and the Interline
+/// OSM extract URL carries the API token as a query parameter — so an ordinary
+/// connect/timeout/4xx failure would otherwise print the secret. Every error
+/// leaving this module goes through here, rather than relying on each call site
+/// to remember; callers add their own redacted URL via `.context(…)`.
+fn redact(e: reqwest::Error) -> anyhow::Error {
+    anyhow::Error::new(e.without_url())
+}
+
 /// Ask the origin for a resource's current validators.
 pub fn head(client: &Client, url: &str) -> Result<Validators> {
-    let resp = client.head(url).send()?.error_for_status()?;
+    let resp = client
+        .head(url)
+        .send()
+        .map_err(redact)?
+        .error_for_status()
+        .map_err(redact)?;
     Ok(Validators::from_headers(resp.headers()))
 }
 
 /// Fetch `url` in full, returning the body and the validators to record.
 pub fn download(client: &Client, url: &str) -> Result<(Vec<u8>, Validators)> {
-    let resp = client.get(url).send()?.error_for_status()?;
+    let resp = client
+        .get(url)
+        .send()
+        .map_err(redact)?
+        .error_for_status()
+        .map_err(redact)?;
     let validators = Validators::from_headers(resp.headers());
-    let bytes = resp.bytes()?.to_vec();
+    let bytes = resp.bytes().map_err(redact)?.to_vec();
     Ok((bytes, validators))
 }
 
