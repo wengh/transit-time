@@ -1,9 +1,17 @@
 //! Download OSM pedestrian-walkable extracts from BBBike, Interline, or
 //! Overpass; cache by source-URL hash.
+//!
+//! BBBike, Interline and direct `osm_url` sources all expose ETags, so cached
+//! extracts are validated rather than re-downloaded — but only once they've
+//! gone [`cache::OSM_MAX_STALENESS`] without a check, since base map geometry
+//! moves slowly and these files are large. Overpass is a POST query with no
+//! validators, so it stays on the age rule.
 
-use anyhow::{Result, bail};
-use std::io::Write;
+use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
+
+use crate::cache;
+use crate::http_cache;
 
 // Try multiple Overpass servers
 const OVERPASS_URLS: &[&str] = &[
@@ -69,6 +77,97 @@ pub fn pbf_cache_path(cache_dir: &Path, city: &str, source_url: &str, ext: &str)
     ))
 }
 
+/// Cache file path for the Overpass fallback (keyed by bbox, not by source).
+pub fn overpass_cache_path(cache_dir: &Path, bbox: (f64, f64, f64, f64)) -> PathBuf {
+    let (min_lon, min_lat, max_lon, max_lat) = bbox;
+    cache_dir.join(format!(
+        "osm_{:.4}_{:.4}_{:.4}_{:.4}.xml",
+        min_lon, min_lat, max_lon, max_lat
+    ))
+}
+
+/// Where a city's OSM extract lives in the cache, without fetching anything.
+/// Mirrors the source selection [`fetch_osm`] performs.
+pub fn osm_cache_path(
+    cache_dir: &Path,
+    city: &str,
+    bbox: (f64, f64, f64, f64),
+    interline_extract: Option<&str>,
+    bbbike_name: Option<&str>,
+    osm_url: Option<&str>,
+) -> PathBuf {
+    match pick_source_url(interline_extract, bbbike_name, osm_url) {
+        Some(url) => pbf_cache_path(cache_dir, city, &url, source_ext(osm_url)),
+        None => overpass_cache_path(cache_dir, bbox),
+    }
+}
+
+/// Extension for a directly-configured `osm_url`; anything else is a PBF.
+fn source_ext(osm_url: Option<&str>) -> &'static str {
+    match osm_url {
+        Some(url) if !url.contains(".pbf") => "osm.xml",
+        _ => "osm.pbf",
+    }
+}
+
+/// The URL to actually request for a city's OSM source, including the
+/// Interline token. `None` when there's no HTTP source (Overpass fallback) or
+/// when an Interline city is configured without a key.
+pub fn osm_request_url(
+    interline_extract: Option<&str>,
+    bbbike_name: Option<&str>,
+    osm_url: Option<&str>,
+) -> Option<String> {
+    if let Some(url) = osm_url {
+        Some(url.to_string())
+    } else if let Some(extract_id) = interline_extract {
+        interline_api_key().map(|key| interline_download_url(extract_id, &key))
+    } else {
+        bbbike_name.map(bbbike_source_url)
+    }
+}
+
+/// Reuse-or-refetch an OSM extract from an HTTP source.
+///
+/// Within [`cache::OSM_MAX_STALENESS`] of the last confirmation this doesn't
+/// touch the network at all; past that it compares validators and downloads
+/// only on an actual change.
+fn fetch_http_osm(cache_path: &Path, url: &str, display_url: &str, label: &str) -> Result<PathBuf> {
+    if cache_path.exists() && http_cache::checked_within(cache_path, cache::OSM_MAX_STALENESS) {
+        eprintln!(
+            "Using cached {}: {:?} (verified {} day(s) ago)",
+            label,
+            cache_path,
+            http_cache::checked_days_ago(cache_path)
+        );
+        return Ok(cache_path.to_path_buf());
+    }
+
+    let client = http_cache::client(http_cache::CHECK_TIMEOUT)?;
+    if http_cache::check(
+        &client,
+        url,
+        cache_path,
+        cache::OSM_MAX_STALENESS,
+        &format!("{} {:?}", label, cache_path),
+    ) == http_cache::CacheState::Current
+    {
+        return Ok(cache_path.to_path_buf());
+    }
+
+    eprintln!("Downloading {} from: {}", label, display_url);
+    let client = http_cache::client(http_cache::DOWNLOAD_TIMEOUT)?;
+    let (bytes, validators) = http_cache::download(&client, url)
+        .with_context(|| format!("failed to download {} from {}", label, display_url))?;
+    eprintln!(
+        "Downloaded {}: {:.1} MB",
+        label,
+        bytes.len() as f64 / 1_048_576.0
+    );
+    http_cache::save(cache_path, &bytes, &validators)?;
+    Ok(cache_path.to_path_buf())
+}
+
 /// Fetch pedestrian-walkable OSM data for a bounding box, caching the result.
 ///
 /// Exactly one of `interline_extract`, `bbbike_name`, or `osm_url` may be set;
@@ -82,8 +181,6 @@ pub fn fetch_osm(
     bbbike_name: Option<&str>,
     osm_url: Option<&str>,
 ) -> Result<PathBuf> {
-    let (min_lon, min_lat, max_lon, max_lat) = bbox;
-
     let configured = interline_extract.is_some() as usize
         + bbbike_name.is_some() as usize
         + osm_url.is_some() as usize;
@@ -95,27 +192,8 @@ pub fn fetch_osm(
     }
 
     if let Some(url) = osm_url {
-        let ext = if url.contains(".pbf") {
-            "osm.pbf"
-        } else {
-            "osm.xml"
-        };
-        let cache_path = pbf_cache_path(cache_dir, city, url, ext);
-        if cache_path.exists() {
-            eprintln!("Using cached OSM: {:?}", cache_path);
-            return Ok(cache_path);
-        }
-        eprintln!("Downloading OSM from: {}", url);
-        let client = reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(600))
-            .user_agent("Mozilla/5.0 (compatible; transit-prep/1.0)")
-            .build()?;
-        let bytes = client.get(url).send()?.error_for_status()?.bytes()?;
-        eprintln!("Downloaded OSM: {:.1} MB", bytes.len() as f64 / 1_048_576.0);
-        let tmp = cache_path.with_extension("tmp");
-        std::fs::File::create(&tmp)?.write_all(&bytes)?;
-        std::fs::rename(&tmp, &cache_path)?;
-        return Ok(cache_path);
+        let cache_path = pbf_cache_path(cache_dir, city, url, source_ext(osm_url));
+        return fetch_http_osm(&cache_path, url, url, "OSM");
     }
 
     if let Some(extract_id) = interline_extract {
@@ -125,102 +203,49 @@ pub fn fetch_osm(
             &interline_source_url(extract_id),
             "osm.pbf",
         );
-        if cache_path.exists() {
-            eprintln!("Using cached PBF: {:?}", cache_path);
-            return Ok(cache_path);
-        }
         let key = interline_api_key().ok_or_else(|| {
             anyhow::anyhow!(
                 "city '{}' uses interline_extract but INTERLINE_OSM_EXTRACTS_API_KEY is not set",
                 city
             )
         })?;
-        return try_interline_download(extract_id, &key, &cache_path);
+        // Log the token-free form of the URL.
+        let display = format!(
+            "{}?string_id={}&data_format=pbf&api_token=…",
+            INTERLINE_BASE, extract_id
+        );
+        return fetch_http_osm(
+            &cache_path,
+            &interline_download_url(extract_id, &key),
+            &display,
+            "PBF",
+        );
     }
 
     if let Some(name) = bbbike_name {
-        let cache_path = pbf_cache_path(cache_dir, city, &bbbike_source_url(name), "osm.pbf");
-        if cache_path.exists() {
-            eprintln!("Using cached PBF: {:?}", cache_path);
-            return Ok(cache_path);
-        }
-        return try_bbbike_download(name, &cache_path);
+        let url = bbbike_source_url(name);
+        let cache_path = pbf_cache_path(cache_dir, city, &url, "osm.pbf");
+        return fetch_http_osm(&cache_path, &url, &url, "PBF");
     }
 
-    // No source configured — use Overpass for the bbox.
-    let xml_cache = cache_dir.join(format!(
-        "osm_{:.4}_{:.4}_{:.4}_{:.4}.xml",
-        min_lon, min_lat, max_lon, max_lat
-    ));
-    if xml_cache.exists() {
+    // No source configured — use Overpass for the bbox. Overpass is a POST
+    // query with no validators, so this one stays on the age rule.
+    let xml_cache = overpass_cache_path(cache_dir, bbox);
+    if xml_cache.exists() && cache::is_fresh(&xml_cache, cache::OSM_MAX_STALENESS) {
         eprintln!("Using cached OSM XML: {:?}", xml_cache);
         return Ok(xml_cache);
     }
     fetch_overpass(bbox, &xml_cache)
 }
 
-/// Try to download a PBF extract from Interline OSM Extracts.
-pub fn try_interline_download(
-    extract_id: &str,
-    api_key: &str,
-    cache_path: &Path,
-) -> Result<PathBuf> {
-    let url = format!(
+/// Interline download URL including the API token — never log this directly.
+fn interline_download_url(extract_id: &str, api_key: &str) -> String {
+    format!(
         "{}?string_id={}&data_format=pbf&api_token={}",
         INTERLINE_BASE,
         urlencoded(extract_id),
         urlencoded(api_key),
-    );
-
-    eprintln!(
-        "Trying Interline extract: {}?string_id={}&data_format=pbf&api_token=…",
-        INTERLINE_BASE, extract_id,
-    );
-
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(600))
-        .user_agent("Mozilla/5.0 (compatible; transit-prep/1.0)")
-        .build()?;
-
-    let resp = client.get(&url).send()?;
-
-    if !resp.status().is_success() {
-        bail!("Interline returned {}", resp.status());
-    }
-
-    let bytes = resp.bytes()?;
-    eprintln!("Downloaded PBF: {:.1} MB", bytes.len() as f64 / 1_048_576.0);
-
-    let tmp = cache_path.with_extension("tmp");
-    std::fs::File::create(&tmp)?.write_all(&bytes)?;
-    std::fs::rename(&tmp, cache_path)?;
-
-    Ok(cache_path.to_path_buf())
-}
-
-/// Try to download a city PBF extract from BBBike.
-pub fn try_bbbike_download(bbbike_name: &str, cache_path: &Path) -> Result<PathBuf> {
-    let url = format!("{}/{}/{}.osm.pbf", BBBIKE_BASE, bbbike_name, bbbike_name);
-
-    eprintln!("Trying BBBike extract: {} ...", url);
-
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(600))
-        .build()?;
-
-    let resp = client.get(&url).send()?;
-
-    if !resp.status().is_success() {
-        bail!("BBBike returned {}", resp.status());
-    }
-
-    let bytes = resp.bytes()?;
-    eprintln!("Downloaded PBF: {:.1} MB", bytes.len() as f64 / 1_048_576.0);
-
-    let mut file = std::fs::File::create(cache_path)?;
-    file.write_all(&bytes)?;
-
-    Ok(cache_path.to_path_buf())
+    )
 }
 
 fn fetch_overpass(bbox: (f64, f64, f64, f64), cache_path: &Path) -> Result<PathBuf> {
@@ -253,8 +278,7 @@ out body;"#,
             Ok(resp) => {
                 if resp.status().is_success() {
                     let text = resp.text()?;
-                    let mut file = std::fs::File::create(cache_path)?;
-                    file.write_all(text.as_bytes())?;
+                    http_cache::write_atomic(cache_path, text.as_bytes())?;
                     eprintln!("OSM data: {} bytes", text.len());
                     return Ok(cache_path.to_path_buf());
                 }

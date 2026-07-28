@@ -5,8 +5,10 @@
 //! [`transit_prep::prepare`]. The `transit-prep` crate is intentionally
 //! network-free; everything that touches HTTP or Transitland lives here.
 
+mod cache;
 mod config;
 mod gtfs_fetch;
+mod http_cache;
 mod osm_fetch;
 mod transitland;
 
@@ -247,6 +249,8 @@ fn cmd_pipeline(
     cache_dir: &Path,
     check_only: bool,
 ) -> Result<bool> {
+    use rayon::prelude::*;
+
     std::fs::create_dir_all(cache_dir.join("sha1"))?;
 
     let api_key = transitland::get_api_key().ok();
@@ -323,29 +327,127 @@ fn cmd_pipeline(
         }
 
         let key = api_key.as_deref().unwrap(); // validated in stage 1
-        match transitland::latest_feed_sha1(key, feed_id) {
+        let unverifiable = match transitland::latest_feed_sha1(key, feed_id) {
             Ok(Some(remote_sha1)) if remote_sha1 != local_sha1 => {
                 eprintln!("  {}: sha1 changed → stale", feed_id);
                 stale_feeds.insert(feed_id.clone());
+                false
             }
             Ok(Some(remote_sha1)) => {
                 let _ = std::fs::write(&sha1_path, &remote_sha1);
                 eprintln!("  {}: up to date", feed_id);
+                false
             }
-            Ok(None) => eprintln!("  {}: no remote sha1 available", feed_id),
-            Err(e) => eprintln!("  WARNING: {}: {}", feed_id, e),
+            Ok(None) => {
+                eprintln!("  {}: no remote sha1 available", feed_id);
+                true
+            }
+            Err(e) => {
+                eprintln!("  WARNING: {}: {}", feed_id, e);
+                true
+            }
+        };
+
+        // Couldn't verify by hash — fall back to the age rule.
+        let zip_path = gtfs_cache_path(feed_id, cache_dir);
+        if unverifiable && cache::is_expired(&zip_path) {
+            eprintln!(
+                "  {}: unverifiable and cache is {} day(s) old → stale",
+                feed_id,
+                cache::age_days(&zip_path)
+            );
+            stale_feeds.insert(feed_id.clone());
         }
     }
 
-    // Also check for uncached direct URL feeds
-    for feed_id in feed_to_cities.keys() {
-        if !is_transitland_id(feed_id) && !gtfs_cache_path(feed_id, cache_dir).exists() {
-            stale_feeds.insert(feed_id.clone());
+    // Direct-URL feeds: ask each origin whether its ETag still matches what we
+    // recorded. Checked in parallel — these are header-only round trips.
+    let url_feeds: Vec<&String> = feed_to_cities
+        .keys()
+        .filter(|f| !is_transitland_id(f))
+        .collect();
+
+    if !url_feeds.is_empty() {
+        let client = http_cache::client(http_cache::CHECK_TIMEOUT)?;
+        let checked: Vec<(&String, http_cache::CacheState)> = url_feeds
+            .par_iter()
+            .map(|feed_id| {
+                let path = gtfs_cache_path(feed_id, cache_dir);
+                let state = http_cache::check(
+                    &client,
+                    feed_id,
+                    &path,
+                    cache::MAX_CACHE_AGE,
+                    &format!("  {}", feed_id),
+                );
+                (*feed_id, state)
+            })
+            .collect();
+
+        for (feed_id, state) in checked {
+            match state {
+                http_cache::CacheState::Current => {}
+                http_cache::CacheState::Missing => {
+                    eprintln!("  {}: not cached → stale", feed_id);
+                    stale_feeds.insert(feed_id.clone());
+                }
+                http_cache::CacheState::Stale => {
+                    stale_feeds.insert(feed_id.clone());
+                }
+            }
         }
     }
 
     // ── Stage 3: Determine what needs rebuilding ──
     eprintln!("\n=== Stage 3: Determine what needs rebuilding ===");
+
+    // OSM extracts are validated only once they've gone OSM_MAX_STALENESS
+    // without a check — base maps move slowly and these files are ~100 MB
+    // each, so we accept that much staleness rather than re-checking hourly.
+    let osm_changed: HashMap<&str, bool> = {
+        let client = http_cache::client(http_cache::CHECK_TIMEOUT)?;
+        cities
+            .par_iter()
+            .map(|(id, config, _)| {
+                let changed = match (
+                    parse_bbox(&config.bbox),
+                    osm_fetch::osm_request_url(
+                        config.interline_extract.as_deref(),
+                        config.bbbike_name.as_deref(),
+                        config.osm_url.as_deref(),
+                    ),
+                ) {
+                    (Ok(bbox), Some(url)) => {
+                        let path = osm_fetch::osm_cache_path(
+                            cache_dir,
+                            id,
+                            bbox,
+                            config.interline_extract.as_deref(),
+                            config.bbbike_name.as_deref(),
+                            config.osm_url.as_deref(),
+                        );
+                        // Nothing cached → stage 5 downloads it; that alone is
+                        // not a reason to rebuild an otherwise current .bin.
+                        if !path.exists()
+                            || http_cache::checked_within(&path, cache::OSM_MAX_STALENESS)
+                        {
+                            false
+                        } else {
+                            http_cache::check(
+                                &client,
+                                &url,
+                                &path,
+                                cache::OSM_MAX_STALENESS,
+                                &format!("  {} osm", id),
+                            ) == http_cache::CacheState::Stale
+                        }
+                    }
+                    _ => false,
+                };
+                (id.as_str(), changed)
+            })
+            .collect()
+    };
 
     let exe_mtime = std::env::current_exe()
         .ok()
@@ -357,6 +459,7 @@ fn cmd_pipeline(
     for (id, config, city_path) in &cities {
         let bin_path = output_dir.join(format!("{}.bin", id));
         let has_stale_feed = config.feed_ids.iter().any(|f| stale_feeds.contains(f));
+        let osm_stale = osm_changed.get(id.as_str()).copied().unwrap_or(false);
         let bin_missing = !bin_path.exists();
         let bin_mtime = std::fs::metadata(&bin_path)
             .ok()
@@ -374,6 +477,8 @@ fn cmd_pipeline(
             Some(".bin missing")
         } else if has_stale_feed {
             Some("stale feed")
+        } else if osm_stale {
+            Some("OSM extract changed upstream")
         } else if code_changed {
             Some("code changed")
         } else if config_changed {
@@ -407,8 +512,6 @@ fn cmd_pipeline(
 
     // ── Stage 4: Download stale GTFS feeds ──
     eprintln!("\n=== Stage 4: Download data ===");
-
-    use rayon::prelude::*;
 
     let feeds_to_download: Vec<&String> = {
         let needed: HashSet<&String> = cities
@@ -487,12 +590,14 @@ fn cmd_pipeline(
             expected_files.insert(osm_fetch::pbf_cache_path(cache_dir, id, &url, "osm.pbf"));
             expected_files.insert(osm_fetch::pbf_cache_path(cache_dir, id, &url, "osm.xml"));
         }
-        if let Ok((min_lon, min_lat, max_lon, max_lat)) = parse_bbox(&config.bbox) {
-            expected_files.insert(cache_dir.join(format!(
-                "osm_{:.4}_{:.4}_{:.4}_{:.4}.xml",
-                min_lon, min_lat, max_lon, max_lat
-            )));
+        if let Ok(bbox) = parse_bbox(&config.bbox) {
+            expected_files.insert(osm_fetch::overpass_cache_path(cache_dir, bbox));
         }
+    }
+
+    // An ETag sidecar is expected wherever its cache file is.
+    for path in expected_files.clone() {
+        expected_files.insert(http_cache::sidecar_path(&path));
     }
 
     let mut removed = 0usize;
@@ -516,18 +621,20 @@ fn cmd_pipeline(
         }
     }
 
-    let sha1_dir = cache_dir.join("sha1");
-    if let Ok(entries) = std::fs::read_dir(&sha1_dir) {
-        for entry in entries.filter_map(|e| e.ok()) {
-            let path = entry.path();
-            if path.is_file()
-                && path.extension().map_or(false, |e| e == "sha1")
-                && !expected_files.contains(&path)
-            {
-                let name = path.file_name().unwrap_or_default().to_string_lossy();
-                eprintln!("  removing orphaned: sha1/{}", name);
-                let _ = std::fs::remove_file(&path);
-                removed += 1;
+    for (subdir, ext) in [("sha1", "sha1"), ("etag", "etag")] {
+        let dir = cache_dir.join(subdir);
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.filter_map(|e| e.ok()) {
+                let path = entry.path();
+                if path.is_file()
+                    && path.extension().is_some_and(|e| e == ext)
+                    && !expected_files.contains(&path)
+                {
+                    let name = path.file_name().unwrap_or_default().to_string_lossy();
+                    eprintln!("  removing orphaned: {}/{}", subdir, name);
+                    let _ = std::fs::remove_file(&path);
+                    removed += 1;
+                }
             }
         }
     }
