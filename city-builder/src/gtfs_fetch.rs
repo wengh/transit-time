@@ -1,12 +1,19 @@
 //! GTFS-zip download and cache layout. Handles two feed-id forms:
 //!   * Transitland onestop IDs (`f-...`) — header-auth, with a SHA1 sidecar
 //!     in `cache_dir/sha1/` for fresh-enough caching.
-//!   * Direct URLs — cached forever by URL hash.
+//!   * Direct URLs — cached by URL hash and validated against the origin's
+//!     ETag on every run (see [`crate::http_cache`]), so an unchanged feed
+//!     costs one `HEAD` instead of a download.
+//!
+//! Feeds are re-downloaded only when their content actually changed; the age
+//! rule in [`crate::cache`] is a fallback for sources that stop answering with
+//! validators.
 
 use anyhow::{Context, Result};
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use crate::cache;
+use crate::http_cache;
 use crate::osm_fetch::url_hash;
 use crate::transitland;
 
@@ -14,6 +21,9 @@ use crate::transitland;
 /// the upstream feed-version check. Bounds the worst-case staleness of a
 /// city build between two pipeline runs.
 const SHA1_CACHE_FRESHNESS: std::time::Duration = std::time::Duration::from_secs(2 * 24 * 3600);
+
+/// GTFS zips are small next to OSM extracts; keep the original tighter budget.
+const GTFS_DOWNLOAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
 pub fn is_transitland_id(feed_id: &str) -> bool {
     feed_id.starts_with("f-")
@@ -42,11 +52,6 @@ pub fn fetch_gtfs(feed_id: &str, api_key: Option<&str>, cache_dir: &Path) -> Res
     let cache_path = gtfs_cache_path(feed_id, cache_dir);
     let sha1_path = gtfs_sha1_path(feed_id, cache_dir);
 
-    if cache_path.exists() && !is_transitland_id(feed_id) {
-        eprintln!("Using cached GTFS: {:?}", cache_path);
-        return Ok(cache_path);
-    }
-
     if is_transitland_id(feed_id) {
         let key =
             api_key.with_context(|| format!("Feed '{}' requires TRANSITLAND_API_KEY", feed_id))?;
@@ -70,17 +75,34 @@ pub fn fetch_gtfs(feed_id: &str, api_key: Option<&str>, cache_dir: &Path) -> Res
                         &remote_sha1[..12.min(remote_sha1.len())]
                     );
                 }
-                Ok(None) => {
+                // No hash to compare against — fall back to the age rule so an
+                // unverifiable feed doesn't stay pinned to the cache forever.
+                Ok(None) if cache::is_usable(&cache_path) => {
                     eprintln!(
                         "Using cached GTFS (no remote sha1 to compare): {:?}",
                         cache_path
                     );
                     return Ok(cache_path);
                 }
-                Err(e) => {
+                Ok(None) => {
+                    eprintln!(
+                        "Feed '{}': no remote sha1 and cache is {} day(s) old — re-downloading",
+                        feed_id,
+                        cache::age_days(&cache_path)
+                    );
+                }
+                Err(e) if cache::is_usable(&cache_path) => {
                     eprintln!("WARNING: could not check Transitland for updates: {}", e);
                     eprintln!("Using cached GTFS: {:?}", cache_path);
                     return Ok(cache_path);
+                }
+                Err(e) => {
+                    eprintln!("WARNING: could not check Transitland for updates: {}", e);
+                    eprintln!(
+                        "Cached GTFS is {} day(s) old — re-downloading: {:?}",
+                        cache::age_days(&cache_path),
+                        cache_path
+                    );
                 }
             }
         }
@@ -88,9 +110,7 @@ pub fn fetch_gtfs(feed_id: &str, api_key: Option<&str>, cache_dir: &Path) -> Res
         eprintln!("Downloading GTFS from Transitland: {}", feed_id);
         let bytes = transitland::download_feed(key, feed_id)
             .with_context(|| format!("Failed to fetch GTFS feed '{}'", feed_id))?;
-        let tmp = cache_path.with_extension("zip.tmp");
-        std::fs::File::create(&tmp)?.write_all(&bytes)?;
-        std::fs::rename(&tmp, &cache_path)?;
+        http_cache::write_atomic(&cache_path, &bytes)?;
 
         if let Ok(Some(sha1)) = transitland::latest_feed_sha1(key, feed_id) {
             let _ = std::fs::write(&sha1_path, &sha1);
@@ -98,32 +118,32 @@ pub fn fetch_gtfs(feed_id: &str, api_key: Option<&str>, cache_dir: &Path) -> Res
 
         Ok(cache_path)
     } else {
+        // Direct URL: validated against the origin's ETag on every run, so the
+        // age rule only decides things when validators are unavailable.
+        let client = http_cache::client(http_cache::CHECK_TIMEOUT)?;
+        if http_cache::check(
+            &client,
+            feed_id,
+            &cache_path,
+            cache::MAX_CACHE_AGE,
+            &format!("Feed '{}'", feed_id),
+        ) == http_cache::CacheState::Current
+        {
+            eprintln!("Using cached GTFS: {:?}", cache_path);
+            return Ok(cache_path);
+        }
+
         eprintln!("Downloading GTFS from: {}", feed_id);
-        let client = reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(300))
-            .user_agent("Mozilla/5.0 (compatible; transit-prep/1.0)")
-            .build()?;
-        let bytes = client
-            .get(feed_id)
-            .send()
-            .with_context(|| format!("Failed to request GTFS URL '{}'", feed_id))?
-            .error_for_status()
-            .with_context(|| format!("GTFS URL returned error status '{}'", feed_id))?
-            .bytes()
-            .with_context(|| format!("Failed to read GTFS response body from '{}'", feed_id))?;
-        let tmp = cache_path.with_extension("zip.tmp");
-        std::fs::File::create(&tmp)?.write_all(&bytes)?;
-        std::fs::rename(&tmp, &cache_path)?;
+        let client = http_cache::client(GTFS_DOWNLOAD_TIMEOUT)?;
+        let (bytes, validators) = http_cache::download(&client, feed_id)
+            .with_context(|| format!("Failed to fetch GTFS URL '{}'", feed_id))?;
+        http_cache::save(&cache_path, &bytes, &validators)?;
         Ok(cache_path)
     }
 }
 
 pub fn sha1_recently_checked(sha1_path: &Path) -> bool {
-    std::fs::metadata(sha1_path)
-        .ok()
-        .and_then(|m| m.modified().ok())
-        .map(|mtime| mtime.elapsed().unwrap_or_default() < SHA1_CACHE_FRESHNESS)
-        .unwrap_or(false)
+    cache::is_fresh(sha1_path, SHA1_CACHE_FRESHNESS)
 }
 
 /// Validate a feed identifier (URL or Transitland onestop ID). Doesn't fetch.
@@ -143,4 +163,36 @@ pub fn validate_feed_id(feed_id: &str, api_key: Option<&str>) -> Result<()> {
         "Unknown feed_id format: '{}' (expected URL or Transitland onestop ID starting with 'f-')",
         feed_id
     )
+}
+
+#[cfg(test)]
+mod tests {
+    /// Full round trip against a live origin: download, record validators,
+    /// then confirm the second call validates instead of re-downloading.
+    /// Uses a 12 KB feed. Run with `cargo test -p city-builder -- --ignored`.
+    #[test]
+    #[ignore = "requires network"]
+    fn direct_url_feed_downloads_then_validates() {
+        let dir = std::env::temp_dir().join("city-builder-gtfs-net-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let url =
+            "https://api.gtfs-data.jp/v2/organizations/arakawacity/feeds/sakura/files/feed.zip";
+
+        let path = super::fetch_gtfs(url, None, &dir).unwrap();
+        let downloaded = std::fs::metadata(&path).unwrap().modified().unwrap();
+        assert!(std::fs::metadata(&path).unwrap().len() > 0);
+        assert!(
+            !crate::http_cache::load(&path).is_empty(),
+            "download must record the origin's validators"
+        );
+
+        let again = super::fetch_gtfs(url, None, &dir).unwrap();
+        assert_eq!(
+            std::fs::metadata(&again).unwrap().modified().unwrap(),
+            downloaded,
+            "unchanged feed must not be re-downloaded"
+        );
+    }
 }
