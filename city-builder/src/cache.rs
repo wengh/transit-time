@@ -30,13 +30,9 @@ pub fn is_fresh(path: &Path, max_age: Duration) -> bool {
     age(path).is_some_and(|a| a < max_age)
 }
 
-/// True when `path` exists but has aged past [`MAX_CACHE_AGE`]. A missing file
-/// is *not* expired — callers distinguish "never downloaded" from "too old".
-pub fn is_expired(path: &Path) -> bool {
-    age(path).is_some_and(|a| a >= MAX_CACHE_AGE)
-}
-
-/// True when `path` can be used as-is: present and not aged out.
+/// True when `path` can be used as-is: present and not aged out. A missing file
+/// is not usable, but neither is it "expired" — "never downloaded" is a
+/// different condition, and the rebuild decision in `main` distinguishes them.
 pub fn is_usable(path: &Path) -> bool {
     is_fresh(path, MAX_CACHE_AGE)
 }
@@ -68,12 +64,12 @@ mod tests {
     }
 
     #[test]
-    fn missing_file_is_neither_fresh_nor_expired() {
+    fn missing_file_has_no_age_and_is_not_usable() {
         let dir = temp_dir("missing");
         let path = dir.join("nope.gtfs.zip");
         assert!(age(&path).is_none());
-        assert!(!is_expired(&path));
         assert!(!is_usable(&path));
+        assert_eq!(age_days(&path), 0);
     }
 
     #[test]
@@ -81,15 +77,13 @@ mod tests {
         let dir = temp_dir("young");
         let path = aged_file(&dir, "fresh.osm.pbf", 14);
         assert!(is_usable(&path));
-        assert!(!is_expired(&path));
         assert_eq!(age_days(&path), 14);
     }
 
     #[test]
-    fn file_past_max_age_is_expired() {
+    fn file_past_max_age_is_not_usable() {
         let dir = temp_dir("old");
         let path = aged_file(&dir, "stale.osm.pbf", 16);
-        assert!(is_expired(&path));
         assert!(!is_usable(&path));
         assert_eq!(age_days(&path), 16);
     }

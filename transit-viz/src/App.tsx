@@ -17,11 +17,20 @@ import { runQuery, snapToNode } from './utils/router';
 import { buildHoverData, getMedianPath, flattenDisplayLines } from './utils/hoverInfo';
 import type { RunQueryParams } from './utils/router';
 import { getHashParams, setHashParams } from './utils/urlHash';
-import { animationStore } from './state/animationStore';
+import { animationStore, FRAME_STEP } from './state/animationStore';
 import './styles.css';
 
-// Frames skipped by a Shift+Arrow jump (30 min at FRAME_STEP=300).
-const JUMP_FRAMES = 6;
+// How far a Shift+Arrow jump moves the playhead. Derived from FRAME_STEP rather
+// than hardcoded as a frame count so the coarse jump stays 5 minutes if the
+// frame grid is retuned.
+const JUMP_SECONDS = 5 * 60;
+const JUMP_FRAMES = JUMP_SECONDS / FRAME_STEP;
+
+// Elements that own the keys the transport uses: Space activates buttons and
+// links, arrows move within selects/inputs, Home/End move the caret. Swallowing
+// those would break keyboard operation of the UI, so the transport defers.
+const TRANSPORT_KEY_EXEMPT =
+  'input, select, textarea, button, a[href], [contenteditable=""], [contenteditable="true"], [role="button"], [role="slider"]';
 
 function AppInner() {
   const { state, dispatch } = useAppState();
@@ -294,13 +303,15 @@ function AppInner() {
 
   // Global playback transport. Mounted once at the app root so it works on both
   // desktop and mobile regardless of which panels are on screen — the timeline
-  // used to own this, but it no longer exists as a standalone element. Guarded
-  // so typing in a form field never hijacks the spacebar or arrow keys.
+  // used to own this, but it no longer exists as a standalone element. Defers
+  // to any element that already owns these keys (see TRANSPORT_KEY_EXEMPT), so
+  // typing in a form field or activating a focused button with Space still
+  // works — the transport only claims keys pressed against the map/background.
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
       if (!animationStore.isReady()) return;
-      const tag = (e.target as HTMLElement).tagName;
-      if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+      const target = e.target as HTMLElement | null;
+      if (target?.closest?.(TRANSPORT_KEY_EXEMPT)) return;
 
       switch (e.key) {
         case ' ':

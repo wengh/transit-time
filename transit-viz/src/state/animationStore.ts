@@ -40,10 +40,24 @@ class AnimationStore {
   // exact-second target on every pointermove; without this they would all queue
   // on the serial worker. The latest target requested while busy is parked in
   // `pendingPrimary` and chased on resolve.
+  //
+  // This is a correctness gate, not just a throttle: the worker hands back a
+  // `Uint16Array` view onto WASM memory that the *next* `travelTimesAt` call
+  // overwrites in place. Exactly one request may be outstanding at a time, or a
+  // response can be painted after its bytes have already been clobbered. So
+  // `primaryInflight` is owned by the outstanding request and cleared only by
+  // its own resolution — never by `reset`/`setWindow`, which use `epoch`.
   private primaryInflight = false;
   private pendingPrimary = -1;
   /** Departure currently in flight (-1 = none); collapses rAF bursts on one grid frame. */
   private inflightDep = -1;
+  /**
+   * Bumped whenever the worker's profile is replaced. A response tagged with a
+   * stale epoch is discarded rather than painted: its departure is meaningless
+   * against the new profile, and matching `depForCurrent()` by luck would draw
+   * the wrong city's frame.
+   */
+  private epoch = 0;
   /** Saved {mode,currentTime} during sawtooth-chart hover; restored on exit. */
   private previewSaved: { mode: AnimMode; time: number } | null = null;
   private rafId = 0;
@@ -61,7 +75,7 @@ class AnimationStore {
     return this.windowStart + Math.floor(span / FRAME_STEP) * FRAME_STEP;
   }
 
-  /** Snap a continuous departure time to the nearest 5-minute frame grid. */
+  /** Snap a continuous departure time to the nearest FRAME_STEP grid point. */
   snapToFrame(t: number): number {
     const last = this.lastFrameTime();
     const snapped = this.windowStart + Math.round((t - this.windowStart) / FRAME_STEP) * FRAME_STEP;
@@ -70,7 +84,7 @@ class AnimationStore {
 
   /**
    * Departure of the frame to render for the current playhead. Playback snaps
-   * to the 5-minute grid so the map redraws only on boundary crossings; a
+   * to the FRAME_STEP grid so the map redraws only on boundary crossings; a
    * manual scrub or hover renders the exact playhead time, rounded to the
    * nearest second.
    */
@@ -87,10 +101,7 @@ class AnimationStore {
     this.currentTime = windowStart;
     this.throttledTime = windowStart;
     this.renderedDeparture = windowStart;
-    this.lastRenderedDep = -1;
-    this.primaryInflight = false;
-    this.pendingPrimary = -1;
-    this.inflightDep = -1;
+    this.invalidateInflight();
     this.previewSaved = null;
     this.ready = true;
     this.mode = 'average';
@@ -105,12 +116,26 @@ class AnimationStore {
     this.ready = false;
     this.playing = false;
     this.mode = 'average';
-    this.lastRenderedDep = -1;
-    this.primaryInflight = false;
-    this.pendingPrimary = -1;
-    this.inflightDep = -1;
+    this.invalidateInflight();
     this.previewSaved = null;
     this.notifyReact();
+  }
+
+  /**
+   * Retire every frame request belonging to the outgoing profile.
+   *
+   * Deliberately leaves `primaryInflight` set: a request already handed to the
+   * worker still owns the shared WASM buffer until it resolves, so clearing the
+   * gate here would let a second request start concurrently and overwrite the
+   * bytes the first one is about to hand us. `inflightDep` *is* cleared, since
+   * it is only a dedup key — without that, a new-profile request for the same
+   * departure would be swallowed as a duplicate of the doomed old one.
+   */
+  private invalidateInflight(): void {
+    this.epoch++;
+    this.lastRenderedDep = -1;
+    this.pendingPrimary = -1;
+    this.inflightDep = -1;
   }
 
   // ── Controls ──
@@ -194,7 +219,7 @@ class AnimationStore {
     this.notifyReact();
   }
 
-  /** Step the playhead by N×5min from the exact current time (arrow keys). */
+  /** Step the playhead by N×FRAME_STEP from the exact current time (arrow keys). */
   stepFrames(n: number): void {
     this.seek(this.currentTime + n * FRAME_STEP);
   }
@@ -273,22 +298,35 @@ class AnimationStore {
     }
     this.primaryInflight = true;
     this.inflightDep = dep;
+    const epoch = this.epoch;
     getTravelTimesAt(dep)
-      .then((frame) => this.onPrimaryResolved(dep, frame))
-      .catch(() => this.onPrimaryResolved(dep, null));
+      .then((frame) => this.onPrimaryResolved(epoch, dep, frame))
+      .catch(() => this.onPrimaryResolved(epoch, dep, null));
   }
 
-  private onPrimaryResolved(dep: number, frame: Uint16Array | null): void {
+  private onPrimaryResolved(epoch: number, dep: number, frame: Uint16Array | null): void {
+    // The request is done with the shared WASM buffer either way, so the gate
+    // reopens even for a stale epoch — that response is simply not painted.
     this.primaryInflight = false;
     this.inflightDep = -1;
-    // Paint only if the playhead is still on this frame. null frame = worker
-    // error or the profile was replaced — drop silently.
-    if (frame && this.mode === 'frame' && this.frameRenderer && this.depForCurrent() === dep) {
+    // Paint only if this response is still relevant: same profile, still in
+    // frame mode, and the playhead hasn't moved off this departure. A null
+    // frame means the worker errored — drop silently.
+    const current = epoch === this.epoch;
+    if (
+      frame &&
+      current &&
+      this.mode === 'frame' &&
+      this.frameRenderer &&
+      this.depForCurrent() === dep
+    ) {
       this.lastRenderedDep = dep;
       this.renderedDeparture = dep;
       this.frameRenderer(frame);
       this.notifyReact();
     }
+    // `pendingPrimary` is cleared by `invalidateInflight`, so anything parked
+    // here belongs to the current epoch even when this response did not.
     const next = this.pendingPrimary;
     this.pendingPrimary = -1;
     if (next >= 0 && next !== this.lastRenderedDep && this.mode === 'frame') {
@@ -378,7 +416,7 @@ export function useAnimReady(): boolean {
   return useSyncExternalStore(animationStore.subscribe, animationStore.isReady);
 }
 
-/** Throttled (~12 fps) playhead time — for text labels and the chart highlight. */
+/** Throttled (~30 fps) playhead time — for text labels and the chart highlight. */
 export function useAnimTime(): number {
   return useSyncExternalStore(animationStore.subscribe, animationStore.getTime);
 }

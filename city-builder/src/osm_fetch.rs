@@ -86,22 +86,6 @@ pub fn overpass_cache_path(cache_dir: &Path, bbox: (f64, f64, f64, f64)) -> Path
     ))
 }
 
-/// Where a city's OSM extract lives in the cache, without fetching anything.
-/// Mirrors the source selection [`fetch_osm`] performs.
-pub fn osm_cache_path(
-    cache_dir: &Path,
-    city: &str,
-    bbox: (f64, f64, f64, f64),
-    interline_extract: Option<&str>,
-    bbbike_name: Option<&str>,
-    osm_url: Option<&str>,
-) -> PathBuf {
-    match pick_source_url(interline_extract, bbbike_name, osm_url) {
-        Some(url) => pbf_cache_path(cache_dir, city, &url, source_ext(osm_url)),
-        None => overpass_cache_path(cache_dir, bbox),
-    }
-}
-
 /// Extension for a directly-configured `osm_url`; anything else is a PBF.
 fn source_ext(osm_url: Option<&str>) -> &'static str {
     match osm_url {

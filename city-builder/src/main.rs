@@ -9,6 +9,7 @@ mod cache;
 mod config;
 mod gtfs_fetch;
 mod http_cache;
+mod metadata;
 mod osm_fetch;
 mod transitland;
 
@@ -305,63 +306,71 @@ fn cmd_pipeline(
         tl_feeds.len()
     );
 
-    // ── Stage 2: Check Transitland feed hashes ──
-    eprintln!("\n=== Stage 2: Check Transitland feed hashes ===");
+    // ── Stage 2: Probe upstream source identities ──
+    //
+    // One probe per feed, answering only "what does the origin call this right
+    // now?". Two independent decisions are derived from it:
+    //   * `remote_feeds` vs. `metadata.json` → does a `.bin` need rebuilding
+    //     (stage 3). Payload-independent, so it works from a cold cache.
+    //   * `remote_feeds` vs. the local sidecar → does the *download* need
+    //     refetching (`stale_feeds`, stage 4).
+    // Conflating the two is what made this undecidable in CI, where the outputs
+    // are restored but `cache/` is not.
+    eprintln!("\n=== Stage 2: Probe upstream source identities ===");
 
+    let mut remote_feeds: HashMap<String, metadata::SourceId> = HashMap::new();
     let mut stale_feeds: HashSet<String> = HashSet::new();
 
     for feed_id in &tl_feeds {
         let sha1_path = gtfs_sha1_path(feed_id, cache_dir);
-
-        if sha1_recently_checked(&sha1_path) {
-            eprintln!("  {}: fresh (checked recently)", feed_id);
-            continue;
-        }
-
         let local_sha1 = std::fs::read_to_string(&sha1_path).unwrap_or_default();
 
-        if local_sha1.is_empty() {
-            eprintln!("  {}: no local sha1 → stale", feed_id);
-            stale_feeds.insert(feed_id.clone());
-            continue;
-        }
-
-        let key = api_key.as_deref().unwrap(); // validated in stage 1
-        let unverifiable = match transitland::latest_feed_sha1(key, feed_id) {
-            Ok(Some(remote_sha1)) if remote_sha1 != local_sha1 => {
-                eprintln!("  {}: sha1 changed → stale", feed_id);
-                stale_feeds.insert(feed_id.clone());
-                false
-            }
-            Ok(Some(remote_sha1)) => {
-                let _ = std::fs::write(&sha1_path, &remote_sha1);
-                eprintln!("  {}: up to date", feed_id);
-                false
-            }
-            Ok(None) => {
-                eprintln!("  {}: no remote sha1 available", feed_id);
-                true
-            }
-            Err(e) => {
-                eprintln!("  WARNING: {}: {}", feed_id, e);
-                true
+        // The sidecar holds the last sha1 the API reported; inside the
+        // freshness window reuse it rather than re-querying. It is still a
+        // usable probe result — it *is* what upstream last told us.
+        let remote_sha1 = if sha1_recently_checked(&sha1_path) && !local_sha1.is_empty() {
+            eprintln!("  {}: fresh (checked recently)", feed_id);
+            Some(local_sha1.clone())
+        } else {
+            let key = api_key.as_deref().unwrap(); // validated in stage 1
+            match transitland::latest_feed_sha1(key, feed_id) {
+                Ok(Some(remote)) => {
+                    if local_sha1.is_empty() {
+                        eprintln!("  {}: no local sha1 → cache stale", feed_id);
+                        stale_feeds.insert(feed_id.clone());
+                    } else if remote != local_sha1 {
+                        eprintln!("  {}: sha1 changed → cache stale", feed_id);
+                        stale_feeds.insert(feed_id.clone());
+                    } else {
+                        eprintln!("  {}: up to date", feed_id);
+                    }
+                    let _ = std::fs::write(&sha1_path, &remote);
+                    Some(remote)
+                }
+                // Unverifiable. Deliberately *not* falling back to `local_sha1`
+                // as the probe result: that would compare equal to whatever
+                // built the .bin and silently pin it forever. Leaving it empty
+                // routes the city to the built_at age rule in stage 3 instead.
+                Ok(None) => {
+                    eprintln!("  {}: no remote sha1 available", feed_id);
+                    None
+                }
+                Err(e) => {
+                    eprintln!("  WARNING: {}: {}", feed_id, e);
+                    None
+                }
             }
         };
 
-        // Couldn't verify by hash — fall back to the age rule.
-        let zip_path = gtfs_cache_path(feed_id, cache_dir);
-        if unverifiable && cache::is_expired(&zip_path) {
-            eprintln!(
-                "  {}: unverifiable and cache is {} day(s) old → stale",
-                feed_id,
-                cache::age_days(&zip_path)
-            );
-            stale_feeds.insert(feed_id.clone());
-        }
+        remote_feeds.insert(
+            feed_id.clone(),
+            remote_sha1
+                .map(metadata::SourceId::from_sha1)
+                .unwrap_or_default(),
+        );
     }
 
-    // Direct-URL feeds: ask each origin whether its ETag still matches what we
-    // recorded. Checked in parallel — these are header-only round trips.
+    // Direct-URL feeds: one HEAD each, in parallel — header-only round trips.
     let url_feeds: Vec<&String> = feed_to_cities
         .keys()
         .filter(|f| !is_transitland_id(f))
@@ -369,85 +378,77 @@ fn cmd_pipeline(
 
     if !url_feeds.is_empty() {
         let client = http_cache::client(http_cache::CHECK_TIMEOUT)?;
-        let checked: Vec<(&String, http_cache::CacheState)> = url_feeds
+        let probed: Vec<(&String, metadata::SourceId, bool)> = url_feeds
             .par_iter()
             .map(|feed_id| {
+                let remote = match http_cache::head(&client, feed_id) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        eprintln!("  WARNING: {}: could not probe upstream: {}", feed_id, e);
+                        http_cache::Validators::default()
+                    }
+                };
+                let remote = metadata::SourceId::from(&remote);
+
+                // Does the *downloaded file* still match? Absent payload counts
+                // as stale here but says nothing about the .bin.
                 let path = gtfs_cache_path(feed_id, cache_dir);
-                let state = http_cache::check(
-                    &client,
-                    feed_id,
-                    &path,
-                    cache::MAX_CACHE_AGE,
-                    &format!("  {}", feed_id),
-                );
-                (*feed_id, state)
+                let local = metadata::SourceId::from(&http_cache::load(&path));
+                let cache_current = path.exists() && local.same_as(&remote) == Some(true);
+                (*feed_id, remote, cache_current)
             })
             .collect();
 
-        for (feed_id, state) in checked {
-            match state {
-                http_cache::CacheState::Current => {}
-                http_cache::CacheState::Missing => {
-                    eprintln!("  {}: not cached → stale", feed_id);
-                    stale_feeds.insert(feed_id.clone());
-                }
-                http_cache::CacheState::Stale => {
-                    stale_feeds.insert(feed_id.clone());
-                }
+        for (feed_id, remote, cache_current) in probed {
+            if remote.is_empty() {
+                eprintln!("  {}: origin reports no validators", feed_id);
             }
+            if !cache_current {
+                stale_feeds.insert(feed_id.clone());
+            }
+            remote_feeds.insert(feed_id.clone(), remote);
         }
     }
 
     // ── Stage 3: Determine what needs rebuilding ──
     eprintln!("\n=== Stage 3: Determine what needs rebuilding ===");
 
-    // OSM extracts are validated only once they've gone OSM_MAX_STALENESS
-    // without a check — base maps move slowly and these files are ~100 MB
-    // each, so we accept that much staleness rather than re-checking hourly.
-    let osm_changed: HashMap<&str, bool> = {
+    // One HEAD per city's OSM source, in parallel. This used to be skipped
+    // whenever the cached extract had been verified within OSM_MAX_STALENESS,
+    // which made it unrunnable without the extract on disk. Comparing against
+    // the build record needs no payload, and 23 header-only requests are
+    // cheap enough that the staleness window buys nothing here — it still
+    // governs the download cache in `osm_fetch`.
+    let remote_osm: HashMap<&str, metadata::SourceId> = {
         let client = http_cache::client(http_cache::CHECK_TIMEOUT)?;
         cities
             .par_iter()
             .map(|(id, config, _)| {
-                let changed = match (
-                    parse_bbox(&config.bbox),
-                    osm_fetch::osm_request_url(
-                        config.interline_extract.as_deref(),
-                        config.bbbike_name.as_deref(),
-                        config.osm_url.as_deref(),
-                    ),
-                ) {
-                    (Ok(bbox), Some(url)) => {
-                        let path = osm_fetch::osm_cache_path(
-                            cache_dir,
-                            id,
-                            bbox,
-                            config.interline_extract.as_deref(),
-                            config.bbbike_name.as_deref(),
-                            config.osm_url.as_deref(),
-                        );
-                        // Nothing cached → stage 5 downloads it; that alone is
-                        // not a reason to rebuild an otherwise current .bin.
-                        if !path.exists()
-                            || http_cache::checked_within(&path, cache::OSM_MAX_STALENESS)
-                        {
-                            false
-                        } else {
-                            http_cache::check(
-                                &client,
-                                &url,
-                                &path,
-                                cache::OSM_MAX_STALENESS,
-                                &format!("  {} osm", id),
-                            ) == http_cache::CacheState::Stale
+                let source_url = osm_fetch::osm_request_url(
+                    config.interline_extract.as_deref(),
+                    config.bbbike_name.as_deref(),
+                    config.osm_url.as_deref(),
+                );
+                // `None` = Overpass fallback (a POST query with no validators),
+                // or an Interline city with no API key configured.
+                let sid = match source_url {
+                    Some(url) => match http_cache::head(&client, &url) {
+                        Ok(v) => metadata::SourceId::from(&v),
+                        Err(e) => {
+                            // Already URL-redacted by `http_cache` — the
+                            // Interline URL carries the API token.
+                            eprintln!("  WARNING: {} osm: could not probe upstream: {}", id, e);
+                            metadata::SourceId::default()
                         }
-                    }
-                    _ => false,
+                    },
+                    None => metadata::SourceId::default(),
                 };
-                (id.as_str(), changed)
+                (id.as_str(), sid)
             })
             .collect()
     };
+
+    let recorded = metadata::Metadata::load(output_dir);
 
     let exe_mtime = std::env::current_exe()
         .ok()
@@ -458,8 +459,6 @@ fn cmd_pipeline(
 
     for (id, config, city_path) in &cities {
         let bin_path = output_dir.join(format!("{}.bin", id));
-        let has_stale_feed = config.feed_ids.iter().any(|f| stale_feeds.contains(f));
-        let osm_stale = osm_changed.get(id.as_str()).copied().unwrap_or(false);
         let bin_missing = !bin_path.exists();
         let bin_mtime = std::fs::metadata(&bin_path)
             .ok()
@@ -473,16 +472,69 @@ fn cmd_pipeline(
             .and_then(|cfg_t| bin_mtime.map(|bin_t| cfg_t > bin_t))
             .unwrap_or(false);
 
-        let reason = if bin_missing {
-            Some(".bin missing")
-        } else if has_stale_feed {
-            Some("stale feed")
-        } else if osm_stale {
-            Some("OSM extract changed upstream")
+        let prior = recorded.cities.get(id);
+
+        // Compare every input against the identity that produced this .bin.
+        // `same_as` returning None means "not comparable" — treated as
+        // unverifiable, never as unchanged.
+        let mut changed_input: Option<String> = None;
+        let mut unverifiable = false;
+        let mut feed_set_changed = false;
+
+        if let Some(prior) = prior {
+            feed_set_changed = prior.feeds.len() != config.feed_ids.len()
+                || config.feed_ids.iter().any(|f| !prior.feeds.contains_key(f));
+
+            let osm_pair = (
+                "OSM extract".to_string(),
+                prior.osm.clone().unwrap_or_default(),
+                remote_osm.get(id.as_str()).cloned().unwrap_or_default(),
+            );
+            let feed_pairs = config.feed_ids.iter().map(|fid| {
+                (
+                    format!("feed {}", fid),
+                    prior.feeds.get(fid).cloned().unwrap_or_default(),
+                    remote_feeds.get(fid).cloned().unwrap_or_default(),
+                )
+            });
+
+            for (what, then, now) in feed_pairs.chain(std::iter::once(osm_pair)) {
+                match then.same_as(&now) {
+                    Some(true) => {}
+                    Some(false) => {
+                        changed_input = Some(format!("{} changed upstream", what));
+                        break;
+                    }
+                    None => unverifiable = true,
+                }
+            }
+        }
+
+        // Nothing upstream could be compared, so bound how long we coast on it.
+        // `built_at` is recorded content, not an mtime, so it survives the
+        // archive round trips that CI's cache layers put it through.
+        let stale_unverifiable = unverifiable
+            && prior
+                .and_then(|p| p.age())
+                .is_none_or(|age| age >= cache::MAX_CACHE_AGE);
+
+        let reason: Option<String> = if bin_missing {
+            Some(".bin missing".into())
+        } else if prior.is_none() {
+            Some("no build metadata".into())
+        } else if feed_set_changed {
+            Some("feed list changed".into())
+        } else if let Some(what) = changed_input {
+            Some(what)
+        } else if stale_unverifiable {
+            Some(format!(
+                "unverifiable input and build is {} day(s) old",
+                prior.map(|p| p.age_days()).unwrap_or(0)
+            ))
         } else if code_changed {
-            Some("code changed")
+            Some("code changed".into())
         } else if config_changed {
-            Some("config changed")
+            Some("config changed".into())
         } else {
             None
         };
@@ -537,39 +589,78 @@ fn cmd_pipeline(
 
     std::fs::create_dir_all(output_dir)?;
 
-    cities
+    let built: Vec<(String, metadata::CityMetadata)> = cities
         .par_iter()
         .filter(|(id, _, _)| cities_to_rebuild.contains(id))
-        .try_for_each(|(id, config, _)| -> Result<()> {
-            let bbox = parse_bbox(&config.bbox)?;
+        .map(
+            |(id, config, _)| -> Result<(String, metadata::CityMetadata)> {
+                let bbox = parse_bbox(&config.bbox)?;
 
-            let osm_path = osm_fetch::fetch_osm(
-                bbox,
-                cache_dir,
-                id,
-                config.interline_extract.as_deref(),
-                config.bbbike_name.as_deref(),
-                config.osm_url.as_deref(),
-            )?;
+                let osm_path = osm_fetch::fetch_osm(
+                    bbox,
+                    cache_dir,
+                    id,
+                    config.interline_extract.as_deref(),
+                    config.bbbike_name.as_deref(),
+                    config.osm_url.as_deref(),
+                )?;
 
-            let gtfs_paths: Vec<PathBuf> = config
-                .feed_ids
-                .iter()
-                .map(|fid| gtfs_cache_path(fid, cache_dir))
-                .collect();
-            let bin_path = output_dir.join(format!("{}.bin", id));
+                let gtfs_paths: Vec<PathBuf> = config
+                    .feed_ids
+                    .iter()
+                    .map(|fid| gtfs_cache_path(fid, cache_dir))
+                    .collect();
+                let bin_path = output_dir.join(format!("{}.bin", id));
 
-            eprintln!("\n--- Building {} ---", id);
-            transit_prep::prepare(
-                id,
-                &gtfs_paths,
-                &osm_path,
-                bbox,
-                &bin_path,
-                config.allow_stale,
-            )?;
-            Ok(())
-        })?;
+                eprintln!("\n--- Building {} ---", id);
+                transit_prep::prepare(
+                    id,
+                    &gtfs_paths,
+                    &osm_path,
+                    bbox,
+                    &bin_path,
+                    config.allow_stale,
+                )?;
+
+                // Record the identities stage 2/3 probed, not a re-probe: these are
+                // the versions this .bin was actually built from. Stamped only on
+                // success, so a failed build leaves the old record in place.
+                Ok((
+                    id.clone(),
+                    metadata::CityMetadata {
+                        built_at: chrono::Utc::now()
+                            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                        feeds: config
+                            .feed_ids
+                            .iter()
+                            .map(|fid| {
+                                (
+                                    fid.clone(),
+                                    remote_feeds.get(fid).cloned().unwrap_or_default(),
+                                )
+                            })
+                            .collect(),
+                        osm: remote_osm
+                            .get(id.as_str())
+                            .cloned()
+                            .filter(|s| !s.is_empty()),
+                    },
+                ))
+            },
+        )
+        .collect::<Result<Vec<_>>>()?;
+
+    // Merge over the prior record so cities that didn't rebuild keep theirs,
+    // then drop any city that no longer has a config.
+    let mut updated = recorded;
+    updated.cities.extend(built);
+    let active: HashSet<&str> = cities.iter().map(|(id, _, _)| id.as_str()).collect();
+    updated.cities.retain(|id, _| active.contains(id.as_str()));
+    updated.save(output_dir)?;
+    eprintln!(
+        "\nRecorded build metadata for {} cities",
+        updated.cities.len()
+    );
 
     // ── Cleanup: Remove orphaned cache files ──
     eprintln!("\n=== Cleanup: Remove orphaned cache files ===");

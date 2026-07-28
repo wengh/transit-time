@@ -1146,7 +1146,17 @@ impl ProfileRouting {
 
             *out_elem = loop {
                 if at_delta <= curr.entry.home_departure_delta {
-                    break walk.min(max_time).min(curr.entry.arrival_delta - at_delta);
+                    // `arrival_delta - at_delta` includes the wait until this
+                    // entry's vehicle, which is unbounded within the window, so
+                    // the total can exceed the budget even though the search
+                    // bounded (arrival - home_departure). Over budget means
+                    // *unreachable*, not "reachable at exactly max_time" —
+                    // matching `compute_destination_totals`, which drops those
+                    // departures rather than clamping them. `walk` is already
+                    // either <= max_time or WALK_UNREACHABLE, so one comparison
+                    // covers both the walk and transit cases.
+                    let best = walk.min(curr.entry.arrival_delta - at_delta);
+                    break if best > max_time { u16::MAX } else { best };
                 }
                 let next_idx = curr.sibling_entry_idx;
                 if next_idx == LAST_ENTRY {
