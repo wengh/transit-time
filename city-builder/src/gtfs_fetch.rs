@@ -135,10 +135,14 @@ pub fn fetch_gtfs(feed_id: &str, api_key: Option<&str>, cache_dir: &Path) -> Res
 
         eprintln!("Downloading GTFS from: {}", feed_id);
         let client = http_cache::client(GTFS_DOWNLOAD_TIMEOUT)?;
-        let (bytes, validators) = http_cache::download(&client, feed_id)
-            .with_context(|| format!("Failed to fetch GTFS URL '{}'", feed_id))?;
-        http_cache::save(&cache_path, &bytes, &validators)?;
-        Ok(cache_path)
+        http_cache::download_or_cached(
+            &client,
+            feed_id,
+            feed_id,
+            &cache_path,
+            cache::MAX_CACHE_AGE,
+            "GTFS",
+        )
     }
 }
 

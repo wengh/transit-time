@@ -7,7 +7,7 @@
 //! moves slowly and these files are large. Overpass is a POST query with no
 //! validators, so it stays on the age rule.
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use std::path::{Path, PathBuf};
 
 use crate::cache;
@@ -141,15 +141,14 @@ fn fetch_http_osm(cache_path: &Path, url: &str, display_url: &str, label: &str) 
 
     eprintln!("Downloading {} from: {}", label, display_url);
     let client = http_cache::client(http_cache::DOWNLOAD_TIMEOUT)?;
-    let (bytes, validators) = http_cache::download(&client, url)
-        .with_context(|| format!("failed to download {} from {}", label, display_url))?;
-    eprintln!(
-        "Downloaded {}: {:.1} MB",
+    http_cache::download_or_cached(
+        &client,
+        url,
+        display_url,
+        cache_path,
+        cache::OSM_MAX_STALENESS,
         label,
-        bytes.len() as f64 / 1_048_576.0
-    );
-    http_cache::save(cache_path, &bytes, &validators)?;
-    Ok(cache_path.to_path_buf())
+    )
 }
 
 /// Fetch pedestrian-walkable OSM data for a bounding box, caching the result.

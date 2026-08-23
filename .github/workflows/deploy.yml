@@ -7,8 +7,10 @@ on:
       - '**/*.md'
       - 'LICENSE'
   schedule:
-    # Rebuild weekly on Sunday at 03:00 UTC to pick up fresh GTFS feeds
-    - cron: '0 3 * * 0'
+    # Fires daily; the `gate` job lets the pipeline through every
+    # REBUILD_EVERY_DAYS days (see below). Cron can't express "every N days"
+    # directly (`*/6` resets at month boundaries).
+    - cron: '0 3 * * *'
   workflow_dispatch:
 
 permissions:
@@ -20,7 +22,35 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Decide whether a scheduled run does anything. Pushes and manual runs
+  # always build. Scheduled runs build every REBUILD_EVERY_DAYS days, counted
+  # in whole days since the Unix epoch so the spacing is exact across month
+  # and year boundaries.
+  #
+  # Keep REBUILD_EVERY_DAYS < 7: GitHub evicts Actions caches not accessed
+  # for 7 days, and the build is what touches them. A weekly cron raced that
+  # deadline by seconds and lost (the downloads and cargo caches were both
+  # evicted on 2026-08-23).
+  gate:
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.decide.outputs.build }}
+    steps:
+      - id: decide
+        env:
+          REBUILD_EVERY_DAYS: 6
+        run: |
+          if [ "$GITHUB_EVENT_NAME" != "schedule" ] \
+             || [ $(( $(date +%s) / 86400 % REBUILD_EVERY_DAYS )) -eq 0 ]; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "build=false (next in $(( REBUILD_EVERY_DAYS - $(date +%s) / 86400 % REBUILD_EVERY_DAYS )) day(s))"
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          fi
+
   deploy:
+    needs: gate
+    if: needs.gate.outputs.build == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -53,7 +83,12 @@ jobs:
       #
       # Cache layers:
       #   1. sha1 sidecars (tiny, always restored — used to check feed freshness)
-      #   2. raw GTFS/OSM downloads (large, only restored when a rebuild is needed)
+      #   2. raw GTFS/OSM downloads (large). Always restored, even on weeks with
+      #      no rebuild: GitHub evicts caches untouched for 7 days, and a lost
+      #      download cache means an upstream outage (e.g. Interline serving
+      #      404s) has nothing to fall back to. Saved under a per-run key after
+      #      every rebuild — including failed ones — so refreshed extracts and
+      #      "last confirmed" sidecar stamps persist.
       #   3. compiled .bin files (fast to restore, avoid full rebuild)
 
       - name: Cache feed version hashes
@@ -62,6 +97,17 @@ jobs:
           path: cache/sha1/
           key: ${{ runner.os }}-sha1-${{ github.run_id }}
           restore-keys: ${{ runner.os }}-sha1-
+
+      # `cache/sha1/` is excluded: it's restored above from a newer snapshot,
+      # and an overlapping restore would overwrite it.
+      - name: Restore raw GTFS/OSM downloads
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            cache/
+            !cache/sha1/
+          key: ${{ runner.os }}-downloads-${{ github.run_id }}
+          restore-keys: ${{ runner.os }}-downloads-
 
       - name: Cache compiled .bin files
         uses: actions/cache@v4
@@ -84,20 +130,21 @@ jobs:
             echo "needs_rebuild=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Cache raw GTFS/OSM downloads
-        uses: actions/cache@v4
-        if: steps.check-feeds.outputs.needs_rebuild == 'true'
-        with:
-          path: cache/
-          key: ${{ runner.os }}-downloads-${{ hashFiles('cities/*.jsonc') }}
-          restore-keys: ${{ runner.os }}-downloads-
-
       - name: Build data
         if: steps.check-feeds.outputs.needs_rebuild == 'true'
         env:
           TRANSITLAND_API_KEY: ${{ secrets.TRANSITLAND_API_KEY }}
           INTERLINE_OSM_EXTRACTS_API_KEY: ${{ secrets.INTERLINE_OSM_EXTRACTS_API_KEY }}
         run: make data-all
+
+      - name: Save raw GTFS/OSM downloads
+        uses: actions/cache/save@v4
+        if: always() && steps.check-feeds.outputs.needs_rebuild == 'true'
+        with:
+          path: |
+            cache/
+            !cache/sha1/
+          key: ${{ runner.os }}-downloads-${{ github.run_id }}
 
       # ── Tests ──────────────────────────────────────────────────────────────
       # Property tests for the router across a 3-city matrix. Each city runs
