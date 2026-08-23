@@ -113,14 +113,24 @@ pub fn store(cache_path: &Path, validators: &Validators) {
     let _ = std::fs::write(path, out);
 }
 
+/// Time since we last confirmed this entry against the origin — the sidecar's
+/// mtime, which [`store`] refreshes on every successful check. Entries that
+/// predate sidecars fall back to the cached file's own mtime (its download
+/// time). `None` if nothing is cached.
+pub fn checked_age(cache_path: &Path) -> Option<Duration> {
+    cache::age(&sidecar_path(cache_path)).or_else(|| cache::age(cache_path))
+}
+
 /// True when we confirmed this entry was current within `window`.
 pub fn checked_within(cache_path: &Path, window: Duration) -> bool {
-    cache::is_fresh(&sidecar_path(cache_path), window)
+    checked_age(cache_path).is_some_and(|a| a < window)
 }
 
 /// Days since we last confirmed this entry, for log messages.
 pub fn checked_days_ago(cache_path: &Path) -> u64 {
-    cache::age_days(&sidecar_path(cache_path))
+    checked_age(cache_path)
+        .map(|a| a.as_secs() / 86_400)
+        .unwrap_or(0)
 }
 
 /// Drop the request URL from a `reqwest` error before it can reach a log.
@@ -172,6 +182,63 @@ pub fn save(cache_path: &Path, bytes: &[u8], validators: &Validators) -> Result<
     write_atomic(cache_path, bytes)?;
     store(cache_path, validators);
     Ok(())
+}
+
+/// Download `url` into `cache_path`, or — when the download fails but a cached
+/// copy was confirmed current within `max_age` — keep the cached copy instead
+/// of failing the build.
+///
+/// This is what keeps an upstream outage (Interline once pointed
+/// `download_latest` at a build whose blobs were never uploaded) from taking
+/// the whole pipeline down for a file we already have. The bound is on the
+/// *last successful check*, not the download date, so a long-lived extract
+/// that the origin kept confirming stays usable; one we haven't been able to
+/// verify for `max_age` is no longer trusted and the error propagates.
+///
+/// `display_url` is what goes into logs and errors — the Interline URL
+/// carries the API token, so callers pass a redacted form.
+pub fn download_or_cached(
+    client: &Client,
+    url: &str,
+    display_url: &str,
+    cache_path: &Path,
+    max_age: Duration,
+    label: &str,
+) -> Result<PathBuf> {
+    let err = match download(client, url) {
+        Ok((bytes, validators)) => {
+            eprintln!(
+                "Downloaded {}: {:.1} MB",
+                label,
+                bytes.len() as f64 / 1_048_576.0
+            );
+            save(cache_path, &bytes, &validators)?;
+            return Ok(cache_path.to_path_buf());
+        }
+        Err(e) => e.context(format!("failed to download {} from {}", label, display_url)),
+    };
+
+    if cache_path.exists() && checked_within(cache_path, max_age) {
+        eprintln!(
+            "WARNING: {:#}
+  falling back to cached {}: {:?} (last confirmed {} day(s) ago)",
+            err,
+            label,
+            cache_path,
+            checked_days_ago(cache_path)
+        );
+        return Ok(cache_path.to_path_buf());
+    }
+    if cache_path.exists() {
+        return Err(err.context(format!(
+            "cached {} {:?} was last confirmed {} day(s) ago, past the {}-day limit",
+            label,
+            cache_path,
+            checked_days_ago(cache_path),
+            max_age.as_secs() / 86_400
+        )));
+    }
+    Err(err)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -269,10 +336,11 @@ fn modified(path: &Path) -> Option<chrono::DateTime<chrono::Utc>> {
         .map(chrono::DateTime::<chrono::Utc>::from)
 }
 
-/// Decision for entries we couldn't validate: trust them until `max_age`.
+/// Decision for entries we couldn't validate: trust them until `max_age`,
+/// measured from the last time the origin confirmed them (see [`checked_age`]).
 fn age_fallback(cache_path: &Path, max_age: Duration, label: &str, why: &str) -> CacheState {
-    let days = cache::age_days(cache_path);
-    if cache::is_fresh(cache_path, max_age) {
+    let days = checked_days_ago(cache_path);
+    if checked_within(cache_path, max_age) {
         eprintln!("{}: {} — keeping {} day(s) old cache", label, why, days);
         CacheState::Current
     } else {
@@ -357,6 +425,69 @@ mod tests {
         assert!(parse_http_date(Some("Sat, 25 Jul 2026 16:49:54 GMT")).is_some());
         assert!(parse_http_date(Some("not a date")).is_none());
         assert!(parse_http_date(None).is_none());
+    }
+
+    /// Write `path` and backdate its mtime by `days`.
+    fn backdate(path: &Path, days: u64) {
+        let f = std::fs::File::create(path).unwrap();
+        f.set_modified(std::time::SystemTime::now() - Duration::from_secs(days * 86_400))
+            .unwrap();
+    }
+
+    fn fresh_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("city-builder-etag-test-{}", tag));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("etag")).unwrap();
+        dir
+    }
+
+    #[test]
+    fn checked_age_prefers_last_confirmation_over_download_date() {
+        let dir = fresh_dir("checked-age");
+        let cache_path = dir.join("old.osm.pbf");
+        // Downloaded 40 days ago, but the origin confirmed it 3 days ago.
+        backdate(&cache_path, 40);
+        backdate(&sidecar_path(&cache_path), 3);
+        assert_eq!(checked_days_ago(&cache_path), 3);
+        assert!(checked_within(&cache_path, cache::OSM_MAX_STALENESS));
+
+        // Without a sidecar, the download date is all we have.
+        std::fs::remove_file(sidecar_path(&cache_path)).unwrap();
+        assert_eq!(checked_days_ago(&cache_path), 40);
+        assert!(!checked_within(&cache_path, cache::OSM_MAX_STALENESS));
+    }
+
+    /// A download from a dead origin should fall back to the cached file only
+    /// while the origin confirmed it within `max_age`.
+    #[test]
+    fn failed_download_falls_back_to_recently_confirmed_cache() {
+        let dir = fresh_dir("fallback");
+        let cache_path = dir.join("boston.osm.pbf");
+        let client = client(Duration::from_secs(5)).unwrap();
+        // Discard port on loopback: connection refused immediately, no server needed.
+        let url = "http://127.0.0.1:9/boston.osm.pbf";
+        let month = cache::OSM_MAX_STALENESS;
+
+        // Nothing cached → the download error propagates.
+        let err = download_or_cached(&client, url, url, &cache_path, month, "PBF")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("failed to download PBF from"), "{err}");
+
+        // Confirmed last week → use it.
+        backdate(&cache_path, 40);
+        backdate(&sidecar_path(&cache_path), 7);
+        let got = download_or_cached(&client, url, url, &cache_path, month, "PBF").unwrap();
+        assert_eq!(got, cache_path);
+
+        // Not confirmed in over a month → refuse.
+        backdate(&sidecar_path(&cache_path), 31);
+        let err = format!(
+            "{:#}",
+            download_or_cached(&client, url, url, &cache_path, month, "PBF").unwrap_err()
+        );
+        assert!(err.contains("last confirmed 31 day(s) ago"), "{err}");
+        assert!(err.contains("failed to download PBF"), "{err}");
     }
 
     #[test]
