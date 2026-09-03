@@ -2,7 +2,12 @@
     "id": "hong_kong",
     "osm_url": "https://download.geofabrik.de/asia/china/hong-kong-latest.osm.pbf",
     "feed_ids": [
-        "https://blues3.transitpdf.com/files/uran/improved-gtfs-hong-kong.zip" // https://busmaps.com/en/hong-kong/justusewheels/hong-kong
+        // Wheels community GTFS (https://github.com/wheelstransit/hongkong-community-gtfs), rebuilt daily.
+        // This was the upstream of the old busmaps mirror; it is the only feed with MTR heavy rail +
+        // Light Rail and 100% shape coverage. Mirror: https://files.mobilitydatabase.org/mdb-2933/latest.zip
+        // The government feed (f-hong~kong~en) has no shapes and no MTR rail; it is the only source for
+        // HK Tramways / Peak Tram, but overlaps every bus operator here so it can't be merged in.
+        "https://feed.justusewheels.com/hk.gtfs.zip"
     ],
     "name": "Hong Kong, China",
     "file": "hong_kong.bin",

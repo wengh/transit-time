@@ -2,9 +2,11 @@
     "id": "chicago",
     "bbbike_name": "Chicago",
     "feed_ids": [
-        "https://blues3.transitpdf.com/files/uran/improved-gtfs-cta-chicago.zip", // CTA https://busmaps.com/en/usa/Chicago-Transit-Authority/cta-chicago
-        "https://blues3.transitpdf.com/files/uran/improved-gtfs-rtams.zip", // Pace https://busmaps.com/en/usa/RTA-Metropolitan-Area-Regional-Transportation-Authority/rtams
-        "https://blues3.transitpdf.com/files/uran/improved-gtfs-gtfsapi-metrarail-com.zip" // Metra https://busmaps.com/en/usa/Transport-Usa/gtfsapi-metrarail-com
+        // busmaps.com mirrors went behind a paywall in Aug 2026; these are the agencies' own feeds
+        // (same bytes as Transitland f-dp3-cta / f-dp3-pace / f-dp3-metra).
+        "https://www.transitchicago.com/downloads/sch_data/google_transit.zip", // CTA
+        "https://www.pacebus.com/gtfsdownload", // Pace (301s to a month-dated /sites/default/files/YYYY-MM/GTFS.zip; only this redirect URL is stable)
+        "https://schedules.metrarail.com/gtfs/schedule.zip" // Metra (open S3 feed; the old basic-auth gtfsapi.metrarail.com was retired 2025-11-01)
     ],
     "name": "Chicago, IL",
     "file": "chicago.bin",

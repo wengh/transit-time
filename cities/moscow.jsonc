@@ -2,7 +2,13 @@
     "id": "moscow",
     "bbbike_name": "Moscow",
     "feed_ids": [
-        "https://greens3.transitpdf.com/files/uran/improved-gtfs-moscow-official.zip" // https://busmaps.com/en/russia/open-data-portal-moscow/moscow-official
+        // Mobility Database mirror (mdb-3226) of the data.mos.ru Mosgortrans surface-transport GTFS.
+        // The busmaps.com mirror used before went behind a paywall (404) in Aug 2026. Buses + trams
+        // only; no Moscow Metro / MCC / MCD GTFS exists anywhere (the old feed had none either) and
+        // no shapes.txt. Frozen snapshot dated 2025-05-27 (MDB marks the upstream inactive); a fresh
+        // feed would have to be assembled from data.mos.ru datasets 60661-60666 via apidata.mos.ru,
+        // which needs a registered api_key. Transitland has no Moscow feeds at all.
+        "https://files.mobilitydatabase.org/mdb-3226/latest.zip"
     ],
     "name": "Moscow, Russia",
     "file": "moscow.bin",
@@ -12,11 +18,14 @@
         37.61
     ],
     "zoom": 12,
-    "detail": "Moscow Metro, Mosgortrans, ...",
+    "detail": "Mosgortrans buses and trams (no Metro GTFS available)",
     "tags": [
         "russia",
-        "subway",
-        "rail",
-        "bus"
-    ]
+        "bus",
+        "tram"
+    ],
+    // No feed_info dates, so the auto stale policy would extend the ~900 services that ended in
+    // 2025/2026 and revive discontinued routes. Active services run to 2030-12-31, so honor dates.
+    "allow_stale": false,
+    "disabled": true
 }

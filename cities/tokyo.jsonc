@@ -3,13 +3,14 @@
     // "enabled": false, // the feed list is not very good
     "osm_url": "https://download.geofabrik.de/asia/japan/kanto-latest.osm.pbf",
     "feed_ids": [
-        // Consolidated rail feed: 43 agencies / 160 routes — JR East, Tokyo Metro, Toei (subway + Arakawa tram),
+        // Consolidated rail feed: 46 agencies / 165 routes — JR East, Tokyo Metro, Toei (subway + Arakawa tram),
         // Tobu, Tokyu, Keio, Odakyu, Seibu, Keikyu, Keisei, Sotetsu, Tsukuba Express, Yokohama Municipal, etc.
-        // https://busmaps.com/en/japan/MKuran/tokyo-railways
+        // Published by Mikołaj Kuranowski (https://github.com/MKuranowski/TokyoGTFS), rebuilt ~monthly;
+        // this was the upstream of the old busmaps mirror. Attribution per the feed's attributions.txt.
         // Individual f-toei~train / f-tokyometro~train / f-mir~train feeds are intentionally omitted —
         // they're subsets of this feed and the preprocessor merges without deduping stop_times,
         // which would double-count departures and inflate reachability stats.
-        "https://blues3.transitpdf.com/files/sourcedata/tokyo-railways.zip",
+        "https://mkuran.pl/gtfs/tokyo/rail.zip",
         // --- Major bus operators ---
         // MISSING FEEDS: five heavily-used private bus operators are not included —
         //   Seibu Bus, Tobu Bus, Keikyu Bus, Kokusai Kogyo Bus, Kanachu (Kanagawa Chuo Kotsu).

@@ -2,8 +2,12 @@
     "id": "paris",
     "bbbike_name": "Paris",
     "feed_ids": [
-        "https://greens3.transitpdf.com/files/sourcedata/horairesau-246c687815b82f.zip", // Consolidated feed https://busmaps.com/en/france/Republique-Francaise/horairesau-246c687815b82f https://transport.data.gouv.fr/datasets/reseau-urbain-et-interurbain-dile-de-france-mobilites#dataset-resources
-        "https://blues3.transitpdf.com/files/uran/improved-gtfs-caee.zip" // Villebon-sur-Yvette https://busmaps.com/en/france/Zen-Bus/caee
+        // Official IDFM consolidated feed (RATP, RER, Transilien, TER, Optile buses, Paris-Saclay shuttles).
+        // https://transport.data.gouv.fr/datasets/reseau-urbain-et-interurbain-dile-de-france-mobilites#dataset-resources
+        // Rolling ~30-day calendar, republished daily; the stale policy extends the end date.
+        // The former Zen Bus CAEE (Villebon-sur-Yvette) feed is already included here as agency
+        // "Paris-Saclay Mobilités", so it is intentionally not listed separately (no dedup on merge).
+        "https://eu.ftp.opendatasoft.com/stif/GTFS/IDFM-gtfs.zip"
     ],
     "name": "Paris, France",
     "file": "paris.bin",
