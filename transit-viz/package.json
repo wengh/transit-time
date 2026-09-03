@@ -12,7 +12,6 @@
     "format:check": "prettier --check ."
   },
   "devDependencies": {
-    "@types/leaflet": "^1.9.21",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "prettier": "^3.3.3",
@@ -23,7 +22,7 @@
     "@tailwindcss/vite": "^4.2.2",
     "@vitejs/plugin-react": "^4.7.0",
     "jsonc-simple-parser": "^3.0.0",
-    "leaflet": "^1.9.4",
+    "maplibre-gl": "^6.6.0",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "tailwindcss": "^4.2.2"

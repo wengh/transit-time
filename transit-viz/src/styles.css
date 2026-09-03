@@ -56,43 +56,33 @@ body {
   background: #090909;
 }
 
-/* ── Leaflet controls – dark theme overrides ─────────────────────────── */
-.leaflet-control-zoom a {
-  background: #1e1e1e !important;
-  color: #e0e0e0 !important;
-  border-color: #383838 !important;
-}
-.leaflet-control-zoom a:hover {
-  background: #2a2a2a !important;
-}
-.leaflet-bar {
-  border-color: #383838 !important;
-}
-.leaflet-control-attribution {
+/* ── MapLibre attribution – theme overrides ──────────────────────────── */
+.maplibregl-ctrl-attrib {
   background: rgba(20, 20, 20, 0.8) !important;
   color: #555 !important;
 }
-.leaflet-control-attribution a {
+.maplibregl-ctrl-attrib a {
   color: #4a90d9 !important;
+}
+.maplibregl-ctrl-attrib.maplibregl-compact {
+  background: #1e1e1e !important;
+}
+.maplibregl-ctrl-attrib-button {
+  filter: invert(1);
 }
 
 @media (prefers-color-scheme: light) {
-  .leaflet-control-zoom a {
-    background: #ffffff !important;
-    color: #374151 !important;
-    border-color: #d1d5db !important;
-  }
-  .leaflet-control-zoom a:hover {
-    background: #f3f4f6 !important;
-  }
-  .leaflet-bar {
-    border-color: #d1d5db !important;
-  }
-  .leaflet-control-attribution {
+  .maplibregl-ctrl-attrib {
     background: rgba(255, 255, 255, 0.85) !important;
     color: #6b7280 !important;
   }
-  .leaflet-control-attribution a {
+  .maplibregl-ctrl-attrib a {
     color: #2563eb !important;
+  }
+  .maplibregl-ctrl-attrib.maplibregl-compact {
+    background: #ffffff !important;
+  }
+  .maplibregl-ctrl-attrib-button {
+    filter: none;
   }
 }

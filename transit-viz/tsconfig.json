@@ -17,10 +17,5 @@
     "noFallthroughCasesInSwitch": true,
     "types": ["vite/client"]
   },
-  "include": ["src"],
-  "vite": {
-    "ssr": {
-      "external": ["leaflet"]
-    }
-  }
+  "include": ["src"]
 }

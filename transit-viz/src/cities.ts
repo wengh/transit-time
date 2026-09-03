@@ -1,4 +1,5 @@
 import JSONC from 'jsonc-simple-parser';
+import { slippyToMapZoom } from './utils/zoom';
 
 export interface City {
   id: string;
@@ -6,6 +7,7 @@ export interface City {
   file: string;
   bbox: [number, number, number, number];
   center: [number, number];
+  /** MapLibre zoom (512px tiles). */
   zoom: number;
   detail: string;
   tags?: string[];
@@ -25,6 +27,9 @@ export const CITIES: City[] = Object.values(cityModules)
     if (typeof city.bbox === 'string') {
       city.bbox = (city.bbox as string).split(',').map(Number);
     }
+    // JSONC stores zoom in the 256px-tile (slippy) convention; the map runs
+    // on MapLibre zoom, one level lower for the same scale.
+    city.zoom = slippyToMapZoom(city.zoom);
     return city as City;
   })
   .filter((c) => c.enabled !== false)
