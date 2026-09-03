@@ -1,12 +1,6 @@
-import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useRef } from 'react';
-import L from 'leaflet';
+import React, { forwardRef, useEffect, useImperativeHandle, useRef } from 'react';
+import { Map as MapLibreMap, Marker, type MapMouseEvent } from 'maplibre-gl';
 import { useAppState } from '../state/AppContext';
-import {
-  initWebGL,
-  renderIsochrone,
-  renderIsochroneFrame,
-  type RenderResult,
-} from '../utils/webgl';
 import { animationStore, useAnimMode, useAnimRenderedDeparture } from '../state/animationStore';
 import { cancelInflightQuery, snapToNode, type HoverPath } from '../utils/router';
 import type { HoverData } from '../state/reducer';
@@ -14,7 +8,9 @@ import { deriveDisplayPath } from './HoverInfo';
 import { ROUTE_COLORS } from '../utils/colors';
 import { getHashParams, setHashParams } from '../utils/urlHash';
 import { buildHoverData } from '../utils/hoverInfo';
-import { resolveMapStyle, DEFAULT_MAP_STYLE } from '../utils/mapStyles';
+import { resolveMapStyle, REPO_ATTR, type MapStyle } from '../utils/mapStyles';
+import { MapOverlays, toLngLat, type PointFeature, type RouteFeature } from '../utils/mapOverlays';
+import { mapToSlippyZoom, slippyToMapZoom } from '../utils/zoom';
 import { useIsMobile } from '../utils/useIsMobile';
 
 export interface MapViewHandle {
@@ -29,22 +25,27 @@ export interface MapViewHandle {
   zoomOut(): void;
 }
 
+/** DOM pin for the origin. `opacity` < 1 marks a provisional (queued) origin. */
+function makeOriginMarker(latLng: [number, number], title: string, opacity = 1): Marker {
+  const marker = new Marker({ opacity: String(opacity) }).setLngLat(toLngLat(latLng));
+  const el = marker.getElement();
+  el.title = title;
+  // Map clicks/hovers go to the canvas underneath; the pin is purely visual.
+  el.style.pointerEvents = 'none';
+  return marker;
+}
+
 const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.ReactNode {
   const { state, dispatch } = useAppState();
-  const mapRef = useRef<L.Map | null>(null);
+  const mapRef = useRef<MapLibreMap | null>(null);
   const mapContainerRef = useRef<HTMLDivElement>(null);
-  const glStateRef = useRef<ReturnType<typeof initWebGL> | null>(null);
-  const isoOverlayRef = useRef<L.Layer | null>(null);
-  const sourceMarkerRef = useRef<L.Marker | null>(null);
-  const destMarkerRef = useRef<L.CircleMarker | null>(null);
+  const overlaysRef = useRef<MapOverlays | null>(null);
+  const sourceMarkerRef = useRef<Marker | null>(null);
   // Faint marker placed at the click location while the city data is still
   // loading. Replaced/moved on each new pending click; removed once the real
   // (snapped) source marker takes its place.
-  const provisionalSourceRef = useRef<L.Marker | null>(null);
-  const bboxRectRef = useRef<L.Rectangle | null>(null);
-  const tileLayerRef = useRef<L.TileLayer | null>(null);
-  const routePolylinesRef = useRef<L.Path[]>([]);
-  const routeRendererRef = useRef<L.Canvas | null>(null);
+  const provisionalSourceRef = useRef<Marker | null>(null);
+  const appliedStyleRef = useRef<MapStyle | null>(null);
   const drawRouteLayersRef = useRef<((paths: HoverPath[]) => void) | null>(null);
   // Picks which route paths to draw for a destination — the full Pareto fan
   // (average view) or just the path optimal for the current departure time
@@ -52,7 +53,6 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
   // live animation state without re-running the map-events effect.
   const resolveRoutePathsRef = useRef<(hd: HoverData) => HoverPath[]>(() => []);
   const lastHoveredNodeRef = useRef<number | null>(null);
-  const renderIsoRef = useRef<(() => void) | null>(null);
 
   // Refs to closures (updated each time the map-events effect runs)
   // so the imperative handle can call them from outside MapView.
@@ -67,7 +67,7 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
     flyTo: (lat, lng) => {
       const map = mapRef.current;
       if (!map) return;
-      map.flyTo([lat, lng], Math.max(map.getZoom(), 14));
+      map.flyTo({ center: [lng, lat], zoom: Math.max(map.getZoom(), slippyToMapZoom(14)) });
     },
     zoomIn: () => mapRef.current?.zoomIn(),
     zoomOut: () => mapRef.current?.zoomOut(),
@@ -77,14 +77,14 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
   stateRef.current = state;
 
   // Width-based mobile detection. Mirrored to a ref so the once-installed
-  // Leaflet click handlers can read the live value without being re-registered
+  // map click handlers can read the live value without being re-registered
   // when the viewport crosses the breakpoint.
   const isMobile = useIsMobile();
   const isMobileRef = useRef(isMobile);
   isMobileRef.current = isMobile;
 
-  // Keep leaflet's double-click-zoom in sync when the user crosses the
-  // breakpoint at runtime (e.g. rotating a tablet, resizing a window).
+  // Keep double-click-zoom in sync when the user crosses the breakpoint at
+  // runtime (e.g. rotating a tablet, resizing a window).
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
@@ -92,59 +92,61 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
     else map.doubleClickZoom.disable();
   }, [isMobile]);
 
-  const clearDestination = useCallback(() => {
-    if (destMarkerRef.current) {
-      destMarkerRef.current.remove();
-      destMarkerRef.current = null;
-    }
-    routePolylinesRef.current.forEach((p) => p.remove());
-    routePolylinesRef.current = [];
-  }, []);
-
   // Initialize map
   useEffect(() => {
-    if (mapRef.current) return;
-    // Desktop uses double-click to set the source, so leaflet's default
-    // double-click-to-zoom would conflict. On mobile that gesture is unused,
-    // so let leaflet keep its default zoom behavior.
-    const map = L.map('map', {
+    if (mapRef.current || !mapContainerRef.current) return;
+    // Start on the style the URL hash restored (if any) rather than the
+    // default, so the first style load is the only one.
+    const initialStyle = resolveMapStyle(stateRef.current.mapStyle);
+    const map = new MapLibreMap({
+      container: mapContainerRef.current,
+      style: initialStyle.style,
+      center: [-90, 40],
+      zoom: slippyToMapZoom(4),
+      maxZoom: slippyToMapZoom(20),
+      // Desktop uses double-click to set the source, so the default
+      // double-click-to-zoom would conflict. On mobile that gesture is unused,
+      // so keep the default zoom behavior there.
       doubleClickZoom: isMobileRef.current,
-      zoomControl: false,
-    }).setView([40, -90], 4);
-    const initialStyle = resolveMapStyle(DEFAULT_MAP_STYLE);
-    tileLayerRef.current = L.tileLayer(initialStyle.url, {
-      attribution: initialStyle.attribution,
-      maxZoom: 20,
-      subdomains: initialStyle.subdomains ?? 'abc',
-      crossOrigin: true,
-    }).addTo(map);
-    // Custom pane above the isochrone ImageOverlay (which lives in overlayPane at z-index 400;
-    // this pane at 450 is a sibling stacking context that wins regardless of the image's zIndex).
-    map.createPane('transitLines');
-    map.getPane('transitLines')!.style.zIndex = '450';
+      // North-up, flat map. The isochrone reads as a heat wash over the city
+      // and accidental two-finger rotation is a common mobile annoyance.
+      dragRotate: false,
+      pitchWithRotate: false,
+      touchPitch: false,
+      maxPitch: 0,
+      attributionControl: { customAttribution: REPO_ATTR },
+    });
+    map.touchZoomRotate.disableRotation();
+    map.keyboard.disableRotation();
+    appliedStyleRef.current = initialStyle;
+
+    // Overlays are rebuilt on every style load — including the first — since
+    // a style swap discards all layers.
+    const overlays = new MapOverlays(map);
+    map.on('style.load', () => overlays.install());
 
     mapRef.current = map;
+    overlaysRef.current = overlays;
 
     return () => {
       map.remove();
       mapRef.current = null;
+      overlaysRef.current = null;
     };
   }, []);
 
-  // Swap tile layer when map style changes or system theme changes (for 'default' style)
+  // Swap basemap style when the selection or (for 'default') the system theme changes.
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
 
     function applyStyle() {
-      const style = resolveMapStyle(state.mapStyle);
-      if (tileLayerRef.current) tileLayerRef.current.remove();
-      tileLayerRef.current = L.tileLayer(style.url, {
-        attribution: style.attribution,
-        maxZoom: 20,
-        subdomains: style.subdomains ?? 'abc',
-        crossOrigin: true,
-      }).addTo(map!);
+      const style = resolveMapStyle(stateRef.current.mapStyle);
+      if (appliedStyleRef.current === style) return;
+      appliedStyleRef.current = style;
+      // Full swap, no diff: our overlay layers go down with the old style and
+      // come back via the `style.load` handler.
+      map!.setStyle(style.style, { diff: false });
     }
 
     applyStyle();
@@ -158,8 +160,9 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
 
   // Set up map event handlers
   useEffect(() => {
-    const map = mapRef.current as L.Map;
-    if (!map) return;
+    const map = mapRef.current;
+    const overlays = overlaysRef.current;
+    if (!map || !overlays) return;
 
     function getNodeLatLng(node: number): [number, number] | null {
       const coords = stateRef.current.nodeCoords;
@@ -168,16 +171,12 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
     }
 
     function clearRouteOverlay() {
-      routePolylinesRef.current.forEach((p) => p.remove());
-      routePolylinesRef.current = [];
+      overlays!.clearRoutes();
     }
 
     function drawRouteSegments(allPaths: HoverPath[]) {
-      clearRouteOverlay();
-      if (!routeRendererRef.current) {
-        routeRendererRef.current = L.canvas({ pane: 'transitLines', padding: 0.5 });
-      }
-      const renderer = routeRendererRef.current;
+      const lines: RouteFeature[] = [];
+      const transfers: PointFeature[] = [];
       const routeColorMap: Record<string, string> = {};
       let colorIdx = 0;
       const seenSegments = new Set<string>();
@@ -185,7 +184,7 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
       for (const { segments } of allPaths) {
         for (const seg of segments) {
           if (seg.coords.length < 2) continue;
-          let color: string, dashArray: string | null, weight: number;
+          let color: string;
           let coords = seg.coords;
           if (seg.edgeType === 0) {
             // Normalize walk segment direction so the dedup key collapses
@@ -196,8 +195,6 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
               coords = [...coords].reverse();
             }
             color = '#888';
-            dashArray = '6, 8';
-            weight = 3;
           } else {
             if (!(seg.routeName in routeColorMap)) {
               // Rust's `TransitRouter::route_color` returns the map-legible hex
@@ -213,8 +210,6 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
               colorIdx++;
             }
             color = routeColorMap[seg.routeName];
-            dashArray = null;
-            weight = 4;
           }
           const a = coords[0];
           const b = coords[coords.length - 1];
@@ -222,18 +217,13 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
           const segKey = `${seg.edgeType}|${routeKey}|${a[0]},${a[1]}|${b[0]},${b[1]}|${coords.length}`;
           if (!seenSegments.has(segKey)) {
             seenSegments.add(segKey);
-            const line = L.polyline(coords, {
-              color,
-              weight,
-              opacity: 1,
-              ...(dashArray ? { dashArray } : {}),
-              interactive: false,
-              pane: 'transitLines',
-              renderer,
-            }).addTo(map);
-            routePolylinesRef.current.push(line);
+            lines.push({
+              type: 'Feature',
+              properties: { kind: seg.edgeType === 0 ? 'walk' : 'transit', color },
+              geometry: { type: 'LineString', coordinates: coords.map(toLngLat) },
+            });
           }
-          // Add circle at end of transit segments to mark transfers
+          // Add a dot at the end of transit segments to mark transfers
           if (seg.edgeType === 1) {
             const s = stateRef.current;
             if (s.nodeCoords && seg.endNodeIdx !== undefined) {
@@ -242,22 +232,17 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
                 seenTransfers.add(tKey);
                 const lat = s.nodeCoords[seg.endNodeIdx * 2];
                 const lon = s.nodeCoords[seg.endNodeIdx * 2 + 1];
-                const circle = L.circleMarker([lat, lon], {
-                  radius: 5,
-                  color: color,
-                  fillColor: color,
-                  fillOpacity: 0.7,
-                  weight: 1,
-                  interactive: false,
-                  pane: 'transitLines',
-                  renderer,
-                }).addTo(map);
-                routePolylinesRef.current.push(circle);
+                transfers.push({
+                  type: 'Feature',
+                  properties: { color },
+                  geometry: { type: 'Point', coordinates: [lon, lat] },
+                });
               }
             }
           }
         }
       }
+      overlays!.setRoutes(lines, transfers);
     }
 
     drawRouteLayersRef.current = drawRouteSegments;
@@ -278,8 +263,8 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
       if (!pin && !pointerInMap) return;
 
       // For hovers, skip the imperative route draw if a pin landed during the
-      // await. Otherwise the hover's polylines would paint over the pin's
-      // routes (which were already drawn by the URL-restore effect). The
+      // await. Otherwise the hover's routes would paint over the pin's routes
+      // (which were already drawn by the pinned-destination effect). The
       // SET_HOVER_DEST dispatch below still lands harmlessly in hoverDest —
       // rendering uses `pinnedDest ?? hoverDest`, so the pin wins.
       if (pin || stateRef.current.pinnedDest === null) {
@@ -290,18 +275,7 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
       if (!latLng) return;
 
       if (pin) {
-        if (destMarkerRef.current) {
-          destMarkerRef.current.setLatLng(latLng);
-        } else {
-          destMarkerRef.current = L.circleMarker(latLng, {
-            radius: 6,
-            color: '#fff',
-            fillColor: '#4a90d9',
-            fillOpacity: 1,
-            weight: 2,
-            pane: 'transitLines',
-          }).addTo(map);
-        }
+        overlays!.setDest(latLng);
         dispatch({ type: 'PIN_DESTINATION', dest: { node, latLng, hoverData } });
       } else {
         dispatch({ type: 'SET_HOVER_DEST', dest: { node, latLng, hoverData } });
@@ -330,19 +304,16 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
       const latLng = getNodeLatLng(node);
       if (!latLng) return false;
       if (sourceMarkerRef.current) {
-        sourceMarkerRef.current.setLatLng(latLng);
+        sourceMarkerRef.current.setLngLat(toLngLat(latLng));
       } else {
-        sourceMarkerRef.current = L.marker(latLng, { title: 'Origin' }).addTo(map);
+        sourceMarkerRef.current = makeOriginMarker(latLng, 'Origin').addTo(map!);
       }
       // Clear destination unless the caller wants to preserve it (e.g.,
       // setting source via the search bar while a destination is pinned).
       // Route overlay is always cleared — the old routes were drawn against
       // the previous source; App.tsx re-resolves hoverData after the new
       // query completes, which triggers the route-redraw effect.
-      if (!keepDest && destMarkerRef.current) {
-        destMarkerRef.current.remove();
-        destMarkerRef.current = null;
-      }
+      if (!keepDest) overlays!.setDest(null);
       clearRouteOverlay();
       dispatch({ type: 'SET_SOURCE', node, latLng, keepDest });
       return true;
@@ -370,18 +341,19 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
     // moment it leaves (onto a GUI overlay or off-window) so an in-flight
     // hover resolved afterward can bail instead of resurrecting a stale hover.
     let pointerInMap = true;
-    function onDblClick(e: L.LeafletMouseEvent) {
+    function onDblClick(e: MapMouseEvent) {
       // Mobile uses the Origin/Dest toggle in the top bar instead.
       if (isMobileRef.current) return;
       // setSource itself queues if loading isn't ready yet.
-      setSource(e.latlng.lat, e.latlng.lng);
+      setSource(e.lngLat.lat, e.lngLat.lng);
     }
 
     // Single click: behavior depends on platform.
     // Desktop: pin/unpin destination. Mobile: routes by interactionMode —
     // 'origin' sets the source, 'dest' pins (or repins) the destination.
-    async function onClick(e: L.LeafletMouseEvent) {
+    async function onClick(e: MapMouseEvent) {
       const s = stateRef.current;
+      const { lat, lng } = e.lngLat;
 
       if (s.loadingState !== 'ready') {
         // While loading, mobile taps queue an intent. Desktop single-clicks
@@ -389,12 +361,9 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
         // so nothing to queue here.
         if (isMobileRef.current) {
           if (s.interactionMode === 'origin') {
-            dispatch({ type: 'QUEUE_PENDING_SOURCE', latLng: [e.latlng.lat, e.latlng.lng] });
+            dispatch({ type: 'QUEUE_PENDING_SOURCE', latLng: [lat, lng] });
           } else {
-            dispatch({
-              type: 'QUEUE_PENDING_DEST',
-              latLng: [e.latlng.lat, e.latlng.lng],
-            });
+            dispatch({ type: 'QUEUE_PENDING_DEST', latLng: [lat, lng] });
           }
         }
         return;
@@ -402,12 +371,12 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
 
       if (isMobileRef.current) {
         if (s.interactionMode === 'origin') {
-          setSource(e.latlng.lat, e.latlng.lng);
+          setSource(lat, lng);
           return;
         }
         // Dest mode: replace any existing pin with the tapped node. A failed
         // snap clears the pin instead of leaving the previous one behind.
-        const node = await snapToNode(e.latlng.lat, e.latlng.lng);
+        const node = await snapToNode(lat, lng);
         if (node === null) dispatch({ type: 'UNPIN_DESTINATION' });
         else showDestination(node, true);
         return;
@@ -426,7 +395,7 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
         return;
       }
 
-      const node = await snapToNode(e.latlng.lat, e.latlng.lng);
+      const node = await snapToNode(lat, lng);
       if (node !== null) {
         lastPinTime = Date.now();
         showDestination(node, true);
@@ -434,12 +403,12 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
     }
 
     // Hover: show route (desktop, no pinned dest)
-    async function onMouseMove(e: L.LeafletMouseEvent) {
+    async function onMouseMove(e: MapMouseEvent) {
       pointerInMap = true;
       const s = stateRef.current;
       if (!s.travelTimes || s.pinnedDest !== null) return;
 
-      const node = await snapToNode(e.latlng.lat, e.latlng.lng);
+      const node = await snapToNode(e.lngLat.lat, e.lngLat.lng);
       // The cursor may have left the map during the snap round-trip — bail so
       // we don't re-show a hover that onMouseOut has already cleared.
       if (!pointerInMap) return;
@@ -475,132 +444,28 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
       }
     }
 
-    // Push a finished WebGL render onto the shared Leaflet overlay layer. Both
-    // the average view and the per-frame animation draw through this — the GL
-    // canvas is reused, so the overlay just re-points at it and repositions.
-    function applyIsoResult(result: RenderResult) {
-      if (isoOverlayRef.current) {
-        (isoOverlayRef.current as any)._isoCanvas = result.canvas;
-        (isoOverlayRef.current as any)._isoBounds = result.renderBounds;
-        (isoOverlayRef.current as any)._reset();
-        return;
-      }
-      const CanvasLayer = L.Layer.extend({
-        _isoCanvas: result.canvas as HTMLCanvasElement,
-        _isoBounds: result.renderBounds as L.LatLngBounds,
-        onAdd(m: L.Map) {
-          this._map = m;
-          this._zoomAnimated = (m as any)._zoomAnimated;
-          const pane = m.getPane('overlayPane')!;
-          this._isoCanvas.style.position = 'absolute';
-          this._isoCanvas.style.pointerEvents = 'none';
-          if (this._zoomAnimated) {
-            L.DomUtil.addClass(this._isoCanvas, 'leaflet-zoom-animated');
-          }
-          pane.appendChild(this._isoCanvas);
-          this._reset();
-          return this;
-        },
-        onRemove() {
-          this._isoCanvas.remove();
-          return this;
-        },
-        getEvents() {
-          const events: Record<string, (e: any) => void> = {
-            zoom: this._reset,
-            viewreset: this._reset,
-          };
-          if (this._zoomAnimated) {
-            events.zoomanim = this._animateZoom;
-          }
-          return events;
-        },
-        _animateZoom(e: any) {
-          const m: L.Map = this._map;
-          const scale = m.getZoomScale(e.zoom);
-          const offset = (m as any)._latLngBoundsToNewLayerBounds(
-            this._isoBounds,
-            e.zoom,
-            e.center
-          ).min;
-          L.DomUtil.setTransform(this._isoCanvas, offset, scale);
-        },
-        _reset() {
-          const m: L.Map = this._map;
-          if (!m) return;
-          const topLeft = m.latLngToLayerPoint(this._isoBounds.getNorthWest());
-          const bottomRight = m.latLngToLayerPoint(this._isoBounds.getSouthEast());
-          L.DomUtil.setTransform(this._isoCanvas, topLeft, 1);
-          this._isoCanvas.style.width = bottomRight.x - topLeft.x + 'px';
-          this._isoCanvas.style.height = bottomRight.y - topLeft.y + 'px';
-        },
-      });
-      isoOverlayRef.current = new (CanvasLayer as any)().addTo(map);
-    }
-
-    // Re-render the isochrone on map move/zoom. In animation ('frame') mode the
-    // store owns what is on screen, so a viewport change is forwarded to it —
-    // it re-projects the current frame rather than redrawing the average view.
-    function renderIso() {
-      if (animationStore.getMode() === 'frame') {
-        animationStore.rerenderCurrentFrame();
-        return;
-      }
-      const s = stateRef.current;
-      if (!s.travelTimes || !s.nodeCoords || !map) return;
-      if (!glStateRef.current) {
-        glStateRef.current = initWebGL();
-      }
-      if (!glStateRef.current) return;
-      const result = renderIsochrone(
-        glStateRef.current,
-        map,
-        s.travelTimes,
-        s.nodeCoords,
-        s.maxTimeMin * 60,
-        L,
-        s.sampleCounts,
-        s.totalSamples
-      );
-      if (result) applyIsoResult(result);
-    }
-
     // Frame renderer registered with the animation store. The rAF playback
     // loop (and seek/step) call this directly with each departure-time frame,
-    // bypassing React entirely.
+    // bypassing React entirely. The layer copies the frame and asks the map
+    // for a repaint; pan/zoom needs no re-render since the layer draws inside
+    // the map's own frame loop.
     function renderFrame(frame: Uint16Array) {
       const s = stateRef.current;
-      if (!s.nodeCoords || !map) return;
-      // A zoom animation is in progress: Leaflet is CSS-transforming the
-      // existing iso canvas to track the tiles. Re-rendering now would replace
-      // that canvas and reset its transform, desyncing it. Skip — `zoomend`
-      // triggers a forced redraw once the animation settles.
-      if ((map as { _animatingZoom?: boolean })._animatingZoom) return;
-      if (!glStateRef.current) {
-        glStateRef.current = initWebGL();
-      }
-      if (!glStateRef.current) return;
-      const result = renderIsochroneFrame(
-        glStateRef.current,
-        map,
-        frame,
-        s.nodeCoords,
-        s.maxTimeMin * 60,
-        L
-      );
-      if (result) applyIsoResult(result);
+      if (!s.nodeCoords) return;
+      overlays!.iso.setNodes(s.nodeCoords);
+      overlays!.iso.setFrame(frame);
     }
     animationStore.setFrameRenderer(renderFrame);
 
-    // Store render function in ref for external trigger
-    renderIsoRef.current = renderIso;
-
     function onMoveEnd() {
-      renderIso();
       if (stateRef.current.sourceNode === null) return;
-      const c = map.getCenter();
+      const c = map!.getCenter();
       const current = getHashParams();
-      setHashParams({ ...current, zoom: map.getZoom(), center: [c.lat, c.lng] });
+      setHashParams({
+        ...current,
+        zoom: mapToSlippyZoom(map!.getZoom()),
+        center: [c.lat, c.lng],
+      });
     }
 
     map.on('dblclick', onDblClick);
@@ -608,7 +473,6 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
     map.on('mousemove', onMouseMove);
     map.getContainer().addEventListener('mouseleave', onMouseOut);
     map.on('moveend', onMoveEnd);
-    map.on('zoomend', onMoveEnd);
 
     return () => {
       map.off('dblclick', onDblClick);
@@ -616,7 +480,6 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
       map.off('mousemove', onMouseMove);
       map.getContainer().removeEventListener('mouseleave', onMouseOut);
       map.off('moveend', onMoveEnd);
-      map.off('zoomend', onMoveEnd);
       animationStore.setFrameRenderer(null);
     };
   }, [dispatch]);
@@ -626,66 +489,58 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
   // after — users can pan/zoom while the .bin loads.
   useEffect(() => {
     const map = mapRef.current;
+    const overlays = overlaysRef.current;
     const city = state.currentCity;
-    if (!map || !city) return;
+    if (!map || !overlays || !city) return;
 
     const hashParams = getHashParams();
     if (hashParams.center && hashParams.zoom !== undefined) {
-      map.setView(hashParams.center, hashParams.zoom);
+      map.jumpTo({ center: toLngLat(hashParams.center), zoom: slippyToMapZoom(hashParams.zoom) });
     } else {
-      map.setView(city.center, city.zoom);
+      map.jumpTo({ center: toLngLat(city.center), zoom: city.zoom });
     }
 
-    // Draw bounding box
-    if (bboxRectRef.current) bboxRectRef.current.remove();
-    const [minLon, minLat, maxLon, maxLat] = city.bbox;
-    bboxRectRef.current = L.rectangle(
-      [
-        [minLat, minLon],
-        [maxLat, maxLon],
-      ],
-      {
-        color: '#666',
-        weight: 1,
-        fillOpacity: 0,
-        dashArray: '4 6',
-        interactive: false,
-      }
-    ).addTo(map);
+    overlays.setBbox(city.bbox);
 
     // Clean up old overlays
     if (sourceMarkerRef.current) {
       sourceMarkerRef.current.remove();
       sourceMarkerRef.current = null;
     }
-    if (destMarkerRef.current) {
-      destMarkerRef.current.remove();
-      destMarkerRef.current = null;
-    }
-    if (isoOverlayRef.current) {
-      map.removeLayer(isoOverlayRef.current);
-      isoOverlayRef.current = null;
-    }
-    routePolylinesRef.current.forEach((p) => p.remove());
-    routePolylinesRef.current = [];
+    overlays.setDest(null);
+    overlays.clearRoutes();
+    overlays.iso.clear();
     // Only refit on city change. Refitting on every loadingState transition
     // would yank the map back from any panning the user did during load.
   }, [state.currentCity]);
 
-  // Re-render isochrone when travel times or max time changes
-  useEffect(() => {
-    if (!renderIsoRef.current) return;
-    renderIsoRef.current();
-  }, [state.travelTimes, state.maxTimeMin]);
-
-  // When animation exits back to the average view, redraw the 2D average
-  // isochrone — the store has stopped pushing frames. Entering 'frame' mode
-  // needs no action here: the store's enter() pushes the first frame itself.
+  // Feed the isochrone layer. In the average view it draws the query result;
+  // in playback ('frame' mode) the animation store pushes frames through
+  // `renderFrame` instead and this effect only keeps the budget current.
+  // Entering 'frame' mode needs no action here: the store's enter() pushes the
+  // first frame itself.
   const animMode = useAnimMode();
   const animDep = useAnimRenderedDeparture();
   useEffect(() => {
-    if (animMode === 'average') renderIsoRef.current?.();
-  }, [animMode]);
+    const iso = overlaysRef.current?.iso;
+    if (!iso) return;
+    iso.setMaxTime(state.maxTimeMin * 60);
+    if (!state.travelTimes || !state.nodeCoords) {
+      iso.clear();
+      return;
+    }
+    iso.setNodes(state.nodeCoords);
+    if (animMode === 'average') {
+      iso.setAverage(state.travelTimes, state.sampleCounts, state.totalSamples);
+    }
+  }, [
+    state.travelTimes,
+    state.sampleCounts,
+    state.totalSamples,
+    state.nodeCoords,
+    state.maxTimeMin,
+    animMode,
+  ]);
 
   // Keep the route-path resolver current. In average mode the map shows the
   // whole Pareto fan; in playback it shows only the path optimal for the
@@ -704,12 +559,18 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
     return hd.allPaths.filter((p) => p.segments.length > 0);
   };
 
-  // Clear destination marker and routes when unpinned
+  // Destination pin follows pinnedDest: shown when set (including URL
+  // restore), hidden with its routes when unpinned.
   useEffect(() => {
+    const overlays = overlaysRef.current;
+    if (!overlays) return;
     if (state.pinnedDest === null) {
-      clearDestination();
+      overlays.setDest(null);
+      overlays.clearRoutes();
+      return;
     }
-  }, [state.pinnedDest, clearDestination]);
+    overlays.setDest(state.pinnedDest.latLng);
+  }, [state.pinnedDest]);
 
   // Redraw the pinned destination's routes whenever its hover data changes or
   // the animation playhead moves. In playback this swaps the drawn route to
@@ -727,26 +588,8 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
     const { sourceNode, sourceLatLng } = state;
     if (sourceNode === null || !sourceLatLng || !mapRef.current) return;
     if (sourceMarkerRef.current) return;
-    sourceMarkerRef.current = L.marker(sourceLatLng, { title: 'Origin' }).addTo(mapRef.current);
+    sourceMarkerRef.current = makeOriginMarker(sourceLatLng, 'Origin').addTo(mapRef.current);
   }, [state.sourceNode, state.sourceLatLng]);
-
-  // Draw dest marker and routes when pinnedDest is set externally (URL restore)
-  useEffect(() => {
-    const { pinnedDest } = state;
-    if (!pinnedDest || !pinnedDest.hoverData || !mapRef.current) return;
-    if (destMarkerRef.current) return;
-    destMarkerRef.current = L.circleMarker(pinnedDest.latLng, {
-      radius: 6,
-      color: '#fff',
-      fillColor: '#4a90d9',
-      fillOpacity: 1,
-      weight: 2,
-      pane: 'transitLines',
-    }).addTo(mapRef.current);
-    if (drawRouteLayersRef.current) {
-      drawRouteLayersRef.current(resolveRoutePathsRef.current(pinnedDest.hoverData));
-    }
-  }, [state.pinnedDest]);
 
   // Provisional source marker. Visible only while a click is queued during
   // load; removed as soon as a real source marker replaces it (or pending
@@ -762,13 +605,13 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
       return;
     }
     if (provisionalSourceRef.current) {
-      provisionalSourceRef.current.setLatLng(pending.latLng);
+      provisionalSourceRef.current.setLngLat(toLngLat(pending.latLng));
     } else {
-      provisionalSourceRef.current = L.marker(pending.latLng, {
-        opacity: 0.45,
-        title: 'Origin (queued)',
-        interactive: false,
-      }).addTo(mapRef.current);
+      provisionalSourceRef.current = makeOriginMarker(
+        pending.latLng,
+        'Origin (queued)',
+        0.45
+      ).addTo(mapRef.current);
     }
   }, [state.pendingSource, state.sourceNode]);
 

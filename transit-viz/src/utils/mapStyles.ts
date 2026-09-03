@@ -1,65 +1,72 @@
+import type { StyleSpecification } from 'maplibre-gl';
+
 export interface MapStyle {
   label: string;
-  url: string;
-  attribution: string;
-  subdomains?: string;
+  /**
+   * MapLibre style: a style.json URL for CARTO's vector basemaps, or an inline
+   * spec wrapping a raster tile source. Vector styles carry their labels as
+   * separate `symbol` layers, which lets `MapOverlays` slot the isochrone and
+   * route lines *beneath* place and street names.
+   */
+  style: string | StyleSpecification;
 }
 
-const REPO_ATTR =
+export const REPO_ATTR =
   '<a href="https://github.com/wengh/transit-time" target="_blank" rel="noopener">wengh/transit-time</a>';
-const CARTO_ATTR =
-  '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/">CARTO</a> | ' +
-  REPO_ATTR;
-const OSM_ATTR =
-  '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> | ' + REPO_ATTR;
+
+// CARTO's free vector basemaps (Dark Matter / Positron / Voyager). The tile
+// source metadata carries the CARTO + OpenStreetMap attribution, which the
+// map's attribution control picks up automatically.
+const carto = (name: string): string =>
+  `https://basemaps.cartocdn.com/gl/${name}-gl-style/style.json`;
+
+const OSM_ATTR = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>';
+
+function rasterStyle(tiles: string[], attribution: string, maxzoom: number): StyleSpecification {
+  return {
+    version: 8,
+    sources: { raster: { type: 'raster', tiles, tileSize: 256, attribution, maxzoom } },
+    layers: [{ id: 'raster', type: 'raster', source: 'raster' }],
+  };
+}
 
 export const MAP_STYLES: Record<string, MapStyle> = {
   default: {
     label: 'Default (follows system theme)',
-    url: '', // resolved at runtime via resolveMapStyle()
-    attribution: '',
+    style: '', // resolved at runtime via resolveMapStyle()
   },
   dark: {
     label: 'Dark',
-    url: 'https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png',
-    attribution: CARTO_ATTR,
-    subdomains: 'abcd',
+    style: carto('dark-matter-nolabels'),
   },
   'dark-labels': {
     label: 'Dark + Labels',
-    url: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
-    attribution: CARTO_ATTR,
-    subdomains: 'abcd',
+    style: carto('dark-matter'),
   },
   light: {
     label: 'Light',
-    url: 'https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png',
-    attribution: CARTO_ATTR,
-    subdomains: 'abcd',
+    style: carto('positron-nolabels'),
   },
   'light-labels': {
     label: 'Light + Labels',
-    url: 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
-    attribution: CARTO_ATTR,
-    subdomains: 'abcd',
+    style: carto('positron'),
   },
   osm: {
     label: 'OSM Standard',
-    url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
-    attribution: OSM_ATTR,
-    subdomains: 'abc',
+    style: rasterStyle(['https://tile.openstreetmap.org/{z}/{x}/{y}.png'], OSM_ATTR, 19),
   },
   'osm-hot': {
     label: 'OSM Humanitarian',
-    url: 'https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png',
-    attribution: OSM_ATTR,
-    subdomains: 'abc',
+    style: rasterStyle(
+      ['a', 'b', 'c'].map((s) => `https://${s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png`),
+      OSM_ATTR +
+        ', tiles style by <a href="https://www.hotosm.org/">Humanitarian OpenStreetMap Team</a>',
+      19
+    ),
   },
   voyager: {
     label: 'Voyager',
-    url: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
-    attribution: CARTO_ATTR,
-    subdomains: 'abcd',
+    style: carto('voyager'),
   },
 };
 

@@ -29,6 +29,12 @@ export function getHashParams(): HashParams {
     return isFinite(v) ? v : undefined;
   }
 
+  function parseNum(s: string | null): number | undefined {
+    if (!s) return undefined;
+    const v = parseFloat(s);
+    return isFinite(v) ? v : undefined;
+  }
+
   result.src = parseLatLng(p.get('src'));
   result.dst = parseLatLng(p.get('dst'));
   result.center = parseLatLng(p.get('center'));
@@ -40,7 +46,8 @@ export function getHashParams(): HashParams {
   result.dur = parseInt2(p.get('dur'));
   result.maxtime = parseInt2(p.get('maxtime'));
   result.slack = parseInt2(p.get('slack'));
-  result.zoom = parseInt2(p.get('zoom'));
+  // Slippy-map zoom (see utils/zoom.ts); fractional since the map zooms continuously.
+  result.zoom = parseNum(p.get('zoom'));
 
   // Remove undefined keys
   return Object.fromEntries(
@@ -58,7 +65,7 @@ export function setHashParams(params: HashParams): void {
   if (params.dur !== undefined) p.set('dur', String(params.dur));
   if (params.maxtime !== undefined) p.set('maxtime', String(params.maxtime));
   if (params.slack !== undefined) p.set('slack', String(params.slack));
-  if (params.zoom !== undefined) p.set('zoom', String(params.zoom));
+  if (params.zoom !== undefined) p.set('zoom', String(Number(params.zoom.toFixed(2))));
   if (params.center)
     p.set('center', `${params.center[0].toFixed(5)},${params.center[1].toFixed(5)}`);
   history.replaceState(
