@@ -1,0 +1,25 @@
+{
+    "id": "atlanta",
+    "osm_url": "https://download.geofabrik.de/north-america/us/georgia-latest.osm.pbf",
+    "feed_ids": [
+        "https://itsmarta.com/google_transit_feed/google_transit.zip", // MARTA rail + Atlanta Streetcar + bus (same bytes as f-dnh-marta)
+        "f-dn5b-cobbavl", // CobbLinc. Its direct .ashx URL exposes no ETag/Last-Modified, so use Transitland's sha1 check
+        "f-dnh0-gwinnettcountytransit", // Ride Gwinnett (same reason)
+        "f-dnh-grtaxpress" // Xpress commuter buses. Published at a month-dated gamobility.info URL; current version's calendar ends 2026-09-18 and the operator changed to GTEA in 2026-05, so watch for a new URL
+    ],
+    "name": "Atlanta, GA",
+    "file": "atlanta.bin",
+    "bbox": "-84.5600,33.5800,-84.1800,33.9900",
+    "center": [
+        33.755,
+        -84.390
+    ],
+    "zoom": 12,
+    "detail": "MARTA rail, streetcar and bus; CobbLinc, Ride Gwinnett, Xpress",
+    "tags": [
+        "usa",
+        "subway",
+        "tram",
+        "bus"
+    ]
+}

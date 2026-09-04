@@ -1,0 +1,29 @@
+{
+    "id": "kuala_lumpur",
+    // OSM France extract (Malaysia only); geofabrik's equivalent is asia/malaysia-singapore-brunei-latest.osm.pbf.
+    "osm_url": "https://download.openstreetmap.fr/extracts/asia/malaysia-latest.osm.pbf",
+    "feed_ids": [
+        // Official data.gov.my GTFS Static (https://developer.data.gov.my/realtime-api/gtfs-static).
+        // Each URL 301/302s to a dated S3 object; only the api.data.gov.my form is stable.
+        // Direct URLs preferred over Transitland's f-rapid~* / f-ktmb copies, which lag the daily rebuilds.
+        "https://api.data.gov.my/gtfs-static/prasarana?category=rapid-rail-kl", // LRT x4, MRT x2, Monorail, BRT Sunway (frequencies-based)
+        "https://api.data.gov.my/gtfs-static/prasarana?category=rapid-bus-kl", // Rapid KL bus (route B1000 duplicates BRT Sunway from the rail feed; one 7-stop line)
+        "https://api.data.gov.my/gtfs-static/prasarana?category=rapid-bus-mrtfeeder", // MRT feeder buses (T1xx-T8xx), ~monthly rolling calendar
+        "https://api.data.gov.my/gtfs-static/ktmb" // KTM Komuter + ETS (nationwide, clipped by bbox); daily rebuild, ~30-day calendar, no shapes
+    ],
+    "name": "Kuala Lumpur, Malaysia",
+    "file": "kuala_lumpur.bin",
+    "bbox": "101.3800,2.8500,101.9200,3.3500",
+    "center": [
+        3.147,
+        101.695
+    ],
+    "zoom": 12,
+    "detail": "Rapid KL LRT, MRT, Monorail, BRT Sunway, Rapid KL bus, MRT feeder bus, KTM Komuter",
+    "tags": [
+        "malaysia",
+        "subway",
+        "rail",
+        "bus"
+    ]
+}

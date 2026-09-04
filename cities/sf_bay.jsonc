@@ -1,6 +1,8 @@
 {
     "id": "sf_bay",
-    "interline_extract": "san-francisco-bay_california",
+    // Interline OSM Extracts blob storage started returning 404 for every extract in Sep 2026
+    // (was "interline_extract": "san-francisco-bay_california"); geofabrik regional extract instead.
+    "osm_url": "https://download.geofabrik.de/north-america/us/california/norcal-latest.osm.pbf",
     "feed_ids": [
         "f-9q9h-stanford~marguerite", // Stanford Marguerite Shuttle
         "f-presidigo~ca~us", // PresidiGo

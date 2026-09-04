@@ -1,0 +1,28 @@
+{
+    "id": "miami",
+    // BBBike's "Miami" extract only covers the city core (41% of Miami-Dade stops, no Broward),
+    // so use the geofabrik Florida extract with a bbox from Florida City to Deerfield Beach.
+    "osm_url": "https://download.geofabrik.de/north-america/us/florida-latest.osm.pbf",
+    "feed_ids": [
+        "f-dhw-miamidadetransit", // Miami-Dade Transit (Metrorail, Metromover, Metrobus)
+        "f-dhw-browardcountytransit", // Broward County Transit. broward.org's publish URL 404s since ~2025-10, so Transitland can no longer refresh it (last version ends 2026-09-26)
+        "f-dhx-tri~rail", // Tri-Rail (SFRTA)
+        "f-brightline~trails", // Brightline (Miami-Aventura-Fort Lauderdale-Boca Raton stations in bbox). Not f-brightline~fl~us (stale duplicate)
+        "f-miamibeach" // Miami Beach trolleys + water taxi
+    ],
+    "name": "Miami, FL",
+    "file": "miami.bin",
+    "bbox": "-80.5500,25.4000,-80.0300,26.4000",
+    "center": [
+        25.775,
+        -80.200
+    ],
+    "zoom": 11,
+    "detail": "Miami-Dade Metrorail/Metromover/Metrobus, Broward County Transit, Tri-Rail, Brightline, Miami Beach trolleys",
+    "tags": [
+        "usa",
+        "subway",
+        "rail",
+        "bus"
+    ]
+}

@@ -1,0 +1,22 @@
+{
+    "id": "austin",
+    "bbbike_name": "Austin",
+    "feed_ids": [
+        "f-9v6-capitalmetro", // CapMetro (MetroRail Red Line, MetroRapid, bus) via data.texas.gov
+        "f-capital~area~rural~transportation" // CARTS interurban commuter routes
+    ],
+    "name": "Austin, TX",
+    "file": "austin.bin",
+    "bbox": "-97.9900,30.1000,-97.5400,30.7100",
+    "center": [
+        30.270,
+        -97.740
+    ],
+    "zoom": 12,
+    "detail": "CapMetro (MetroRail, MetroRapid, bus), CARTS",
+    "tags": [
+        "usa",
+        "rail",
+        "bus"
+    ]
+}

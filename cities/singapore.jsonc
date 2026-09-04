@@ -1,0 +1,30 @@
+{
+    "id": "singapore",
+    "bbbike_name": "Singapore",
+    "feed_ids": [
+        // LTA publishes no GTFS (DataMall has routes/stops with headway bands only), so every
+        // option is a community conversion with synthetic timetables. This one
+        // (https://github.com/thecrapone/singapore-gtfs-2026, generated 2026-01, Mobility Database
+        // mdb-3051) has the current network: all MRT lines incl. full TEL, LRT, and the 2026 bus
+        // network; MRT trips are synthetic 3-6 min headways, bus times are distance estimates.
+        // No shapes.txt. ~336 MB stored zip, but it is static so it's only downloaded once.
+        // Transitland's f-w21z-lta is a frozen 2021 conversion (no TEL stages 2-5) — avoid.
+        "https://files.mobilitydatabase.org/mdb-3051/latest.zip",
+        "f-ktmb" // KTMB (official data.gov.my); only the Shuttle Tebrau JB Sentral-Woodlands is in bbox
+    ],
+    "name": "Singapore",
+    "file": "singapore.bin",
+    "bbox": "103.6033,1.2385,104.0280,1.4804",
+    "center": [
+        1.350,
+        103.820
+    ],
+    "zoom": 12,
+    "detail": "MRT/LRT, SBS Transit/SMRT/Tower Transit/Go-Ahead buses (community GTFS, synthetic timetables), KTMB Shuttle Tebrau",
+    "tags": [
+        "singapore",
+        "subway",
+        "rail",
+        "bus"
+    ]
+}

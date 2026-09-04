@@ -1,6 +1,8 @@
 {
     "id": "boston",
-    "interline_extract": "boston_massachusetts",
+    // Interline OSM Extracts blob storage started returning 404 for every extract in Sep 2026
+    // (was "interline_extract": "boston_massachusetts"); geofabrik regional extract instead.
+    "osm_url": "https://download.geofabrik.de/north-america/us/massachusetts-latest.osm.pbf",
     "feed_ids": [
         "f-drt-mbta", // MBTA (Subway, Bus, Commuter Rail, Ferry, Silver Line)
         "f-drt3-909983", // Logan Express / Massport

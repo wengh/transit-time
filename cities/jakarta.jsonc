@@ -1,0 +1,33 @@
+{
+    "id": "jakarta",
+    "osm_url": "https://download.geofabrik.de/asia/indonesia/java-latest.osm.pbf",
+    "feed_ids": [
+        // Official Transjakarta feed (BRT + non-BRT + JAK Lingko), frequencies-based, refreshed ~monthly.
+        // Via Transitland because the origin https://gtfs.transjakarta.co.id/files/file_gtfs.zip had an
+        // expired TLS certificate as of 2026-09-01; Transitland's copy is byte-identical.
+        "f-transjakarta~id",
+        // Community rail feeds (CC-BY-SA-4.0) with timetables transcribed from the operators' official
+        // schedules, updated 2026-05. No official GTFS exists for these operators.
+        "https://raw.githubusercontent.com/MuhammadNafishZaldinanda/gtfs-mrt-jakarta/main/gtfs-mrt-jakarta.zip", // MRT Jakarta North-South line
+        "https://raw.githubusercontent.com/MuhammadNafishZaldinanda/gtfs-lrt-jakarta/main/gtfs-lrt-jakarta.zip", // LRT Jakarta Lin Selatan
+        "https://raw.githubusercontent.com/MuhammadNafishZaldinanda/gtfs-lrt-jabodebek/main/gtfs-lrt-jabodebek.zip", // LRT Jabodebek (KAI) Bekasi + Cibubur lines
+        // The only KRL Commuterline feed in existence: unofficial, single every-day service, 2025 calendar
+        // (the stale policy extends it), no shapes. Rough approximation of the busiest rail system here.
+        "https://raw.githubusercontent.com/drestanto/gtfs-transum-jkt-unoff/main/gtfs_krl_jkt.zip"
+    ],
+    "name": "Jakarta, Indonesia",
+    "file": "jakarta.bin",
+    "bbox": "106.6200,-6.4200,107.0300,-6.0700",
+    "center": [
+        -6.200,
+        106.830
+    ],
+    "zoom": 12,
+    "detail": "Transjakarta BRT and JAK Lingko, MRT Jakarta, LRT Jakarta, LRT Jabodebek, KRL Commuterline (unofficial)",
+    "tags": [
+        "indonesia",
+        "subway",
+        "rail",
+        "bus"
+    ]
+}

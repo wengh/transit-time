@@ -1,0 +1,28 @@
+{
+    "id": "amsterdam",
+    "bbbike_name": "Amsterdam",
+    "feed_ids": [
+        // OVapi nationwide Netherlands feed (converted from the official NDOV open data), rebuilt daily.
+        // GVB does not publish its own GTFS and Transitland has no GVB-only feed, so the ~210 MB
+        // national file is the only source; everything outside the bbox is clipped away.
+        // Same bytes as Transitland f-u-nl. Rolling ~3-month calendar.
+        "http://gtfs.ovapi.nl/gtfs-nl.zip"
+    ],
+    "name": "Amsterdam, Netherlands",
+    "file": "amsterdam.bin",
+    "bbox": "4.5350,52.2050,5.2110,52.5250",
+    "center": [
+        52.370,
+        4.900
+    ],
+    "zoom": 12,
+    "detail": "GVB metro/tram/bus/ferry, NS, Connexxion, EBS, R-net",
+    "tags": [
+        "netherlands",
+        "subway",
+        "rail",
+        "tram",
+        "bus",
+        "ferry"
+    ]
+}

@@ -1,0 +1,30 @@
+{
+    "id": "rome",
+    // OSM France publishes a Lazio-only extract; geofabrik's smallest option is "centro" (4 regions, 383 MB).
+    "osm_url": "https://download.openstreetmap.fr/extracts/europe/italy/lazio-latest.osm.pbf",
+    "feed_ids": [
+        // ATAC + subcontracted city buses (Roma Mobilità open data; 301s to /wp-content/uploads/shared/,
+        // Last-Modified only, regenerated daily). Metro A/B/C and buses. Trams are all suspended for
+        // track works as of 2026 (the feed carries 2BUS/3BUS/8BUS... replacements instead).
+        // Not included anywhere as open GTFS: Metromare (Roma-Lido), Roma-Viterbo, Trenitalia FL lines.
+        "https://romamobilita.it/sites/default/files/rome_static_gtfs.zip",
+        // Cotral regional buses via the BusOne mirror (Mobility Database mdb-3386). Cotral's own host
+        // travel.mob.cotralspa.it:4443 serves a TLS cert for the wrong hostname, and Transitland's
+        // f-cotral~lazio~italia copy has been dead since 2025-07 for the same reason.
+        "https://proxy.busone.app/cotral/gtfs.zip"
+    ],
+    "name": "Rome, Italy",
+    "file": "rome.bin",
+    "bbox": "12.2200,41.7400,12.6500,42.0100",
+    "center": [
+        41.895,
+        12.490
+    ],
+    "zoom": 12,
+    "detail": "ATAC metro A/B/C and buses, Cotral regional buses",
+    "tags": [
+        "italy",
+        "subway",
+        "bus"
+    ]
+}
