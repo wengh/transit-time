@@ -402,13 +402,45 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
       }
     }
 
-    // Hover: show route (desktop, no pinned dest)
-    async function onMouseMove(e: MapMouseEvent) {
+    // Hover: show route (desktop, no pinned dest).
+    //
+    // Single-flight, latest-wins. Mouse events arrive far faster than the
+    // serial router worker can snap a point and build hover data, and the
+    // hover-data build (Pareto paths + display strings) is the expensive
+    // part. Awaiting a snap per event flooded the worker with requests for
+    // nodes the cursor had already left, and every one of them then drew
+    // routes, re-rendered the panel and repainted the map. Now a move only
+    // records the newest pointer position; one job at a time snaps it and,
+    // if it landed on a new node, builds and draws that node. Positions that
+    // arrive while a job runs collapse into a single follow-up job, so the
+    // worker never holds more than one hover request.
+    let hoverTarget: { lat: number; lng: number } | null = null;
+    let hoverJobRunning = false;
+
+    function onMouseMove(e: MapMouseEvent) {
       pointerInMap = true;
       const s = stateRef.current;
       if (!s.travelTimes || s.pinnedDest !== null) return;
+      hoverTarget = { lat: e.lngLat.lat, lng: e.lngLat.lng };
+      void pumpHover();
+    }
 
-      const node = await snapToNode(e.lngLat.lat, e.lngLat.lng);
+    async function pumpHover() {
+      if (hoverJobRunning) return;
+      hoverJobRunning = true;
+      try {
+        while (hoverTarget) {
+          const { lat, lng } = hoverTarget;
+          hoverTarget = null;
+          await hoverAt(lat, lng);
+        }
+      } finally {
+        hoverJobRunning = false;
+      }
+    }
+
+    async function hoverAt(lat: number, lng: number) {
+      const node = await snapToNode(lat, lng);
       // The cursor may have left the map during the snap round-trip — bail so
       // we don't re-show a hover that onMouseOut has already cleared.
       if (!pointerInMap) return;
@@ -424,11 +456,14 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
       }
       if (node === lastHoveredNodeRef.current) return;
       lastHoveredNodeRef.current = node;
-      showDestination(node, false);
+      // Awaited on purpose: the hover-data build must finish before the next
+      // pointer position is processed, or requests pile up in the worker.
+      await showDestination(node, false);
     }
 
     function onMouseOut(e: MouseEvent) {
       pointerInMap = false;
+      hoverTarget = null;
       // Moving onto our own HoverInfo panel is not "leaving onto another GUI
       // element" — it's the panel showing this very hover. Clearing there
       // causes a flicker loop: snapping a destination grows the panel under
