@@ -10,7 +10,8 @@ import { IsochroneLayer } from './isochroneLayer';
 // Layer order (bottom → top):
 //   basemap land/roads → isochrone → city bbox → route lines → basemap labels
 //   → transfer dots → destination pin
-// Anything below the first `symbol` layer is under the labels, which is the
+// Anything above the last geometry layer but below the label layers that
+// follow it is under the labels, which is the
 // whole point of a vector basemap here: street and place names stay legible
 // over the colour wash and the route lines. Point markers go above labels so
 // a label never hides a pin. Raster styles have no symbol layers, so there
@@ -52,7 +53,16 @@ export class MapOverlays {
     const map = this.map;
     if (map.getLayer(this.iso.id)) return;
 
-    const firstSymbol = map.getStyle().layers.find((l) => l.type === 'symbol')?.id;
+    // Insert above every geometry layer (roads, buildings, boundaries) and
+    // below the labels that follow them. "First symbol layer" is not enough:
+    // Positron and Voyager place `waterway_label` *below* their road layers,
+    // so anchoring there buried the isochrone and routes under the streets.
+    const layers = map.getStyle().layers;
+    let lastGeometry = -1;
+    layers.forEach((l, i) => {
+      if (l.type !== 'symbol') lastGeometry = i;
+    });
+    const firstSymbol = layers[lastGeometry + 1]?.id;
 
     const addSource = (id: string, data: FeatureCollection) => {
       if (!map.getSource(id)) map.addSource(id, { type: 'geojson', data });

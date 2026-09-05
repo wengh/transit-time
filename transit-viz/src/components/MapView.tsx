@@ -8,7 +8,7 @@ import { deriveDisplayPath } from './HoverInfo';
 import { ROUTE_COLORS } from '../utils/colors';
 import { getHashParams, setHashParams } from '../utils/urlHash';
 import { buildHoverData } from '../utils/hoverInfo';
-import { resolveMapStyle, REPO_ATTR, type MapStyle } from '../utils/mapStyles';
+import { resolveMapStyle, tuneStyleForZoomOut, REPO_ATTR, type MapStyle } from '../utils/mapStyles';
 import { MapOverlays, toLngLat, type PointFeature, type RouteFeature } from '../utils/mapOverlays';
 import { mapToSlippyZoom, slippyToMapZoom } from '../utils/zoom';
 import { useIsMobile } from '../utils/useIsMobile';
@@ -100,7 +100,6 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
     const initialStyle = resolveMapStyle(stateRef.current.mapStyle);
     const map = new MapLibreMap({
       container: mapContainerRef.current,
-      style: initialStyle.style,
       center: [-90, 40],
       zoom: slippyToMapZoom(4),
       maxZoom: slippyToMapZoom(20),
@@ -124,6 +123,11 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
     // a style swap discards all layers.
     const overlays = new MapOverlays(map);
     map.on('style.load', () => overlays.install());
+    // The style goes through setStyle (not the constructor) so the zoom-out
+    // detail tweak applies to the initial load too.
+    map.setStyle(initialStyle.style, {
+      transformStyle: (_prev, next) => tuneStyleForZoomOut(next),
+    });
 
     mapRef.current = map;
     overlaysRef.current = overlays;
@@ -146,7 +150,10 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
       appliedStyleRef.current = style;
       // Full swap, no diff: our overlay layers go down with the old style and
       // come back via the `style.load` handler.
-      map!.setStyle(style.style, { diff: false });
+      map!.setStyle(style.style, {
+        diff: false,
+        transformStyle: (_prev, next) => tuneStyleForZoomOut(next),
+      });
     }
 
     applyStyle();
@@ -183,16 +190,22 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
       const seenTransfers = new Set<string>();
       for (const { segments } of allPaths) {
         for (const seg of segments) {
-          if (seg.coords.length < 2) continue;
+          // Flat [lat, lon, …]; a segment needs at least two points.
+          if (seg.coords.length < 4) continue;
           let color: string;
           let coords = seg.coords;
           if (seg.edgeType === 0) {
             // Normalize walk segment direction so the dedup key collapses
             // walks traversing the same edge in either direction.
-            const first = coords[0],
-              last = coords[coords.length - 1];
-            if (first[0] > last[0] || (first[0] === last[0] && first[1] > last[1])) {
-              coords = [...coords].reverse();
+            const n = coords.length;
+            const [fLat, fLon, lLat, lLon] = [coords[0], coords[1], coords[n - 2], coords[n - 1]];
+            if (fLat > lLat || (fLat === lLat && fLon > lLon)) {
+              const rev = new Float32Array(n);
+              for (let i = 0; i < n; i += 2) {
+                rev[i] = coords[n - 2 - i];
+                rev[i + 1] = coords[n - 1 - i];
+              }
+              coords = rev;
             }
             color = '#888';
           } else {
@@ -211,16 +224,17 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
             }
             color = routeColorMap[seg.routeName];
           }
-          const a = coords[0];
-          const b = coords[coords.length - 1];
+          const n = coords.length;
           const routeKey = seg.edgeType === 0 ? '' : seg.routeIdx;
-          const segKey = `${seg.edgeType}|${routeKey}|${a[0]},${a[1]}|${b[0]},${b[1]}|${coords.length}`;
+          const segKey = `${seg.edgeType}|${routeKey}|${coords[0]},${coords[1]}|${coords[n - 2]},${coords[n - 1]}|${n}`;
           if (!seenSegments.has(segKey)) {
             seenSegments.add(segKey);
+            const lngLats: [number, number][] = new Array(n / 2);
+            for (let i = 0; i < n; i += 2) lngLats[i / 2] = [coords[i + 1], coords[i]];
             lines.push({
               type: 'Feature',
               properties: { kind: seg.edgeType === 0 ? 'walk' : 'transit', color },
-              geometry: { type: 'LineString', coordinates: coords.map(toLngLat) },
+              geometry: { type: 'LineString', coordinates: lngLats },
             });
           }
           // Add a dot at the end of transit segments to mark transfers
@@ -416,11 +430,18 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
     // worker never holds more than one hover request.
     let hoverTarget: { lat: number; lng: number } | null = null;
     let hoverJobRunning = false;
+    /** Last pointer position in container pixels, to re-hover after a pan. */
+    let lastPointerPoint: { x: number; y: number } | null = null;
 
     function onMouseMove(e: MapMouseEvent) {
       pointerInMap = true;
+      lastPointerPoint = { x: e.point.x, y: e.point.y };
       const s = stateRef.current;
       if (!s.travelTimes || s.pinnedDest !== null) return;
+      // MapLibre fires mousemove throughout a drag-pan. The user is panning,
+      // not pointing, and a hover-data stall mid-pan is what reads as lag —
+      // so wait for the camera to settle (see onMoveEnd).
+      if (map!.isMoving()) return;
       hoverTarget = { lat: e.lngLat.lat, lng: e.lngLat.lng };
       void pumpHover();
     }
@@ -493,7 +514,14 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
     animationStore.setFrameRenderer(renderFrame);
 
     function onMoveEnd() {
-      if (stateRef.current.sourceNode === null) return;
+      // Camera settled: hover whatever is now under the (stationary) pointer.
+      const s = stateRef.current;
+      if (pointerInMap && lastPointerPoint && s.travelTimes && s.pinnedDest === null) {
+        const ll = map!.unproject([lastPointerPoint.x, lastPointerPoint.y]);
+        hoverTarget = { lat: ll.lat, lng: ll.lng };
+        void pumpHover();
+      }
+      if (s.sourceNode === null) return;
       const c = map!.getCenter();
       const current = getHashParams();
       setHashParams({

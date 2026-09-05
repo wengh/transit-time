@@ -209,34 +209,46 @@ interface RustPathView {
   dominantRouteColorHex: string | null;
 }
 
+// Segment shapes for the current profile, keyed by route + node sequence.
+// A hover response used to carry every path's shape as fresh nested
+// `[lat, lon]` arrays — dozens of paths sharing the same trunk segments — and
+// building plus structured-cloning that took 100–300 ms per hover. Shapes are
+// now flat `Float32Array`s (a memcpy to clone) and identical segments across
+// paths point at the *same* array, which the structured clone serialises
+// once. The cache lives as long as the profile: the same source produces the
+// same trunk segments hover after hover.
+let shapeCache = new Map<string, Float32Array>();
+
+function segmentShape(kind: 'walk' | 'transit', routeIndex: number | null, nodeSequence: number[]) {
+  const key = (kind === 'transit' ? routeIndex : 'w') + ':' + nodeSequence.join(',');
+  let shape = shapeCache.get(key);
+  if (!shape) {
+    shape = router!.segment_shape(
+      kind === 'transit' ? (routeIndex ?? undefined) : undefined,
+      new Uint32Array(nodeSequence)
+    );
+    shapeCache.set(key, shape);
+  }
+  return shape;
+}
+
 function handleGetHoverData(node: number) {
   if (!router || !profile) return { paths: [], representativeIndex: null };
   if ((profile as any).__wbg_ptr === 0) return { paths: [], representativeIndex: null };
   const json = profile.optimal_paths(router, node);
   const data: { paths: RustPathView[]; representativeIndex: number | null } = JSON.parse(json);
   const paths = data.paths.map((p) => {
-    const segments = p.segments.map((seg) => {
-      const nodes = new Uint32Array(seg.nodeSequence);
-      const flat = router!.segment_shape(
-        seg.kind === 'transit' ? (seg.routeIndex ?? undefined) : undefined,
-        nodes
-      );
-      const coords: Array<[number, number]> = [];
-      for (let i = 0; i + 1 < flat.length; i += 2) {
-        coords.push([flat[i], flat[i + 1]]);
-      }
-      return {
-        edgeType: seg.kind === 'transit' ? 1 : 0,
-        routeIdx: seg.routeIndex ?? 0xffffffff,
-        routeName: seg.routeName ?? '',
-        startStopName: seg.startStopName,
-        endStopName: seg.endStopName,
-        endNodeIdx: seg.nodeSequence[seg.nodeSequence.length - 1] ?? -1,
-        duration: seg.endTime - seg.startTime,
-        waitTime: seg.waitTime,
-        coords,
-      };
-    });
+    const segments = p.segments.map((seg) => ({
+      edgeType: seg.kind === 'transit' ? 1 : 0,
+      routeIdx: seg.routeIndex ?? 0xffffffff,
+      routeName: seg.routeName ?? '',
+      startStopName: seg.startStopName,
+      endStopName: seg.endStopName,
+      endNodeIdx: seg.nodeSequence[seg.nodeSequence.length - 1] ?? -1,
+      duration: seg.endTime - seg.startTime,
+      waitTime: seg.waitTime,
+      coords: segmentShape(seg.kind, seg.routeIndex, seg.nodeSequence),
+    }));
     return {
       segments,
       totalTime: p.totalTime,
@@ -263,6 +275,7 @@ function handleTravelTimesAt(departure: number): Uint16Array {
 }
 
 function freeCurrentProfile() {
+  shapeCache = new Map();
   if (!profile) return;
   try {
     profile.free();

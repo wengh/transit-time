@@ -19,7 +19,8 @@ export interface PathSegment {
   endNodeIdx: number;
   duration: number;
   waitTime: number;
-  coords: Array<[number, number]>;
+  /** Shape as flat `[lat, lon, lat, lon, …]`. Shared between paths that traverse the same segment. */
+  coords: Float32Array;
 }
 
 export interface QueryResult {
