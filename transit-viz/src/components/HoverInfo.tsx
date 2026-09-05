@@ -4,6 +4,7 @@ import type { HoverPath } from '../utils/router';
 import { currentDest, type HoverData } from '../state/reducer';
 import { getMedianPath } from '../utils/hoverInfo';
 import { formatTime } from '../utils/format';
+import { formatDistance, haversineKm } from '../utils/geo';
 import {
   animationStore,
   useAnimMode,
@@ -529,22 +530,35 @@ export function deriveDisplayPath(
   return idx !== null && allPaths[idx] ? { ...allPaths[idx] } : null;
 }
 
+/**
+ * One-line summary above the chart, e.g. `avg 24 min / 100% reachable / 10 km`.
+ * `distanceKm` is the straight-line origin→destination distance (null if unknown).
+ */
 export function deriveTitleText(
   hoverData: HoverData,
   departureTime: number | null,
-  displayPath: HoverPath | null
+  displayPath: HoverPath | null,
+  distanceKm: number | null = null
 ): string {
+  const parts: string[] = [];
   if (departureTime !== null) {
     if (displayPath?.totalTime != null) {
       const depStr = formatTime(displayPath.departureTime);
-      return `Travel time: ${Math.round(displayPath.totalTime / 60)} min  (depart ${depStr})`;
+      parts.push(`${Math.round(displayPath.totalTime / 60)} min (depart ${depStr})`);
+    } else {
+      parts.push('Unreachable');
     }
-    return 'Unreachable';
+  } else {
+    const avgSec = hoverData.avgTravelTime;
+    const frac = hoverData.reachableFraction ?? 0;
+    if (avgSec === null || frac <= 0) {
+      parts.push('Unreachable');
+    } else {
+      parts.push(`avg ${Math.round(avgSec / 60)} min`, `${Math.round(frac * 100)}% reachable`);
+    }
   }
-  const avgSec = hoverData.avgTravelTime;
-  const frac = hoverData.reachableFraction ?? 0;
-  if (avgSec === null || frac <= 0) return 'Unreachable';
-  return `Avg travel time: ${Math.round(avgSec / 60)} min (${Math.round(frac * 100)}% reachable)`;
+  if (distanceKm !== null) parts.push(formatDistance(distanceKm));
+  return parts.join(' / ');
 }
 
 interface TripChartProps {
@@ -801,7 +815,10 @@ export default function HoverInfo({ isFront, onActivate }: HoverInfoProps): Reac
     state.windowEnd,
     state.maxTimeMin * 60
   );
-  const titleText = deriveTitleText(hoverData, departureTime, displayPath);
+  const dest = currentDest(state);
+  const distanceKm =
+    dest && state.sourceLatLng ? haversineKm(state.sourceLatLng, dest.latLng) : null;
+  const titleText = deriveTitleText(hoverData, departureTime, displayPath, distanceKm);
 
   return (
     <div

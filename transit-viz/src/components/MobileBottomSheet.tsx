@@ -3,6 +3,7 @@ import { useAppState } from '../state/AppContext';
 import { useAnimMode, useAnimReady, useAnimRenderedDeparture } from '../state/animationStore';
 import PathSegmentList from './PathSegmentList';
 import { TripChart, ChartPlaybackControls, deriveDisplayPath, deriveTitleText } from './HoverInfo';
+import { haversineKm } from '../utils/geo';
 
 // Bottom info strip + expandable drawer. Only renders when a destination is
 // pinned (mobile has no hover, so the pinned destination is the only source
@@ -51,7 +52,11 @@ export default function MobileBottomSheet(): React.ReactNode {
     state.windowEnd,
     state.maxTimeMin * 60
   );
-  const titleText = deriveTitleText(pinnedHoverData, departureTime, displayPath);
+  const distanceKm =
+    state.pinnedDest && state.sourceLatLng
+      ? haversineKm(state.sourceLatLng, state.pinnedDest.latLng)
+      : null;
+  const titleText = deriveTitleText(pinnedHoverData, departureTime, displayPath, distanceKm);
 
   function toggle() {
     setExpanded((v) => !v);

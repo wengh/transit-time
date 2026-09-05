@@ -11,6 +11,7 @@ import MobileTopBar from './components/MobileTopBar';
 import MobileBottomSheet from './components/MobileBottomSheet';
 import MobileSettingsSheet from './components/MobileSettingsSheet';
 import { useIsMobile } from './utils/useIsMobile';
+import { formatDistance, haversineKm } from './utils/geo';
 import { loadCity } from './utils/cityLoader';
 import { getCityFromUrl } from './cities';
 import { runQuery, snapToNode } from './utils/router';
@@ -259,13 +260,15 @@ function AppInner() {
       lines.push('');
       const { allPaths, avgTravelTime, reachableFraction } = pinnedHoverData;
       if (avgTravelTime !== null) {
-        const avgMin = Math.round(avgTravelTime / 60);
+        // Same shape as the panel title: `avg 24 min / 100% reachable / 10 km`.
+        const parts = [`avg ${Math.round(avgTravelTime / 60)} min`];
         if (reachableFraction !== null) {
-          const pct = Math.round(reachableFraction * 100);
-          lines.push(`Avg travel time: ${avgMin} min (${pct}% reachable)`);
-        } else {
-          lines.push(`Travel time: ${avgMin} min`);
+          parts.push(`${Math.round(reachableFraction * 100)}% reachable`);
         }
+        if (s.sourceLatLng && s.pinnedDest) {
+          parts.push(formatDistance(haversineKm(s.sourceLatLng, s.pinnedDest.latLng)));
+        }
+        lines.push(parts.join(' / '));
       }
       // Add median path details
       const medianPath = getMedianPath(allPaths);
