@@ -986,27 +986,30 @@ impl ProfileRouting {
                 let max_arrival = query.window_start + home_departure_delta as u32 + query.max_time;
                 let min_departure_time =
                     query.window_start + arrival_delta as u32 + query.transfer_slack;
-                let mut max_departure_time = query.window_end + query.max_time;
-
-                let next_min_departure_time = if let Some(next_entry) = frontier.head_next(node_id)
-                {
+                // Inclusive upper bound on boarding time. Every bound below is
+                // independently valid, so take the minimum of all that apply:
+                // a boarding must arrive within budget (`max_arrival`), and
+                // anything boardable from an entry with a later home
+                // departure (the next chain entry) or from the walk-only path
+                // (already enumerated in Phase 1 with a home departure >= this
+                // round's) is dominated.
+                let mut max_departure_time = (query.window_end + query.max_time).min(max_arrival);
+                if let Some(next_entry) = frontier.head_next(node_id) {
                     // This might cause repeated relaxation for the same transit leg
                     // For example maybe we already finalized a transit ride A -> B -> C boarding on A arriving to B at time 100
                     // but then we find a new walk route to B with arrival time 90, allowing us to board the same vehicle for the B -> C ride
                     // but the arrival at C will be dominated by the existing entry from A -> B -> C since the new walk route has earlier departure
                     // so this will be a bit of wasted effort but harmless.
-                    Some(
-                        query.window_start + next_entry.arrival_delta as u32 + query.transfer_slack,
-                    )
-                } else if let Some(walk_time) = index.walk_time(node_id) {
-                    Some(query.window_start + home_departure_delta as u32 + walk_time as u32)
-                } else {
-                    None
-                };
-                if let Some(next_min_departure_time) = next_min_departure_time {
-                    max_departure_time = next_min_departure_time
-                        .saturating_sub(1)
-                        .min(max_departure_time);
+                    let next_min_departure_time =
+                        query.window_start + next_entry.arrival_delta as u32 + query.transfer_slack;
+                    max_departure_time =
+                        max_departure_time.min(next_min_departure_time.saturating_sub(1));
+                }
+                if let Some(walk_time) = index.walk_time(node_id) {
+                    let walk_arrival_time =
+                        query.window_start + home_departure_delta as u32 + walk_time as u32;
+                    max_departure_time =
+                        max_departure_time.min(walk_arrival_time.saturating_sub(1));
                 }
                 if min_departure_time > max_departure_time {
                     continue;
@@ -1016,7 +1019,7 @@ impl ProfileRouting {
                     ExpandTransitLegQuery {
                         node: node_id,
                         min_departure: min_departure_time,
-                        max_departure: max_departure_time.min(max_arrival),
+                        max_departure: max_departure_time,
                         max_arrival,
                         expand_headways: false,
                     },
