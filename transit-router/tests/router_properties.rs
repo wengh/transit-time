@@ -68,8 +68,8 @@ fn determinism_isochrone_and_entries() {
     }
 }
 
-// Phase 2 processes initial entries in descending home_departure order
-// (profile.rs ~line 855), so for any node the chain's home_departure values
+// Phase 2 of `ProfileRouting::compute_with_index` processes initial entries
+// in descending home_departure order, so for any node the chain's home_departure values
 // are strictly decreasing as new entries push to head. Combined with the
 // relax invariant `a_new < best.a`, the chain is strict-Pareto: walking from
 // head outward, both home_departure and arrival strictly increase.

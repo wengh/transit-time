@@ -1,6 +1,8 @@
 /// Smoke harness for profile routing. Prints load timings and isochrone stats.
 /// Usage:
 ///   cargo run --release --bin benchmark_smoke -- <city.bin> <src_lat> <src_lon> [YYYYMMDD] [window_start_hhmm] [window_minutes] [max_min] [slack_s] [repeats]
+///
+/// The `.bin` may be gzip-compressed (as the published fixtures are).
 use std::ops::ControlFlow;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -17,7 +19,7 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 4 {
         eprintln!(
-            "Usage: {} <city.bin> <src_lat> <src_lon> [YYYYMMDD] [window_start_hhmm] [window_minutes] [max_min] [slack_s]",
+            "Usage: {} <city.bin> <src_lat> <src_lon> [YYYYMMDD] [window_start_hhmm] [window_minutes] [max_min] [slack_s] [repeats]",
             args[0]
         );
         std::process::exit(1);
@@ -38,23 +40,12 @@ fn main() {
 
     println!("Loading {:?} ...", bin_path);
     let raw = std::fs::read(&bin_path).expect("read city binary");
-    let decompressed;
-    let buf: &[u8] = if raw.starts_with(&[0x1f, 0x8b]) {
-        let out = std::process::Command::new("gzip")
-            .args(["-d", "-c", bin_path.to_str().unwrap()])
-            .output()
-            .expect("gzip");
-        assert!(out.status.success(), "gzip failed");
-        decompressed = out.stdout;
-        &decompressed[..]
-    } else {
-        &raw[..]
-    };
+    let buf = transit_router::load_maybe_gzipped(&raw).expect("gunzip city binary");
     // `load_with_stats` so we print the per-section breakdown the README's
     // perf table cites. Then hand the decoded data to `Router::from_prepared`
     // instead of re-decoding via `Router::from_bytes`.
     let (prepared, load_stats) =
-        transit_router::data::load_with_stats(buf).expect("load with stats");
+        transit_router::data::load_with_stats(&buf).expect("load with stats");
     println!();
     load_stats.print();
 
@@ -150,37 +141,19 @@ fn main() {
 
     println!("{}", iso.stats());
 
-    // Scrub sweep. Pass 1 starts cold; pass 1 also snapshots each frame so
-    // every later pass can cross-check. "cold"/"warm" labels refer to the
-    // cursor cache; "alloc"/"reuse" to the output buffer.
+    // Scrub sweep. The per-node cursor cache lives inside the `Isochrone`,
+    // so only the very first pass over the window is cold — run the
+    // production hot path (`travel_times_at_into`) cold, then compare the
+    // reuse and allocating variants warm. Pass 1 snapshots each frame so
+    // every later pass can cross-check. "cold"/"warm" refer to the cursor
+    // cache; "alloc"/"reuse" to the output buffer.
     {
         let step = SCRUB_STEP_SECS;
         let n_steps = (window_minutes * 60 / step).max(1);
-        let mut alloc_cold_times = Vec::with_capacity(n_steps as usize);
-        let mut alloc_warm_times = Vec::with_capacity(n_steps as usize);
         let mut reuse_cold_times = Vec::with_capacity(n_steps as usize);
         let mut reuse_warm_times = Vec::with_capacity(n_steps as usize);
+        let mut alloc_warm_times = Vec::with_capacity(n_steps as usize);
         let mut frames_cold: Vec<Vec<u16>> = Vec::with_capacity(n_steps as usize);
-
-        let t_alloc_cold0 = Instant::now();
-        for k in 0..n_steps {
-            let dep = SinceMidnight::from_seconds(window_start + k * step);
-            let t0 = Instant::now();
-            let frame = iso.travel_times_at(dep);
-            alloc_cold_times.push(t0.elapsed());
-            frames_cold.push(frame);
-        }
-        let alloc_cold_total = t_alloc_cold0.elapsed();
-
-        let t_alloc_warm0 = Instant::now();
-        for k in 0..n_steps {
-            let dep = SinceMidnight::from_seconds(window_start + k * step);
-            let t0 = Instant::now();
-            let frame = iso.travel_times_at(dep);
-            alloc_warm_times.push(t0.elapsed());
-            assert_eq!(frame, frames_cold[k as usize], "alloc-warm mismatch at {k}");
-        }
-        let alloc_warm_total = t_alloc_warm0.elapsed();
 
         let mut scratch = vec![0u16; iso.num_nodes()];
 
@@ -190,10 +163,7 @@ fn main() {
             let t0 = Instant::now();
             iso.travel_times_at_into(dep, &mut scratch);
             reuse_cold_times.push(t0.elapsed());
-            debug_assert_eq!(
-                scratch, frames_cold[k as usize],
-                "reuse-cold mismatch at {k}"
-            );
+            frames_cold.push(scratch.clone());
         }
         let reuse_cold_total = t_reuse_cold0.elapsed();
 
@@ -210,6 +180,16 @@ fn main() {
         }
         let reuse_warm_total = t_reuse_warm0.elapsed();
 
+        let t_alloc_warm0 = Instant::now();
+        for k in 0..n_steps {
+            let dep = SinceMidnight::from_seconds(window_start + k * step);
+            let t0 = Instant::now();
+            let frame = iso.travel_times_at(dep);
+            alloc_warm_times.push(t0.elapsed());
+            assert_eq!(frame, frames_cold[k as usize], "alloc-warm mismatch at {k}");
+        }
+        let alloc_warm_total = t_alloc_warm0.elapsed();
+
         let summarise = |label: &str, total: Duration, per: &[Duration]| {
             let avg = total / per.len() as u32;
             let min = *per.iter().min().unwrap();
@@ -224,13 +204,12 @@ fn main() {
             );
         };
         println!();
-        summarise("alloc-cold", alloc_cold_total, &alloc_cold_times);
-        summarise("alloc-warm", alloc_warm_total, &alloc_warm_times);
         summarise("reuse-cold", reuse_cold_total, &reuse_cold_times);
         summarise("reuse-warm", reuse_warm_total, &reuse_warm_times);
+        summarise("alloc-warm", alloc_warm_total, &alloc_warm_times);
         println!(
-            "Scrub sweep alloc→reuse savings: cold {:.2}×, warm {:.2}×",
-            alloc_cold_total.as_secs_f64() / reuse_cold_total.as_secs_f64().max(1e-9),
+            "Scrub sweep cold→warm (reuse): {:.2}×; alloc→reuse (warm): {:.2}×",
+            reuse_cold_total.as_secs_f64() / reuse_warm_total.as_secs_f64().max(1e-9),
             alloc_warm_total.as_secs_f64() / reuse_warm_total.as_secs_f64().max(1e-9),
         );
     }

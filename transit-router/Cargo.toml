@@ -11,10 +11,10 @@ serde = { workspace = true }
 rayon = "1.10"
 radix-heap = "0.4.2"
 chrono = { version = "0.4", default-features = false }
+flate2 = "1"
 
 [dev-dependencies]
 transit-prep = { path = "../transit-prep" }
-flate2 = "1"
 rand = "0.9"
 rand_xoshiro = "0.7"
 chrono = { version = "0.4", features = ["clock"] }

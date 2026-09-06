@@ -10,6 +10,19 @@ pub use api::{
 };
 pub use profile::{Path, PathSegment, SegmentKind};
 
+/// Decode a city `.bin` payload that may or may not be gzip-compressed (the
+/// published fixtures are; freshly built ones need not be). Returns the raw
+/// bytes to hand to [`Router::from_bytes`] / [`data::load`].
+pub fn load_maybe_gzipped(raw: &[u8]) -> std::io::Result<Vec<u8>> {
+    if raw.starts_with(&[0x1f, 0x8b]) {
+        let mut out = Vec::new();
+        std::io::Read::read_to_end(&mut flate2::read::GzDecoder::new(raw), &mut out)?;
+        Ok(out)
+    } else {
+        Ok(raw.to_vec())
+    }
+}
+
 use rayon::iter::IntoParallelIterator;
 use rayon::prelude::*;
 

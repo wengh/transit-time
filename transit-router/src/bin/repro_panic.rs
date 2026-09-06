@@ -1,9 +1,15 @@
 /// Loads a city binary, runs profile routing from a fixed origin, then
-/// reconstructs paths to every reachable destination. Intended to surface
-/// the path-reconstruction panic the user reported on a Chicago build that
-/// was preprocessed with the new deg-2 collapse.
+/// reconstructs paths to every reachable destination, reporting any that
+/// panic. Intended to surface path-reconstruction panics. The origin is
+/// hard-coded to a spot in Hong Kong (Tsim Sha Tsui) over a 27 h window on
+/// 2026-05-09, so pass `hong_kong.bin`; for other cities the snapped source
+/// will be arbitrary.
 ///
-/// Usage: cargo run --release --bin repro_panic -- <city.bin>
+/// Usage: cargo run --release --bin repro_panic -- <city.bin> [destination_node]
+///
+/// With a destination node, only that node's paths are reconstructed (no
+/// panic is caught), which is handy under a debugger. The `.bin` may be
+/// gzip-compressed.
 use rayon::prelude::*;
 use std::ops::ControlFlow;
 use std::path::PathBuf;
@@ -23,20 +29,9 @@ fn main() {
             .expect("usage: repro_panic <city.bin>"),
     );
     let raw = std::fs::read(&bin).expect("read");
-    let decompressed;
-    let bytes: &[u8] = if raw.starts_with(&[0x1f, 0x8b]) {
-        let out = std::process::Command::new("gzip")
-            .args(["-d", "-c", bin.to_str().unwrap()])
-            .output()
-            .expect("gzip");
-        assert!(out.status.success());
-        decompressed = out.stdout;
-        &decompressed[..]
-    } else {
-        &raw[..]
-    };
+    let bytes = transit_router::load_maybe_gzipped(&raw).expect("gunzip");
 
-    let router = Router::from_bytes(bytes).expect("Router::from_bytes");
+    let router = Router::from_bytes(&bytes).expect("Router::from_bytes");
     let source = router.snap(22.29969, 114.18028).expect("snap source");
     let params = IsochroneParams {
         source,

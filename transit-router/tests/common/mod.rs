@@ -3,12 +3,10 @@
 //! source-selection primitives (event-count weights, temperature sampling,
 //! walk-radius node picks) for building diverse but reproducible queries.
 
-use std::io::Read;
 use std::ops::ControlFlow;
 use std::sync::{Arc, OnceLock};
 
 use chrono::{Duration as ChronoDuration, NaiveDate};
-use flate2::read::GzDecoder;
 use rand::{RngCore, SeedableRng};
 use rand_xoshiro::Xoshiro256PlusPlus;
 
@@ -42,21 +40,11 @@ fn run_seed() -> u64 {
 // Fixture & date discovery
 // =============================================================================
 
+/// The fixture's decoded graph. Same `PreparedData` the [`router_fixture`]
+/// serves queries from, so engine-level helpers and public-API queries see
+/// one graph.
 pub fn load_fixture() -> &'static PreparedData {
-    static ONCE: OnceLock<PreparedData> = OnceLock::new();
-    ONCE.get_or_init(|| {
-        let path = fixture_path();
-        let raw = std::fs::read(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
-        let bytes: Vec<u8> = if raw.starts_with(&[0x1f, 0x8b]) {
-            let mut decoder = GzDecoder::new(&raw[..]);
-            let mut out = Vec::new();
-            decoder.read_to_end(&mut out).expect("gunzip fixture");
-            out
-        } else {
-            raw
-        };
-        data::load(&bytes).expect("parse fixture")
-    })
+    router_fixture().data()
 }
 
 /// Date the test queries run against. Defaults to today in local time.
@@ -68,7 +56,7 @@ pub fn test_date() -> NaiveDate {
             let v: u32 = s.parse().unwrap_or_else(|e| {
                 panic!("ROUTER_TEST_DATE={s:?} is not a YYYYMMDD integer: {e}")
             });
-            NaiveDate::from_ymd_opt((v / 10_000) as i32, (v / 100) % 100, v % 100)
+            data::yyyymmdd_to_naive_date_opt(v)
                 .unwrap_or_else(|| panic!("ROUTER_TEST_DATE={s:?} is not a valid calendar date"))
         } else {
             chrono::Local::now().date_naive()
@@ -168,10 +156,10 @@ fn fnv1a(s: &str) -> u64 {
 // Query-construction primitives (general purpose)
 // =============================================================================
 
-/// Per-stop count of events whose absolute time-of-day lies in
-/// `[window_start, window_end]`, restricted to patterns active on `date`.
-/// Frequency-based trips are not counted (the schedule data we want for
-/// busy-stop weighting comes from the discrete events).
+/// Per-stop activity weight for `[window_start, window_end]`, restricted to
+/// patterns active on `date`: the number of scheduled events at the stop
+/// whose absolute time-of-day lies in the window, plus one per
+/// frequency-based leg departing the stop whose service span overlaps it.
 pub fn stop_event_weights(
     data: &PreparedData,
     date: NaiveDate,
@@ -289,23 +277,13 @@ pub fn random_node_within_walk<R: RngCore>(
 // Public-API helpers used by all property tests.
 // ────────────────────────────────────────────────────────────────────────────
 
-/// `&'static Router` over the same fixture as [`load_fixture`]. Re-decodes
-/// the binary so the two fixtures hold independent `PreparedData` (engine
-/// `&'static PreparedData` vs Router's `Arc<PreparedData>`). The bytes are
-/// identical, so the two graphs are observationally indistinguishable.
+/// `&'static Router` over the fixture, decoded once per test process.
 pub fn router_fixture() -> &'static Router {
     static ROUTER: OnceLock<Router> = OnceLock::new();
     ROUTER.get_or_init(|| {
         let path = fixture_path();
         let raw = std::fs::read(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
-        let bytes: Vec<u8> = if raw.starts_with(&[0x1f, 0x8b]) {
-            let mut decoder = GzDecoder::new(&raw[..]);
-            let mut out = Vec::new();
-            decoder.read_to_end(&mut out).expect("gunzip fixture");
-            out
-        } else {
-            raw
-        };
+        let bytes = transit_router::load_maybe_gzipped(&raw).expect("gunzip fixture");
         let data = data::load(&bytes).expect("parse fixture");
         Router::from_prepared(Arc::new(data))
     })
