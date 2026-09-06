@@ -591,6 +591,17 @@ pub fn parse_gtfs(path: &Path, bbox: (f64, f64, f64, f64)) -> Result<GtfsData> {
                     continue;
                 }
             };
+            if headway_secs == 0 {
+                eprintln!(
+                    "WARNING: {feed}: frequencies.txt row {}: headway_secs is 0 — skipping row",
+                    row + 1
+                );
+                continue;
+            }
+            // The router boards while `board < end_time`, so a row with
+            // `start == end` (Hong Kong has 349 single-departure entries)
+            // would never be boardable. Widen it to exactly one departure.
+            let end = end.max(start + 1);
             frequencies.push(Frequency {
                 trip_id: record.trip_id,
                 start_time: start,
