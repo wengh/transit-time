@@ -232,6 +232,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "sha1",
  "transit-prep",
 ]
 

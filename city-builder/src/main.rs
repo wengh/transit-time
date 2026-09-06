@@ -343,8 +343,15 @@ fn cmd_pipeline(
                         stale_feeds.insert(feed_id.clone());
                     } else {
                         eprintln!("  {}: up to date", feed_id);
+                        // Refresh the sidecar's mtime so the freshness window
+                        // restarts. Only when it matches: the sidecar must
+                        // always describe the zip on disk. Writing the remote
+                        // hash for a *stale* feed made stage 4's fetch take the
+                        // "checked recently" shortcut and keep the old zip,
+                        // which is how cities shipped months-old feeds while
+                        // the build record claimed they were current.
+                        let _ = std::fs::write(&sha1_path, &remote);
                     }
-                    let _ = std::fs::write(&sha1_path, &remote);
                     Some(remote)
                 }
                 // Unverifiable. Deliberately *not* falling back to `local_sha1`
@@ -580,6 +587,13 @@ fn cmd_pipeline(
     feeds_to_download
         .par_iter()
         .try_for_each(|feed_id| -> Result<()> {
+            // Stage 2 already decided this feed is stale. Drop the sidecar so
+            // `fetch_gtfs` cannot take its "checked recently" shortcut on a
+            // sidecar refreshed within the freshness window and hand back
+            // the old zip; the download rewrites it from the bytes received.
+            if stale_feeds.contains(*feed_id) {
+                let _ = std::fs::remove_file(gtfs_sha1_path(feed_id, cache_dir));
+            }
             fetch_gtfs(feed_id, api_key.as_deref(), cache_dir)?;
             Ok(())
         })?;

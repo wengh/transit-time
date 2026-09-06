@@ -18,3 +18,4 @@ jsonc-parser = { version = "0.32.2", features = ["serde"] }
 dotenvy = "0.15"
 chrono = "0.4"
 rayon = "1"
+sha1 = "0.10"

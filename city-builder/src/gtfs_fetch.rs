@@ -112,9 +112,11 @@ pub fn fetch_gtfs(feed_id: &str, api_key: Option<&str>, cache_dir: &Path) -> Res
             .with_context(|| format!("Failed to fetch GTFS feed '{}'", feed_id))?;
         http_cache::write_atomic(&cache_path, &bytes)?;
 
-        if let Ok(Some(sha1)) = transitland::latest_feed_sha1(key, feed_id) {
-            let _ = std::fs::write(&sha1_path, &sha1);
-        }
+        // Record the hash of what we actually wrote, not what the API
+        // reports as latest: the two can differ if a new version landed
+        // between the two requests, and a sidecar that misdescribes the
+        // file on disk pins stale data indefinitely.
+        let _ = std::fs::write(&sha1_path, sha1_hex(&bytes));
 
         Ok(cache_path)
     } else {
@@ -144,6 +146,13 @@ pub fn fetch_gtfs(feed_id: &str, api_key: Option<&str>, cache_dir: &Path) -> Res
             "GTFS",
         )
     }
+}
+
+/// Lowercase hex SHA-1, the same form Transitland reports for feed versions.
+pub fn sha1_hex(bytes: &[u8]) -> String {
+    use sha1::{Digest, Sha1};
+    let digest = Sha1::digest(bytes);
+    digest.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
 pub fn sha1_recently_checked(sha1_path: &Path) -> bool {
