@@ -686,6 +686,9 @@ fn cmd_pipeline(
     Ok(needs_rebuild)
 }
 
+/// Build records of the cities that succeeded, and the first error if any.
+type BuildOutcome = (Vec<(String, metadata::CityMetadata)>, Option<anyhow::Error>);
+
 /// Stages 4 and 5: download the stale feeds of the cities to rebuild, then
 /// build them. Returns the build records of the cities that succeeded and
 /// the first error, if any — every city runs to completion either way.
@@ -699,7 +702,7 @@ fn build_stale_cities(
     api_key: Option<&str>,
     cache_dir: &Path,
     output_dir: &Path,
-) -> Result<(Vec<(String, metadata::CityMetadata)>, Option<anyhow::Error>)> {
+) -> Result<BuildOutcome> {
     use rayon::prelude::*;
 
     // ── Stage 4: Download stale GTFS feeds ──

@@ -4,6 +4,9 @@ use anyhow::{Context, Result, ensure};
 use std::io::Write;
 use std::path::Path;
 
+/// A transit leg's key `(route, from_stop, to_stop)` and its polyline `[(lat, lon)]`.
+pub type LegShape = ((u32, u32, u32), Vec<(f64, f64)>);
+
 /// All prepared data ready for serialization.
 pub struct PreparedData {
     pub nodes: Vec<OsmNode>,
@@ -14,7 +17,7 @@ pub struct PreparedData {
     pub route_names: Vec<String>,
     pub route_colors: Vec<Option<Color>>,
     /// Pre-sliced shape polylines per transit leg: (route, from_stop, to_stop) -> [(lat, lon)]
-    pub leg_shapes: Vec<((u32, u32, u32), Vec<(f64, f64)>)>,
+    pub leg_shapes: Vec<LegShape>,
 }
 
 // Binary format v12 (all integers little-endian):

@@ -29,16 +29,16 @@ pub fn match_stops_to_shape(
     // This happens in Mexico City metro line 9 for example.
     let avg_cost = cost / stop_coords.len() as f64;
     const THRESHOLD: f64 = 0.0005; // ~50m
-    if avg_cost > THRESHOLD * THRESHOLD {
-        if let Some((rev_cost, rev_assignment)) = match_stops_to_shape_impl(
+    if avg_cost > THRESHOLD * THRESHOLD
+        && let Some((rev_cost, rev_assignment)) = match_stops_to_shape_impl(
             &stop_coords.iter().rev().cloned().collect::<Vec<_>>(),
             shape,
             cos_lat,
-        ) {
-            // Only accept if the reverse is much better
-            if rev_cost * 5.0 < cost {
-                return Some(rev_assignment.into_iter().rev().collect());
-            }
+        )
+    {
+        // Only accept if the reverse is much better
+        if rev_cost * 5.0 < cost {
+            return Some(rev_assignment.into_iter().rev().collect());
         }
     }
     Some(assignment)

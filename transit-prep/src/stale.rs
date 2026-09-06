@@ -93,12 +93,11 @@ fn recur_weekly(s: &mut gtfs::Service, start_date: u32, end_date: u32) {
 /// `u32::MAX` for unbounded ends. A calendar-dates-only service's window is
 /// the span of its added dates.
 fn service_window(s: &gtfs::Service) -> (u32, u32) {
-    if is_calendar_dates_only(s) {
-        if let (Some(&first), Some(&last)) =
+    if is_calendar_dates_only(s)
+        && let (Some(&first), Some(&last)) =
             (s.added_dates.iter().min(), s.added_dates.iter().max())
-        {
-            return (yyyymmdd_to_days(first), yyyymmdd_to_days(last));
-        }
+    {
+        return (yyyymmdd_to_days(first), yyyymmdd_to_days(last));
     }
     (
         if s.start_date != 0 {
@@ -188,13 +187,13 @@ pub fn apply_stale_policy(data: &mut gtfs::GtfsData, allow_stale: Option<bool>, 
         .feed_end_date
         .filter(|&d| d != 0)
         .map(yyyymmdd_to_days)
-        .map_or(true, |m| today_days + THRESHOLD_DAYS > m);
+        .is_none_or(|m| today_days + THRESHOLD_DAYS > m);
 
     let do_new = data
         .feed_start_date
         .filter(|&d| d != 0)
         .map(yyyymmdd_to_days)
-        .map_or(true, |m| m + THRESHOLD_DAYS > today_days);
+        .is_none_or(|m| m + THRESHOLD_DAYS > today_days);
 
     if !do_stale && !do_new {
         return;

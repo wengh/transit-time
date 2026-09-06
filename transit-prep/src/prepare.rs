@@ -275,7 +275,7 @@ fn build_leg_shapes(
     gtfs_data: &gtfs::GtfsData,
     route_remap: &HashMap<u32, u32>,
     lat_range: (f64, f64),
-) -> Vec<((u32, u32, u32), Vec<(f64, f64)>)> {
+) -> Vec<binary::LegShape> {
     use rayon::prelude::*;
 
     let route_id_to_old_idx: HashMap<&str, u32> = gtfs_data
@@ -292,16 +292,17 @@ fn build_leg_shapes(
         routes: BTreeSet<u32>, // new route indices
         trips: usize,
     }
-    let mut groups: HashMap<(&str, Vec<u32>), Group> = HashMap::new();
+    type GroupKey<'a> = (&'a str, Vec<u32>);
+    let mut groups: HashMap<GroupKey, Group> = HashMap::new();
     let mut trips_with_shape = 0usize;
     for (trip_idx, trip) in gtfs_data.trips.iter().enumerate() {
         let Some(shape_id) = trip.shape_id.as_deref() else {
             continue;
         };
-        if !gtfs_data
+        if gtfs_data
             .shapes
             .get(shape_id)
-            .is_some_and(|pts| pts.len() >= 2)
+            .is_none_or(|pts| pts.len() < 2)
         {
             continue;
         }
@@ -324,7 +325,7 @@ fn build_leg_shapes(
         group.routes.insert(*new_route_idx);
         group.trips += 1;
     }
-    let groups: Vec<((&str, Vec<u32>), Group)> = groups.into_iter().collect();
+    let groups: Vec<(GroupKey, Group)> = groups.into_iter().collect();
 
     let (min_lat, max_lat) = lat_range;
     let center_lat = (min_lat + max_lat) / 2.0;
@@ -332,6 +333,7 @@ fn build_leg_shapes(
 
     type LegEntry = (f64, Vec<(f64, f64)>);
     type LegMap = HashMap<(u32, u32, u32), LegEntry>;
+    type KeyedLegs = Vec<((u32, u32, u32), LegEntry)>;
 
     /// Keep the better-quality (lower max projection distance) leg per key.
     fn insert_best(map: &mut LegMap, key: (u32, u32, u32), entry: LegEntry) {
@@ -349,7 +351,7 @@ fn build_leg_shapes(
     }
 
     // (trips matched, legs) per group
-    let group_results: Vec<(usize, Vec<((u32, u32, u32), LegEntry)>)> = groups
+    let group_results: Vec<(usize, KeyedLegs)> = groups
         .par_iter()
         .map(|((shape_id, stops), group)| {
             let shape = &gtfs_data.shapes[*shape_id];
@@ -379,10 +381,10 @@ fn build_leg_shapes(
                 let mut leg_points = Vec::with_capacity(span + 2);
                 leg_points.push(mf.proj);
                 if forward {
-                    if mf.seg_idx + 1 <= mt.seg_idx {
+                    if mf.seg_idx < mt.seg_idx {
                         leg_points.extend_from_slice(&shape[mf.seg_idx + 1..=mt.seg_idx]);
                     }
-                } else if mt.seg_idx + 1 <= mf.seg_idx {
+                } else if mt.seg_idx < mf.seg_idx {
                     leg_points.extend(shape[mt.seg_idx + 1..=mf.seg_idx].iter().rev().copied());
                 }
                 leg_points.push(mt.proj);
@@ -430,7 +432,7 @@ fn build_leg_shapes(
         best_legs.len()
     );
 
-    let mut leg_shapes: Vec<((u32, u32, u32), Vec<(f64, f64)>)> = best_legs
+    let mut leg_shapes: Vec<binary::LegShape> = best_legs
         .into_iter()
         .map(|(k, (_, pts))| (k, pts))
         .collect();

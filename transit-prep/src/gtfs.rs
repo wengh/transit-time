@@ -390,10 +390,11 @@ pub fn parse_gtfs(path: &Path, bbox: (f64, f64, f64, f64)) -> Result<GtfsData> {
         for result in rdr.deserialize::<StopRecord>() {
             let record = result?;
             // Skip non-stop locations (stations, entrances, etc.)
-            if let Some(ref lt) = record.location_type {
-                if lt != "0" && !lt.is_empty() {
-                    continue;
-                }
+            if let Some(ref lt) = record.location_type
+                && lt != "0"
+                && !lt.is_empty()
+            {
+                continue;
             }
             if let (Some(lat), Some(lon)) = (record.stop_lat, record.stop_lon) {
                 let index = stops.len() as u32;
@@ -546,16 +547,11 @@ pub fn parse_gtfs(path: &Path, bbox: (f64, f64, f64, f64)) -> Result<GtfsData> {
                 .flexible(true)
                 .trim(csv::Trim::All)
                 .from_reader(fi_csv.as_bytes());
-            let Some(headers) = rdr.headers().ok() else {
-                return None;
-            };
-            let col = headers.iter().position(|h| h == col_name);
-            let Some(col) = col else {
-                return None;
-            };
+            let headers = rdr.headers().ok()?;
+            let col = headers.iter().position(|h| h == col_name)?;
             rdr.records()
                 .filter_map(|r| r.ok())
-                .filter_map(|rec| rec.get(col).map(|v| v.trim().parse::<u32>().ok()).flatten())
+                .filter_map(|rec| rec.get(col).and_then(|v| v.trim().parse::<u32>().ok()))
                 .next()
         };
         feed_start_date = get("feed_start_date");
@@ -622,17 +618,17 @@ pub fn parse_gtfs(path: &Path, bbox: (f64, f64, f64, f64)) -> Result<GtfsData> {
             .trim(csv::Trim::All)
             .from_reader(entry);
         for result in rdr.deserialize::<ShapeRecord>() {
-            if let Ok(record) = result {
-                if let (Ok(lat), Ok(lon), Ok(seq)) = (
+            if let Ok(record) = result
+                && let (Ok(lat), Ok(lon), Ok(seq)) = (
                     record.shape_pt_lat.parse::<f64>(),
                     record.shape_pt_lon.parse::<f64>(),
                     record.shape_pt_sequence.parse::<u32>(),
-                ) {
-                    shapes
-                        .entry(record.shape_id)
-                        .or_default()
-                        .push((lat, lon, seq));
-                }
+                )
+            {
+                shapes
+                    .entry(record.shape_id)
+                    .or_default()
+                    .push((lat, lon, seq));
             }
         }
     }
@@ -879,13 +875,13 @@ fn flush_trip(
                         dropped += (i..q).filter(|&k| buf[k].arrival.is_none()).count();
                     } else {
                         let span = (q - p) as i64;
-                        for k in i..q {
-                            if buf[k].arrival.is_some() {
+                        for (k, r) in buf.iter_mut().enumerate().take(q).skip(i) {
+                            if r.arrival.is_some() {
                                 continue;
                             }
                             let t = (t_p + (k - p) as i64 * (t_q - t_p) / span) as u32;
-                            buf[k].arrival = Some(t);
-                            buf[k].departure = Some(t);
+                            r.arrival = Some(t);
+                            r.departure = Some(t);
                         }
                     }
                     i = q;
@@ -1142,10 +1138,13 @@ pub fn build_service_patterns(data: &GtfsData) -> Vec<ServicePattern> {
                         }
                         // Link consecutive legs of this trip for through-riding.
                         let trip_end = freq_entries.len();
-                        if trip_end > trip_start + 1 {
-                            for j in trip_start..(trip_end - 1) {
-                                freq_entries[j].next_freq_index = (j + 1) as u32;
-                            }
+                        for (j, entry) in freq_entries
+                            .iter_mut()
+                            .enumerate()
+                            .take(trip_end.saturating_sub(1))
+                            .skip(trip_start)
+                        {
+                            entry.next_freq_index = (j + 1) as u32;
                         }
                     }
                 }

@@ -12,10 +12,10 @@ pub fn extract_pbf_bbox(path: &Path) -> Result<(f64, f64, f64, f64)> {
     let reader = BlobReader::from_path(path)?;
     for blob in reader {
         let blob = blob?;
-        if let Ok(header) = blob.to_headerblock() {
-            if let Some(bbox) = header.bbox() {
-                return Ok((bbox.left, bbox.bottom, bbox.right, bbox.top));
-            }
+        if let Ok(header) = blob.to_headerblock()
+            && let Some(bbox) = header.bbox()
+        {
+            return Ok((bbox.left, bbox.bottom, bbox.right, bbox.top));
         }
     }
     bail!("PBF file has no bounding box in header")
@@ -338,20 +338,21 @@ fn build_graph_from_raw(raw: RawOsmData) -> Result<OsmGraph> {
                 prev_coords = Some((lat, lon));
 
                 if let Some(&node_idx) = node_id_to_index.get(&node_id) {
-                    if let Some(start_idx) = seg_start_idx {
-                        if start_idx != node_idx && seg_distance > 0.0 {
-                            let (u, v) = if start_idx < node_idx {
-                                (start_idx, node_idx)
-                            } else {
-                                (node_idx, start_idx)
-                            };
-                            if edge_set.insert((u, v)) {
-                                edges.push(OsmEdge {
-                                    u: start_idx,
-                                    v: node_idx,
-                                    distance_meters: seg_distance as f32,
-                                });
-                            }
+                    if let Some(start_idx) = seg_start_idx
+                        && start_idx != node_idx
+                        && seg_distance > 0.0
+                    {
+                        let (u, v) = if start_idx < node_idx {
+                            (start_idx, node_idx)
+                        } else {
+                            (node_idx, start_idx)
+                        };
+                        if edge_set.insert((u, v)) {
+                            edges.push(OsmEdge {
+                                u: start_idx,
+                                v: node_idx,
+                                distance_meters: seg_distance as f32,
+                            });
                         }
                     }
                     seg_start_idx = Some(node_idx);
