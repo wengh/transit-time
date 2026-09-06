@@ -12,6 +12,20 @@ Baseline before changes: `cargo build --release --workspace` clean,
 `cargo test -p transit-router` 6/6 pass, `tsc --noEmit` clean, prettier
 clean, ~120 clippy warnings.
 
+After the change series (51 commits following this file): workspace
+builds with **0 clippy warnings**; router property tests pass on chicago,
+hong_kong and paris; `transit-prep`/`city-builder`/`transit-data` unit
+tests pass; `tsc`, prettier and `vite build` pass. The binary format is
+unchanged (v12) and every shipped `.bin` still loads.
+
+Measured effects (NYC 09:00–10:00, 45 min, 4 threads, 3 runs):
+routing 0.153 s → 0.129 s avg, per-query index build 14.5 ms → 5.6 ms,
+identical nodes reached and Pareto entries. Preprocessing from cached
+inputs: Toronto 43.6 s → 19.7 s, Washington DC 50.7 s → 16.6 s, Chicago
+51.4 s → 22.7 s; Washington DC zero-length transit events 47,928 → 0;
+Chicago patterns 183 (104 empty) → 79; Toronto weekday-active patterns
+37 → 6 (the duplicated GO Transit day-services).
+
 ---
 
 ## 1. Frontend — state, worker bridge, app shell (`transit-viz/src`)
@@ -82,8 +96,8 @@ routing math. Findings are at the boundaries and in per-query redundant work.
 
 | # | Sev | Where | Finding | Status |
 |---|-----|-------|---------|--------|
-| C1 | bug-high | `main.rs` stage 3, `deploy.yml` | `code_changed`/`config_changed` compare mtimes against the restored `.bin`. In CI `actions/checkout` writes every file at checkout time while `actions/cache` restores `.bin` files with their original (older) mtimes, so every city reports "config changed" on every scheduled run; `--check-only` always says rebuild and all cities are rebuilt. | fixed — config hash and code fingerprint recorded in `metadata.json`; mtime checks removed |
-| C2 | bug-high | `main.rs` stage 5, `osm_fetch.rs` | The build record stores the identity stage 2/3 *probed*, not what was built from. Stage 3 sees a new OSM ETag → rebuild; stage 5's `fetch_http_osm` returns the cached old extract without a check (30-day shortcut); metadata records the *new* ETag → the city is pinned to old data until the sidecar ages out. Same shape for the download-failure fallback and a transient Transitland error in stage 4. | fixed — stale sidecars are removed before fetching; recorded identity is read from what is on disk after the fetch |
+| C1 | bug-high | `main.rs` stage 3, `deploy.yml` | `code_changed`/`config_changed` compare mtimes against the restored `.bin`. In CI `actions/checkout` writes every file at checkout time while `actions/cache` restores `.bin` files with their original (older) mtimes, so every city reports "config changed" on every scheduled run; `--check-only` always says rebuild and all cities are rebuilt. | fixed — config hash and a compile-time source fingerprint (`build.rs` over `transit-data`, `transit-prep`, `city-builder`) recorded in `metadata.json` (schema v2, which forces one full rebuild to seed it); mtime checks removed |
+| C2 | bug-high | `main.rs` stage 5, `osm_fetch.rs` | The build record stores the identity stage 2/3 *probed*, not what was built from. Stage 3 sees a new OSM ETag → rebuild; stage 5's `fetch_http_osm` returns the cached old extract without a check (30-day shortcut); metadata records the *new* ETag → the city is pinned to old data until the sidecar ages out. Same shape for the download-failure fallback and a transient Transitland error in stage 4. | fixed — `fetch_osm` takes `force_check` (deleting the sidecar would not defeat the shortcut, which falls back to the extract's mtime); stale feeds are force-downloaded; the recorded identity is read from what is on disk after the fetch; a build that fell back to an unverified cached copy keeps its prior record |
 | C3 | bug-low | `binary.rs` `write_binary`, `main.rs` stage 5 | `.bin` written non-atomically (a crash leaves a truncated file that later passes as "up to date"); one failing city discards every successful city's metadata. | fixed — temp + rename; metadata saved for successes before propagating the error |
 | C4 | bug-low | `main.rs` `cmd_prep` | `make data CITY=x` never writes metadata, so the next `make data-all` rebuilds that city again. | open — needs the probe step; noted in the code |
 | C5 | bug-low | `stale.rs`, `binary.rs`, `gtfs.rs` | Malformed calendar dates (`20240230`) panic inside a rayon worker with no feed name. | fixed — validated at parse with the feed named |
@@ -118,8 +132,8 @@ invariants against real output; the numbers below come from that.
 | P12 | refactor | `prepare.rs` | `valid_trip_indices` is redundant (leg-shape builder already rejects short trips); stop_times re-grouped and re-sorted after already being sorted; best-leg selection written twice with a needless clone. | fixed |
 | P13 | perf | `gtfs.rs`, `binary.rs` | Events sorted three times (once in the pattern builder for an order nothing consumes); Morton key recomputed inside the sort comparator for millions of nodes. | fixed |
 | P14 | refactor | `binary.rs`, `transit-data/lib.rs` | `write_pco_u32/i32` and `read_pco_u32/i32` are identical modulo type; inline `simple_compress` duplicates the helper; `FlatEvent` copied field by field. | fixed — generic over `pco::data_types::Number` |
-| P15 | refactor | cross-crate | Grid cell sizes triplicated, YYYYMMDD decoding ×4, `Color` defined twice, format version literal in writer and reader, bbox `cos_lat` three ways — because `transit-prep` does not depend on `transit-data`. | fixed — `transit-prep` now depends on `transit-data` and shares those definitions |
-| P16 | refactor | `binary.rs`, `transit-data/lib.rs` | `pattern_id` and per-pattern `max_time` are written and read but never consumed; `OsmNode.index` and `Stop.id` are write-only; `total_sentinels` is a hard-coded 0 reported as a count. | fixed — dead fields dropped (format version bumped) |
+| P15 | refactor | cross-crate | Grid cell sizes triplicated, YYYYMMDD decoding ×4, `Color` defined twice, format version literal in writer and reader, bbox `cos_lat` three ways — because `transit-prep` does not depend on `transit-data`. | fixed — `transit-prep` now depends on `transit-data`, which exports `FORMAT_VERSION`, the grid cell constants, `Color::from_hex` and the date decoder; the three `cos_lat` computations serve different bboxes and were left |
+| P16 | refactor | `binary.rs`, `transit-data/lib.rs` | `pattern_id` and per-pattern `max_time` are written and read but never consumed; `OsmNode.index` and `Stop.id` are write-only; `total_sentinels` is a hard-coded 0 reported as a count. | partial — the dead stat is removed; the two unused per-pattern fields (8 bytes per pattern) are kept so the format stays v12 and every shipped `.bin` still loads. Drop them at the next format bump. |
 | P17 | nit | docs | `binary.rs` header still says v11 and "u32 dates"; README claims shapes are trimmed to the bbox (no such code); Moscow's longitude grid cell is narrower than the 400 m snap radius. | fixed (docs); snap radius left as is |
 | P18 | open | `gtfs.rs` `ServiceKey` | Including the exact date list in the pattern key gives calendar-dates-only feeds one pattern per service id; a sparse per-pattern stop index would remove the remaining O(patterns × stops) memory but is a format redesign. | open |
 
