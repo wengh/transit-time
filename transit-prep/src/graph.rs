@@ -84,7 +84,7 @@ pub fn build_graph(osm_path: &Path, bbox: (f64, f64, f64, f64)) -> Result<OsmGra
     let raw = if ext == "pbf" {
         parse_pbf(osm_path, bbox)?
     } else {
-        parse_xml(osm_path)?
+        parse_xml(osm_path, bbox)?
     };
 
     let mut graph = build_graph_from_raw(raw)?;
@@ -92,86 +92,105 @@ pub fn build_graph(osm_path: &Path, bbox: (f64, f64, f64, f64)) -> Result<OsmGra
     Ok(graph)
 }
 
-fn parse_xml(osm_path: &Path) -> Result<RawOsmData> {
+/// Parse an OSM XML extract (the Overpass fallback, or a non-`.pbf`
+/// `osm_url`). Applies the same pedestrian `highway` filter and bbox rule as
+/// [`parse_pbf`]: a way is kept only if it carries a walkable highway tag and
+/// at least one of its nodes lies inside `bbox`.
+fn parse_xml(osm_path: &Path, bbox: (f64, f64, f64, f64)) -> Result<RawOsmData> {
+    use quick_xml::events::BytesStart;
+
+    let (min_lon, min_lat, max_lon, max_lat) = bbox;
     let xml = std::fs::read_to_string(osm_path)?;
     let mut reader = Reader::from_str(&xml);
+
+    /// Parse attribute `key` of `e`, erroring on a malformed value rather
+    /// than panicking on a corrupt or truncated file.
+    fn attr<T: std::str::FromStr>(e: &BytesStart, key: &[u8]) -> Result<Option<T>>
+    where
+        T::Err: std::fmt::Display,
+    {
+        for a in e.attributes() {
+            let a = a?;
+            if a.key.as_ref() == key {
+                let raw = String::from_utf8_lossy(&a.value);
+                return raw.parse::<T>().map(Some).map_err(|err| {
+                    anyhow::anyhow!(
+                        "OSM XML: invalid {} attribute {raw:?} on <{}>: {err}",
+                        String::from_utf8_lossy(key),
+                        String::from_utf8_lossy(e.name().as_ref())
+                    )
+                });
+            }
+        }
+        Ok(None)
+    }
 
     let mut all_nodes: HashMap<u64, (f64, f64)> = HashMap::new();
     let mut ways: Vec<Vec<u64>> = Vec::new();
 
     let mut current_way_nodes: Vec<u64> = Vec::new();
     let mut in_way = false;
+    let mut way_is_pedestrian = false;
 
     loop {
-        match reader.read_event() {
-            Ok(Event::Start(ref e)) => match e.name().as_ref() {
-                b"node" => {
-                    let mut id = 0u64;
-                    let mut lat = 0.0f64;
-                    let mut lon = 0.0f64;
-                    for attr in e.attributes().flatten() {
-                        match attr.key.as_ref() {
-                            b"id" => id = String::from_utf8_lossy(&attr.value).parse().unwrap(),
-                            b"lat" => lat = String::from_utf8_lossy(&attr.value).parse().unwrap(),
-                            b"lon" => lon = String::from_utf8_lossy(&attr.value).parse().unwrap(),
-                            _ => {}
+        let event = reader.read_event()?;
+        let (e, is_start) = match event {
+            Event::Start(ref e) => (e, true),
+            Event::Empty(ref e) => (e, false),
+            Event::End(ref e) => {
+                if e.name().as_ref() == b"way" {
+                    if in_way && way_is_pedestrian && current_way_nodes.len() >= 2 {
+                        let has_bbox_node = current_way_nodes.iter().any(|r| {
+                            all_nodes.get(r).is_some_and(|&(lat, lon)| {
+                                lat >= min_lat && lat <= max_lat && lon >= min_lon && lon <= max_lon
+                            })
+                        });
+                        if has_bbox_node {
+                            ways.push(std::mem::take(&mut current_way_nodes));
                         }
-                    }
-                    if id != 0 {
-                        all_nodes.insert(id, (lat, lon));
-                    }
-                }
-                b"way" => {
-                    in_way = true;
-                    current_way_nodes.clear();
-                }
-                _ => {}
-            },
-            Ok(Event::Empty(ref e)) => match e.name().as_ref() {
-                b"node" => {
-                    let mut id = 0u64;
-                    let mut lat = 0.0f64;
-                    let mut lon = 0.0f64;
-                    for attr in e.attributes().flatten() {
-                        match attr.key.as_ref() {
-                            b"id" => id = String::from_utf8_lossy(&attr.value).parse().unwrap(),
-                            b"lat" => lat = String::from_utf8_lossy(&attr.value).parse().unwrap(),
-                            b"lon" => lon = String::from_utf8_lossy(&attr.value).parse().unwrap(),
-                            _ => {}
-                        }
-                    }
-                    if id != 0 {
-                        all_nodes.insert(id, (lat, lon));
-                    }
-                }
-                b"nd" if in_way => {
-                    for attr in e.attributes().flatten() {
-                        if attr.key.as_ref() == b"ref" {
-                            if let Ok(node_ref) =
-                                String::from_utf8_lossy(&attr.value).parse::<u64>()
-                            {
-                                current_way_nodes.push(node_ref);
-                            }
-                        }
-                    }
-                }
-                _ => {}
-            },
-            Ok(Event::End(ref e)) => match e.name().as_ref() {
-                b"way" => {
-                    if in_way && current_way_nodes.len() >= 2 {
-                        ways.push(current_way_nodes.clone());
                     }
                     in_way = false;
                 }
-                _ => {}
-            },
-            Ok(Event::Eof) => break,
-            Err(e) => return Err(e.into()),
+                continue;
+            }
+            Event::Eof => break,
+            _ => continue,
+        };
+        match e.name().as_ref() {
+            b"node" => {
+                let id: Option<u64> = attr(e, b"id")?;
+                let lat: Option<f64> = attr(e, b"lat")?;
+                let lon: Option<f64> = attr(e, b"lon")?;
+                if let (Some(id), Some(lat), Some(lon)) = (id, lat, lon) {
+                    all_nodes.insert(id, (lat, lon));
+                }
+            }
+            // A self-closing <way/> has no nodes and no matching end tag.
+            b"way" if is_start => {
+                in_way = true;
+                way_is_pedestrian = false;
+                current_way_nodes.clear();
+            }
+            b"nd" if in_way => {
+                if let Some(node_ref) = attr::<u64>(e, b"ref")? {
+                    current_way_nodes.push(node_ref);
+                }
+            }
+            b"tag" if in_way => {
+                let k: Option<String> = attr(e, b"k")?;
+                let v: Option<String> = attr(e, b"v")?;
+                if k.as_deref() == Some("highway")
+                    && v.as_deref()
+                        .is_some_and(|v| PEDESTRIAN_HIGHWAYS.contains(&v))
+                {
+                    way_is_pedestrian = true;
+                }
+            }
             _ => {}
         }
     }
 
+    eprintln!("XML: {} nodes, {} ways", all_nodes.len(), ways.len());
     Ok(RawOsmData { all_nodes, ways })
 }
 
@@ -964,4 +983,66 @@ pub fn prune_unreachable_nodes(
         .into_iter()
         .map(|(stop, node)| (stop, remap[node as usize]))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn xml_parser_applies_highway_and_bbox_filters() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6">
+  <node id="1" lat="41.90" lon="-87.60"/>
+  <node id="2" lat="41.91" lon="-87.61"/>
+  <node id="3" lat="41.92" lon="-87.62"></node>
+  <node id="4" lat="45.00" lon="-90.00"/>
+  <node id="5" lat="45.01" lon="-90.01"/>
+  <way id="10">
+    <nd ref="1"/>
+    <nd ref="2"/>
+    <tag k="highway" v="footway"/>
+  </way>
+  <way id="11">
+    <nd ref="2"/>
+    <nd ref="3"/>
+    <tag k="highway" v="motorway"/>
+  </way>
+  <way id="12">
+    <nd ref="4"/>
+    <nd ref="5"/>
+    <tag k="highway" v="residential"/>
+  </way>
+  <way id="13">
+    <nd ref="1"/>
+    <nd ref="3"/>
+    <tag k="building" v="yes"/>
+  </way>
+  <way id="14"/>
+</osm>"#;
+        let dir = std::env::temp_dir().join("transit-prep-xml-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("tiny.osm.xml");
+        std::fs::write(&path, xml).unwrap();
+
+        let raw = parse_xml(&path, (-88.0, 41.5, -87.0, 42.5)).unwrap();
+        assert_eq!(raw.all_nodes.len(), 5);
+        // Only way 10 is walkable and inside the bbox: 11 is a motorway,
+        // 12 lies outside the bbox, 13 has no highway tag, 14 is empty.
+        assert_eq!(raw.ways, vec![vec![1, 2]]);
+    }
+
+    #[test]
+    fn xml_parser_reports_malformed_attributes() {
+        let xml = r#"<osm><node id="1" lat="abc" lon="-87.6"/></osm>"#;
+        let dir = std::env::temp_dir().join("transit-prep-xml-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("bad.osm.xml");
+        std::fs::write(&path, xml).unwrap();
+        let err = match parse_xml(&path, (-88.0, 41.5, -87.0, 42.5)) {
+            Ok(_) => panic!("malformed lat must be an error"),
+            Err(e) => e.to_string(),
+        };
+        assert!(err.contains("invalid lat attribute"), "{err}");
+    }
 }
