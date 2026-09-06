@@ -15,7 +15,7 @@ mod transitland;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::config::CityConfig;
@@ -189,7 +189,7 @@ fn cmd_pipeline(
     eprintln!("=== Stage 1: Extract feeds from city configs ===");
 
     let mut cities: Vec<(String, CityConfig, PathBuf)> = Vec::new();
-    let mut feed_to_cities: HashMap<String, Vec<String>> = HashMap::new();
+    let mut feed_ids: BTreeSet<String> = BTreeSet::new();
 
     let mut entries: Vec<_> = std::fs::read_dir(cities_dir)?
         .filter_map(|e| e.ok())
@@ -213,17 +213,14 @@ fn cmd_pipeline(
 
         for fid in &config.feed_ids {
             validate_feed_id(fid, api_key.as_deref())?;
-            feed_to_cities
-                .entry(fid.clone())
-                .or_default()
-                .push(config.id.clone());
+            feed_ids.insert(fid.clone());
         }
 
         cities.push((config.id.clone(), config, path));
     }
 
-    let tl_feeds: Vec<_> = feed_to_cities
-        .keys()
+    let tl_feeds: Vec<_> = feed_ids
+        .iter()
         .filter(|f| is_transitland_id(f))
         .cloned()
         .collect();
@@ -231,7 +228,7 @@ fn cmd_pipeline(
     eprintln!(
         "  {} cities, {} unique feeds ({} Transitland)",
         cities.len(),
-        feed_to_cities.len(),
+        feed_ids.len(),
         tl_feeds.len()
     );
 
@@ -307,10 +304,7 @@ fn cmd_pipeline(
     }
 
     // Direct-URL feeds: one HEAD each, in parallel — header-only round trips.
-    let url_feeds: Vec<&String> = feed_to_cities
-        .keys()
-        .filter(|f| !is_transitland_id(f))
-        .collect();
+    let url_feeds: Vec<&String> = feed_ids.iter().filter(|f| !is_transitland_id(f)).collect();
 
     if !url_feeds.is_empty() {
         let client = http_cache::client(http_cache::CHECK_TIMEOUT)?;
@@ -610,7 +604,7 @@ fn cmd_pipeline(
 
     let mut expected_files: HashSet<PathBuf> = HashSet::new();
 
-    for feed_id in feed_to_cities.keys() {
+    for feed_id in &feed_ids {
         expected_files.insert(gtfs_cache_path(feed_id, cache_dir));
         expected_files.insert(gtfs_sha1_path(feed_id, cache_dir));
     }
@@ -621,8 +615,12 @@ fn cmd_pipeline(
             config.bbbike_name.as_deref(),
             config.osm_url.as_deref(),
         ) {
-            expected_files.insert(osm_fetch::pbf_cache_path(cache_dir, id, &url, "osm.pbf"));
-            expected_files.insert(osm_fetch::pbf_cache_path(cache_dir, id, &url, "osm.xml"));
+            expected_files.insert(osm_fetch::pbf_cache_path(
+                cache_dir,
+                id,
+                &url,
+                osm_fetch::source_ext(config.osm_url.as_deref()),
+            ));
         }
         if let Ok(bbox) = parse_bbox(&config.bbox) {
             expected_files.insert(osm_fetch::overpass_cache_path(cache_dir, bbox));

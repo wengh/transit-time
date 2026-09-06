@@ -164,7 +164,7 @@ pub fn validate_feed_id(feed_id: &str, api_key: Option<&str>) -> Result<()> {
     if feed_id.starts_with("http://") || feed_id.starts_with("https://") {
         return Ok(());
     }
-    if feed_id.starts_with("f-") {
+    if is_transitland_id(feed_id) {
         anyhow::ensure!(
             api_key.is_some(),
             "Feed '{}' is a Transitland ID but TRANSITLAND_API_KEY is not set",

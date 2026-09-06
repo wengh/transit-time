@@ -87,7 +87,7 @@ pub fn overpass_cache_path(cache_dir: &Path, bbox: (f64, f64, f64, f64)) -> Path
 }
 
 /// Extension for a directly-configured `osm_url`; anything else is a PBF.
-fn source_ext(osm_url: Option<&str>) -> &'static str {
+pub fn source_ext(osm_url: Option<&str>) -> &'static str {
     match osm_url {
         Some(url) if !url.contains(".pbf") => "osm.xml",
         _ => "osm.pbf",
@@ -174,41 +174,23 @@ pub fn fetch_osm(
         );
     }
 
-    if let Some(url) = osm_url {
-        let cache_path = pbf_cache_path(cache_dir, city, url, source_ext(osm_url));
-        return fetch_http_osm(&cache_path, url, url, "OSM");
-    }
-
-    if let Some(extract_id) = interline_extract {
-        let cache_path = pbf_cache_path(
-            cache_dir,
-            city,
-            &interline_source_url(extract_id),
-            "osm.pbf",
-        );
-        let key = interline_api_key().ok_or_else(|| {
-            anyhow::anyhow!(
-                "city '{}' uses interline_extract but INTERLINE_OSM_EXTRACTS_API_KEY is not set",
-                city
-            )
-        })?;
-        // Log the token-free form of the URL.
-        let display = format!(
-            "{}?string_id={}&data_format=pbf&api_token=…",
-            INTERLINE_BASE, extract_id
-        );
-        return fetch_http_osm(
-            &cache_path,
-            &interline_download_url(extract_id, &key),
-            &display,
-            "PBF",
-        );
-    }
-
-    if let Some(name) = bbbike_name {
-        let url = bbbike_source_url(name);
-        let cache_path = pbf_cache_path(cache_dir, city, &url, "osm.pbf");
-        return fetch_http_osm(&cache_path, &url, &url, "PBF");
+    if let Some(source_url) = pick_source_url(interline_extract, bbbike_name, osm_url) {
+        let cache_path = pbf_cache_path(cache_dir, city, &source_url, source_ext(osm_url));
+        let request_url =
+            osm_request_url(interline_extract, bbbike_name, osm_url).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "city '{}' uses interline_extract but INTERLINE_OSM_EXTRACTS_API_KEY is not set",
+                    city
+                )
+            })?;
+        // Log the token-free form of the URL: the Interline request URL
+        // carries the API token.
+        let display = if interline_extract.is_some() {
+            format!("{}&api_token=…", source_url)
+        } else {
+            source_url
+        };
+        return fetch_http_osm(&cache_path, &request_url, &display, "OSM extract");
     }
 
     // No source configured — use Overpass for the bbox. Overpass is a POST
@@ -244,9 +226,7 @@ out body;"#,
         min_lat, min_lon, max_lat, max_lon
     );
 
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(600))
-        .build()?;
+    let client = http_cache::client(http_cache::DOWNLOAD_TIMEOUT)?;
 
     let body = format!("data={}", urlencoded(&query));
 

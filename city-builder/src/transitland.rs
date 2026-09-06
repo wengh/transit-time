@@ -72,11 +72,11 @@ pub fn get_api_key() -> Result<String> {
         .context("TRANSITLAND_API_KEY not set (check .env or environment)")
 }
 
+/// Metadata queries are small JSON responses.
+const API_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 fn make_client() -> Result<reqwest::blocking::Client> {
-    Ok(reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .user_agent("Mozilla/5.0 (compatible; transit-prep/1.0)")
-        .build()?)
+    crate::http_cache::client(API_TIMEOUT)
 }
 
 /// Query the latest feed version SHA1 for a Transitland feed.
@@ -107,10 +107,7 @@ pub fn download_feed(api_key: &str, onestop_id: &str) -> Result<Vec<u8>> {
         "{}/feeds/{}/download_latest_feed_version",
         API_BASE, onestop_id
     );
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(300))
-        .user_agent("Mozilla/5.0 (compatible; transit-prep/1.0)")
-        .build()?;
+    let client = crate::http_cache::client(std::time::Duration::from_secs(300))?;
     let bytes = client
         .get(&url)
         .header("apikey", api_key)
