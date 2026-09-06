@@ -15,6 +15,10 @@ interface RangeSliderProps {
   onCommit: (v: number) => void;
 }
 
+// Keys that move a range input's thumb; a commit after any other key (Tab,
+// Shift, …) would re-run the query for nothing.
+const SLIDER_KEYS = /^(Arrow(Up|Down|Left|Right)|Home|End|Page(Up|Down))$/;
+
 function RangeSlider({
   id,
   min,
@@ -26,16 +30,26 @@ function RangeSlider({
 }: RangeSliderProps) {
   const [display, setDisplay] = useState(formatDisplay(defaultValue));
   const ref = useRef<HTMLInputElement>(null);
+  const lastCommittedRef = useRef(defaultValue);
 
   function handleInput(e: React.FormEvent<HTMLInputElement>) {
     const val = (e.target as HTMLInputElement).value;
     setDisplay(formatDisplay(parseInt(val)));
   }
 
+  // A commit re-runs the whole query, so only fire when the value actually
+  // changed. One pointerup covers mouse and touch — the old mouseup+touchend
+  // pair committed twice per touch release (the synthetic mouseup follows).
   function handleCommit() {
-    if (ref.current) {
-      onCommit(parseInt(ref.current.value));
-    }
+    if (!ref.current) return;
+    const value = parseInt(ref.current.value);
+    if (value === lastCommittedRef.current) return;
+    lastCommittedRef.current = value;
+    onCommit(value);
+  }
+
+  function handleKeyUp(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (SLIDER_KEYS.test(e.key)) handleCommit();
   }
 
   return (
@@ -51,9 +65,8 @@ function RangeSlider({
         defaultValue={defaultValue}
         className="w-full mb-1"
         onInput={handleInput}
-        onMouseUp={handleCommit}
-        onTouchEnd={handleCommit}
-        onKeyUp={handleCommit}
+        onPointerUp={handleCommit}
+        onKeyUp={handleKeyUp}
       />
     </>
   );
@@ -156,6 +169,10 @@ function DualRangeSlider({ windowStart, windowEnd, onChange, onCommit }: DualRan
       onPointerDown={(e) => handlePointerDown('middle', e)}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
+      // A drag interrupted by the browser (touch turned into a scroll, focus
+      // lost) ends with pointercancel, not pointerup; commit that too or the
+      // live window never lands in state.
+      onPointerCancel={handlePointerUp}
     >
       <div
         className="absolute top-[9px] left-0 right-0 h-[3px] rounded bg-zinc-600 dark:bg-zinc-600
