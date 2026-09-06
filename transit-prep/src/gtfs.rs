@@ -1,5 +1,4 @@
 use anyhow::{Context, Result};
-use chrono::{Datelike, NaiveDate};
 use rayon::prelude::*;
 use serde::Deserialize;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -801,22 +800,6 @@ pub fn parse_gtfs(path: &Path, bbox: (f64, f64, f64, f64)) -> Result<GtfsData> {
     })
 }
 
-/// Derive a day_mask (bit 0=Mon..6=Sun) from a list of YYYYMMDD date integers.
-fn day_mask_from_dates(dates: &[u32]) -> u8 {
-    let mut mask = 0u8;
-    for &d in dates {
-        let y = (d / 10000) as i32;
-        let m = (d / 100) % 100;
-        let day = d % 100;
-        let dow = NaiveDate::from_ymd_opt(y, m, day)
-            .expect("invalid YYYYMMDD date")
-            .weekday()
-            .num_days_from_monday();
-        mask |= 1 << dow;
-    }
-    mask
-}
-
 pub fn build_service_patterns(data: &GtfsData) -> Vec<ServicePattern> {
     // Build mappings
     let mut trip_id_to_idx: HashMap<&str, u32> = HashMap::new();
@@ -838,31 +821,16 @@ pub fn build_service_patterns(data: &GtfsData) -> Vec<ServicePattern> {
         removed_dates: Vec<u32>,
     }
 
-    let mut service_masks: Vec<(u8, &Service)> = Vec::new();
-    for service in &data.services {
-        let mut mask = service
-            .days
-            .iter()
-            .enumerate()
-            .fold(0u8, |acc, (i, &d)| if d { acc | (1 << i) } else { acc });
-        if mask == 0 && !service.added_dates.is_empty() {
-            mask = day_mask_from_dates(&service.added_dates);
-        }
-        service_masks.push((mask, service));
-    }
-
-    let all_mask_zero = service_masks.iter().all(|(m, _)| *m == 0);
-    let all_date_based = service_masks
-        .iter()
-        .all(|(_, s)| !s.added_dates.is_empty() || !s.removed_dates.is_empty());
-    if all_mask_zero && all_date_based {
-        for (m, _) in &mut service_masks {
-            *m = 0x7F;
-        }
-    }
-
+    // A service defined only through calendar_dates.txt keeps `mask == 0`:
+    // the router then activates it on its added dates alone (see
+    // `patterns_for_date`). Synthesising a weekday mask from those dates
+    // with an unbounded date range — as this used to do — made every
+    // single-date service recur weekly forever, so all of GO Transit's
+    // holiday and construction variants ran at once on any weekday. The only
+    // place such a service is deliberately widened is the stale policy.
     let mut day_mask_groups: BTreeMap<ServiceKey, Vec<&Service>> = BTreeMap::new();
-    for (mask, service) in service_masks {
+    for service in &data.services {
+        let mask = crate::stale::day_mask(&service.days);
         let mut added_dates = service.added_dates.clone();
         added_dates.sort_unstable();
         let mut removed_dates = service.removed_dates.clone();
