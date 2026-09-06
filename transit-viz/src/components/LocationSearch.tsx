@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import type { RefObject } from 'react';
 import { useAppState } from '../state/AppContext';
+import { haversineKm } from '../utils/geo';
 import type { MapViewHandle } from './MapView';
 
 interface NominatimResult {
@@ -20,6 +21,12 @@ interface NominatimReverseResult {
 // the window is free, and only delay back-to-back requests.
 const REVERSE_MIN_INTERVAL_MS = 1000;
 let lastReverseFetchAt = 0;
+
+// A search result the user picked is snapped to the nearest graph node before
+// it lands in state, so the bound latLng comes back slightly offset. Within
+// this distance the human-readable label they chose is kept instead of being
+// replaced by a reverse-geocode of the snapped point.
+const KEEP_LABEL_RADIUS_KM = 0.3;
 
 interface LocationSearchProps {
   mapViewRef: RefObject<MapViewHandle | null>;
@@ -56,11 +63,12 @@ function SearchInput({
   const containerRef = useRef<HTMLDivElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const abortRef = useRef<AbortController | null>(null);
-  // Armed in select() so the immediately-following SET_SOURCE/PIN_DESTINATION
-  // dispatch (which carries a node-snapped lat/lng) doesn't trigger a
-  // reverse-geocode that would overwrite the human label the user picked.
-  // Consumed on the very next reverse-geocode effect run.
-  const skipNextReverseRef = useRef(false);
+  // Coordinates of the search result the user picked, if the current label
+  // came from one. The reverse-geocode effect skips a bound latLng that lands
+  // near it (the node-snapped echo of the pick) rather than overwriting the
+  // label. A plain "skip the next one" flag stayed armed when the select did
+  // not produce a latLng change and then mislabelled the next map placement.
+  const selectedLatLngRef = useRef<[number, number] | null>(null);
   // True while user keystrokes are the source of `query` changes. Suppresses
   // the forward-search effect when we programmatically setQuery() from
   // reverse-geocode.
@@ -98,9 +106,13 @@ function SearchInput({
           signal: controller.signal,
           headers: { 'Accept-Language': 'en' },
         });
-        const data: NominatimResult[] = await res.json();
-        setResults(data);
-        setIsOpen(data.length > 0);
+        if (!res.ok) throw new Error(`Nominatim HTTP ${res.status}`);
+        // A rate-limit response is a JSON object, not an array.
+        const data: unknown = await res.json();
+        if (!Array.isArray(data)) throw new Error('Unexpected Nominatim response');
+        const results = data as NominatimResult[];
+        setResults(results);
+        setIsOpen(results.length > 0);
         setActiveIdx(-1);
       } catch (e: unknown) {
         if (e instanceof Error && e.name !== 'AbortError') {
@@ -108,7 +120,9 @@ function SearchInput({
           setIsOpen(false);
         }
       } finally {
-        setIsLoading(false);
+        // An aborted request must not clear the spinner of the one that
+        // replaced it.
+        if (abortRef.current === controller) setIsLoading(false);
       }
     }, 300);
 
@@ -116,6 +130,16 @@ function SearchInput({
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
   }, [query, bbox]);
+
+  // Abort whatever is in flight when the input unmounts (mobile hides the
+  // inactive input via CSS, but the desktop "To…" input unmounts with the
+  // source), so a late response can't call setState on a dead component.
+  useEffect(() => {
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+      abortRef.current?.abort();
+    };
+  }, []);
 
   // Close dropdown on outside click
   useEffect(() => {
@@ -134,18 +158,16 @@ function SearchInput({
     if (latLng === null) {
       if (debounceRef.current) clearTimeout(debounceRef.current);
       if (abortRef.current) abortRef.current.abort();
-      skipNextReverseRef.current = false;
+      selectedLatLngRef.current = null;
       isUserTypingRef.current = false;
       setQuery('');
       setResults([]);
       setIsOpen(false);
       return;
     }
-    // One-shot: consume the skip armed by a search-select.
-    if (skipNextReverseRef.current) {
-      skipNextReverseRef.current = false;
-      return;
-    }
+    // The snapped echo of a search pick: keep the label the user chose.
+    const picked = selectedLatLngRef.current;
+    if (picked && haversineKm(picked, latLng) < KEEP_LABEL_RADIUS_KM) return;
 
     if (debounceRef.current) clearTimeout(debounceRef.current);
     if (abortRef.current) abortRef.current.abort();
@@ -170,6 +192,7 @@ function SearchInput({
           signal: controller.signal,
           headers: { 'Accept-Language': 'en' },
         });
+        if (!res.ok) throw new Error(`Nominatim HTTP ${res.status}`);
         const data: NominatimReverseResult = await res.json();
         if (data.display_name) {
           isUserTypingRef.current = false;
@@ -182,7 +205,7 @@ function SearchInput({
           // Leave the previous text in place.
         }
       } finally {
-        setIsLoading(false);
+        if (abortRef.current === controller) setIsLoading(false);
       }
     }, delay);
 
@@ -194,9 +217,9 @@ function SearchInput({
   function select(result: NominatimResult) {
     const lat = parseFloat(result.lat);
     const lng = parseFloat(result.lon);
-    // Arm the one-shot snap-skip so the imminent SET_SOURCE dispatch with the
-    // node-snapped lat/lng doesn't overwrite this human label.
-    skipNextReverseRef.current = true;
+    // Remember where this label belongs so the imminent SET_SOURCE dispatch
+    // with the node-snapped lat/lng doesn't overwrite it.
+    selectedLatLngRef.current = [lat, lng];
     isUserTypingRef.current = false;
     setQuery(result.display_name);
     setResults([]);
@@ -297,6 +320,8 @@ function SearchInput({
           value={query}
           onChange={(e) => {
             isUserTypingRef.current = true;
+            // The label no longer describes the picked place.
+            selectedLatLngRef.current = null;
             setQuery(e.target.value);
           }}
           onKeyDown={onKeyDown}
