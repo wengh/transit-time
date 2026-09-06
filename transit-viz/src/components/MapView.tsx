@@ -265,12 +265,18 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
       const sAtStart = stateRef.current;
       if (!sAtStart.travelTimes) return;
 
-      // Re-verify state after async work. If the source changed or was
-      // cleared, this destination data is stale.
+      const hoverData = await buildHoverData(
+        node,
+        sAtStart.travelTimes,
+        sAtStart.sampleCounts,
+        sAtStart.totalSamples
+      );
+
+      // Re-verify state after the worker round-trip. If the source changed
+      // or was cleared meanwhile, this destination data was built against
+      // the old origin and must not be painted or stored.
       const s = stateRef.current;
       if (!s.travelTimes || s.sourceNode !== sAtStart.sourceNode) return;
-
-      const hoverData = await buildHoverData(node, s.travelTimes, s.sampleCounts, s.totalSamples);
 
       // A hover that resolves after the cursor already left the map must not
       // resurrect the cleared hover state. Pins are exempt — they persist.
@@ -390,6 +396,12 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
         }
         // Dest mode: replace any existing pin with the tapped node. A failed
         // snap clears the pin instead of leaving the previous one behind.
+        if (s.sourceNode !== null && !s.travelTimes) {
+          // Compute in progress: queue instead of dropping the tap. App.tsx
+          // drains pendingDest once the query completes.
+          dispatch({ type: 'QUEUE_PENDING_DEST', latLng: [lat, lng] });
+          return;
+        }
         const node = await snapToNode(lat, lng);
         if (node === null) dispatch({ type: 'UNPIN_DESTINATION' });
         else showDestination(node, true);
@@ -406,6 +418,13 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
       if (s.pinnedDest !== null) {
         if (Date.now() - lastPinTime < 300) return;
         dispatch({ type: 'UNPIN_DESTINATION' });
+        return;
+      }
+
+      if (!s.travelTimes) {
+        // Compute in progress: queue instead of dropping the click. App.tsx
+        // drains pendingDest once the query completes.
+        dispatch({ type: 'QUEUE_PENDING_DEST', latLng: [lat, lng] });
         return;
       }
 
@@ -628,6 +647,9 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
     const overlays = overlaysRef.current;
     if (!overlays) return;
     if (state.pinnedDest === null) {
+      // Forget the hover dedup key too, or hovering the node that was just
+      // unpinned shows nothing until the cursor reaches a different node.
+      lastHoveredNodeRef.current = null;
       overlays.setDest(null);
       overlays.clearRoutes();
       return;

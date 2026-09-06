@@ -213,6 +213,7 @@ export function reducer(state: AppState, action: Action): AppState {
         currentCity: null,
         pendingSource: null,
         pendingDest: null,
+        interactionMode: 'origin',
       };
     case 'CHANGE_CITY':
       return {
@@ -228,6 +229,10 @@ export function reducer(state: AppState, action: Action): AppState {
         hoverDest: null,
         pendingSource: null,
         pendingDest: null,
+        // The next city has no source yet, so its first tap must set one —
+        // otherwise mobile taps route to the dest branch and are dropped
+        // while the hint still says "Tap map to set origin".
+        interactionMode: 'origin',
       };
     case 'SET_SOURCE': {
       // keepDest=true preserves the pinned destination across a source change
