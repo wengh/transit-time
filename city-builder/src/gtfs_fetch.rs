@@ -108,15 +108,24 @@ pub fn fetch_gtfs(feed_id: &str, api_key: Option<&str>, cache_dir: &Path) -> Res
         }
 
         eprintln!("Downloading GTFS from Transitland: {}", feed_id);
-        let bytes = transitland::download_feed(key, feed_id)
-            .with_context(|| format!("Failed to fetch GTFS feed '{}'", feed_id))?;
-        http_cache::write_atomic(&cache_path, &bytes)?;
+        let tmp = http_cache::tmp_path(&cache_path);
+        let bytes = match transitland::download_feed(key, feed_id, &tmp) {
+            Ok(n) => n,
+            Err(e) => {
+                let _ = std::fs::remove_file(&tmp);
+                return Err(e.context(format!("Failed to fetch GTFS feed '{}'", feed_id)));
+            }
+        };
+        eprintln!("Downloaded GTFS: {:.1} MB", bytes as f64 / 1_048_576.0);
 
         // Record the hash of what we actually wrote, not what the API
         // reports as latest: the two can differ if a new version landed
         // between the two requests, and a sidecar that misdescribes the
         // file on disk pins stale data indefinitely.
-        let _ = std::fs::write(&sha1_path, sha1_hex(&bytes));
+        let sha1 = sha1_file(&tmp)?;
+        std::fs::rename(&tmp, &cache_path)
+            .with_context(|| format!("failed to move {:?} to {:?}", tmp, cache_path))?;
+        let _ = std::fs::write(&sha1_path, sha1);
 
         Ok(cache_path)
     } else {
@@ -148,11 +157,19 @@ pub fn fetch_gtfs(feed_id: &str, api_key: Option<&str>, cache_dir: &Path) -> Res
     }
 }
 
-/// Lowercase hex SHA-1, the same form Transitland reports for feed versions.
-pub fn sha1_hex(bytes: &[u8]) -> String {
+/// Lowercase hex SHA-1 of a file, the same form Transitland reports for
+/// feed versions. Streams the file rather than reading it into memory.
+pub fn sha1_file(path: &Path) -> Result<String> {
     use sha1::{Digest, Sha1};
-    let digest = Sha1::digest(bytes);
-    digest.iter().map(|b| format!("{:02x}", b)).collect()
+    let mut file =
+        std::fs::File::open(path).with_context(|| format!("failed to open {:?}", path))?;
+    let mut hasher = Sha1::new();
+    std::io::copy(&mut file, &mut hasher)?;
+    Ok(hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect())
 }
 
 pub fn sha1_recently_checked(sha1_path: &Path) -> bool {

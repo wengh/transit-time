@@ -155,31 +155,44 @@ pub fn head(client: &Client, url: &str) -> Result<Validators> {
     Ok(Validators::from_headers(resp.headers()))
 }
 
-/// Fetch `url` in full, returning the body and the validators to record.
-pub fn download(client: &Client, url: &str) -> Result<(Vec<u8>, Validators)> {
-    let resp = client
+/// Fetch `url` in full, streaming the body into `dest`. Returns the byte
+/// count and the validators to record. Streaming keeps peak memory at the
+/// copy buffer instead of the whole body (~1.7 GB for the largest OSM
+/// extract, inside a city-level `par_iter`).
+pub fn download(client: &Client, url: &str, dest: &Path) -> Result<(u64, Validators)> {
+    let mut resp = client
         .get(url)
         .send()
         .map_err(redact)?
         .error_for_status()
         .map_err(redact)?;
     let validators = Validators::from_headers(resp.headers());
-    let bytes = resp.bytes().map_err(redact)?.to_vec();
+    let mut file =
+        std::fs::File::create(dest).with_context(|| format!("failed to create {:?}", dest))?;
+    let bytes = resp.copy_to(&mut file).map_err(redact)?;
+    file.flush()?;
     Ok((bytes, validators))
 }
 
-/// Write `bytes` to `cache_path` atomically, so an interrupted re-download
-/// can't leave a truncated file where a valid cached one used to be.
+/// Where an in-progress download of `cache_path` is written before being
+/// renamed into place, so an interrupted re-download can't leave a truncated
+/// file where a valid cached one used to be.
+pub fn tmp_path(cache_path: &Path) -> PathBuf {
+    cache_path.with_extension("tmp")
+}
+
+/// Write `bytes` to `cache_path` atomically (via [`tmp_path`]).
 pub fn write_atomic(cache_path: &Path, bytes: &[u8]) -> Result<()> {
-    let tmp = cache_path.with_extension("tmp");
+    let tmp = tmp_path(cache_path);
     std::fs::File::create(&tmp)?.write_all(bytes)?;
     std::fs::rename(&tmp, cache_path)?;
     Ok(())
 }
 
-/// Store a downloaded body and its validators together.
-pub fn save(cache_path: &Path, bytes: &[u8], validators: &Validators) -> Result<()> {
-    write_atomic(cache_path, bytes)?;
+/// Move a fully downloaded temp file into place and record its validators.
+pub fn save(cache_path: &Path, tmp: &Path, validators: &Validators) -> Result<()> {
+    std::fs::rename(tmp, cache_path)
+        .with_context(|| format!("failed to move {:?} to {:?}", tmp, cache_path))?;
     store(cache_path, validators);
     Ok(())
 }
@@ -205,17 +218,17 @@ pub fn download_or_cached(
     max_age: Duration,
     label: &str,
 ) -> Result<PathBuf> {
-    let err = match download(client, url) {
+    let tmp = tmp_path(cache_path);
+    let err = match download(client, url, &tmp) {
         Ok((bytes, validators)) => {
-            eprintln!(
-                "Downloaded {}: {:.1} MB",
-                label,
-                bytes.len() as f64 / 1_048_576.0
-            );
-            save(cache_path, &bytes, &validators)?;
+            eprintln!("Downloaded {}: {:.1} MB", label, bytes as f64 / 1_048_576.0);
+            save(cache_path, &tmp, &validators)?;
             return Ok(cache_path.to_path_buf());
         }
-        Err(e) => e.context(format!("failed to download {} from {}", label, display_url)),
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            e.context(format!("failed to download {} from {}", label, display_url))
+        }
     };
 
     if cache_path.exists() && checked_within(cache_path, max_age) {

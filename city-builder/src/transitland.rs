@@ -101,28 +101,29 @@ pub fn latest_feed_sha1(api_key: &str, onestop_id: &str) -> Result<Option<String
     Ok(sha1)
 }
 
-/// Download the latest GTFS zip for a Transitland feed using header-based auth.
-pub fn download_feed(api_key: &str, onestop_id: &str) -> Result<Vec<u8>> {
+/// Download the latest GTFS zip for a Transitland feed using header-based
+/// auth, streaming it into `dest`. Returns the byte count.
+pub fn download_feed(api_key: &str, onestop_id: &str, dest: &std::path::Path) -> Result<u64> {
     let url = format!(
         "{}/feeds/{}/download_latest_feed_version",
         API_BASE, onestop_id
     );
     let client = crate::http_cache::client(std::time::Duration::from_secs(300))?;
-    let bytes = client
+    let mut resp = client
         .get(&url)
         .header("apikey", api_key)
         .send()
         .with_context(|| format!("Failed to request Transitland feed '{}'", onestop_id))?
         .error_for_status()
-        .with_context(|| format!("Failed to download feed '{}'", onestop_id))?
-        .bytes()
-        .with_context(|| {
-            format!(
-                "Failed to read Transitland response body for feed '{}'",
-                onestop_id
-            )
-        })?;
-    Ok(bytes.to_vec())
+        .with_context(|| format!("Failed to download feed '{}'", onestop_id))?;
+    let mut file =
+        std::fs::File::create(dest).with_context(|| format!("failed to create {:?}", dest))?;
+    resp.copy_to(&mut file).with_context(|| {
+        format!(
+            "Failed to read Transitland response body for feed '{}'",
+            onestop_id
+        )
+    })
 }
 
 pub fn query_feeds_in_bbox(api_key: &str, bbox: (f64, f64, f64, f64)) -> Result<Vec<Feed>> {
