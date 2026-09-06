@@ -459,164 +459,15 @@ pub fn parse_gtfs(path: &Path, bbox: (f64, f64, f64, f64)) -> Result<GtfsData> {
         }
     }
 
-    // Parse stop_times — stream directly from the zip entry to avoid allocating
-    // the full CSV as a String (can be several GB for large feeds like NYC buses).
-    // Convert stop/trip IDs to compact u32 indices on the fly using the maps
-    // built above; skip entries referencing unknown stops or trips.
-    let mut stop_times = Vec::new();
-    {
-        let entry_name = find_zip_entry_name(&archive, "stop_times.txt")
-            .context("stop_times.txt not found in GTFS")?;
-        let entry = archive
-            .by_name(&entry_name)
-            .context("Failed to open stop_times.txt")?;
-        let mut rdr = csv::ReaderBuilder::new()
-            .flexible(true)
-            .trim(csv::Trim::All)
-            .from_reader(entry);
-        // Buffer one trip at a time to interpolate missing times between
-        // timepoints. GTFS allows empty arrival/departure at non-timepoint stops;
-        // consumers must interpolate (spec §stop_times.txt). Hong Kong, for
-        // example, only timestamps the first and last stop of each trip.
-        //
-        // GTFS feeds almost universally emit stop_times sorted by trip_id, so
-        // we flush on trip_id transitions and keep only O(max_stops_per_trip)
-        // rows in memory instead of the entire file.
-        struct RawStopTime {
-            trip_index: u32,
-            stop_index: u32,
-            arrival: Option<u32>,
-            departure: Option<u32>,
-            stop_sequence: u32,
-        }
-        let mut trip_buf: Vec<RawStopTime> = Vec::new();
-        let mut buf_trip_idx: Option<u32> = None;
-
-        let (min_lon, min_lat, max_lon, max_lat) = bbox;
-        // Flush + emit the current trip_buf with linear interpolation.
-        // Only emit stops within the bbox so the stop_times Vec stays small
-        // even for large feeds (e.g. UK Rail with 5M null-timed rows worldwide).
-        // Out-of-bbox stops are kept in the buffer as interpolation anchors.
-        let flush_trip = |buf: &mut Vec<RawStopTime>, out: &mut Vec<StopTime>| {
-            if buf.is_empty() {
-                return;
-            }
-            buf.sort_by_key(|r| r.stop_sequence);
-            let n = buf.len();
-            let mut i = 0;
-            while i < n {
-                let dep_known = buf[i].departure.or(buf[i].arrival);
-                let arr_known = buf[i].arrival.or(buf[i].departure);
-                if dep_known.is_some() && arr_known.is_some() {
-                    buf[i].departure = dep_known;
-                    buf[i].arrival = arr_known;
-                    i += 1;
-                } else {
-                    // Find bracketing timepoints.
-                    let prev = (0..i)
-                        .rev()
-                        .find(|&j| buf[j].arrival.is_some() || buf[j].departure.is_some());
-                    let next =
-                        (i..n).find(|&j| buf[j].arrival.is_some() || buf[j].departure.is_some());
-                    match (prev, next) {
-                        (Some(p), Some(q)) if q > i => {
-                            let t_p = buf[p].departure.or(buf[p].arrival).unwrap();
-                            let t_q = buf[q].arrival.or(buf[q].departure).unwrap();
-                            let span = (q - p) as u64;
-                            for k in i..q {
-                                if buf[k].arrival.is_some() {
-                                    continue;
-                                }
-                                let t = t_p + ((k - p) as u64 * (t_q - t_p) as u64 / span) as u32;
-                                buf[k].arrival = Some(t);
-                                buf[k].departure = Some(t);
-                            }
-                            i = q;
-                        }
-                        _ => {
-                            i += 1;
-                        }
-                    }
-                }
-            }
-            // Enforce strict monotonicity across the trip: every stop's
-            // arrival must be at least 1s after the previous stop's departure,
-            // and departure >= arrival. Many feeds emit minute-rounded times
-            // (HH:MM:00 at every stop), so two consecutive bus stops a half
-            // minute apart end up with `to.arrival == from.departure`.
-            //
-            // Downstream uses `travel_time == 0` (i.e. `to.arrival ==
-            // from.departure`) as the trip-end sentinel marker, so a
-            // non-sentinel zero-second leg would be indistinguishable from a
-            // trip terminator. Bumping forward by 1s per tie stretches the
-            // trip by at most a few seconds — negligible vs. the rounding
-            // already baked into the source data.
-            let mut prev_dep: Option<u32> = None;
-            for r in buf.iter_mut() {
-                let (Some(arr), Some(dep)) = (r.arrival, r.departure) else {
-                    continue;
-                };
-                let new_arr = match prev_dep {
-                    Some(pd) if arr <= pd => pd + 1,
-                    _ => arr,
-                };
-                let new_dep = new_arr.max(dep);
-                r.arrival = Some(new_arr);
-                r.departure = Some(new_dep);
-                prev_dep = Some(new_dep);
-            }
-
-            for r in buf.drain(..) {
-                if let (Some(arr), Some(dep)) = (r.arrival, r.departure) {
-                    let s = &stops[r.stop_index as usize];
-                    if s.lat >= min_lat && s.lat <= max_lat && s.lon >= min_lon && s.lon <= max_lon
-                    {
-                        out.push(StopTime {
-                            trip_index: r.trip_index,
-                            stop_index: r.stop_index,
-                            arrival_time: arr,
-                            departure_time: dep,
-                            stop_sequence: r.stop_sequence,
-                        });
-                    }
-                }
-            }
-        };
-
-        for (row, result) in rdr.deserialize::<StopTimeRecord>().enumerate() {
-            let record = result?;
-            let trip_idx = match trip_id_to_index.get(&record.trip_id) {
-                Some(&i) => i,
-                None => continue,
-            };
-            let stop_idx = match stop_id_to_index.get(&record.stop_id) {
-                Some(&i) => i,
-                None => continue,
-            };
-            // On trip transition, flush the previous trip's buffer.
-            if buf_trip_idx != Some(trip_idx) {
-                flush_trip(&mut trip_buf, &mut stop_times);
-                buf_trip_idx = Some(trip_idx);
-            }
-            let arrival = record.arrival_time.as_deref().and_then(parse_time);
-            let departure = record.departure_time.as_deref().and_then(parse_time);
-            trip_buf.push(RawStopTime {
-                trip_index: trip_idx,
-                stop_index: stop_idx,
-                arrival,
-                departure,
-                stop_sequence: parse_field(
-                    &record.stop_sequence,
-                    feed,
-                    "stop_times.txt",
-                    row + 1,
-                    "stop_sequence",
-                )?,
-            });
-        }
-        // Flush the last trip.
-        flush_trip(&mut trip_buf, &mut stop_times);
-    }
+    let stop_times = parse_stop_times(
+        &mut archive,
+        feed,
+        &trip_id_to_index,
+        &stop_id_to_index,
+        &stops,
+        trips.len(),
+        bbox,
+    )?;
 
     // Parse calendar
     let mut services: HashMap<String, Service> = HashMap::new();
@@ -798,6 +649,284 @@ pub fn parse_gtfs(path: &Path, bbox: (f64, f64, f64, f64)) -> Result<GtfsData> {
         feed_start_date,
         feed_end_date,
     })
+}
+
+/// One `stop_times.txt` row with IDs resolved to indices and times parsed.
+struct RawStopTime {
+    trip_index: u32,
+    stop_index: u32,
+    arrival: Option<u32>,
+    departure: Option<u32>,
+    stop_sequence: u32,
+}
+
+/// Stream `stop_times.txt` from the zip entry, resolving stop/trip IDs to
+/// compact u32 indices on the fly (rows referencing unknown stops or trips
+/// are skipped). Streaming avoids materialising the CSV as a String, which
+/// can be several GB for large feeds like NYC buses. `on_row` returns
+/// `false` to stop early.
+fn for_each_stop_time_row(
+    archive: &mut zip::ZipArchive<std::fs::File>,
+    feed: &str,
+    trip_id_to_index: &HashMap<String, u32>,
+    stop_id_to_index: &HashMap<String, u32>,
+    mut on_row: impl FnMut(RawStopTime) -> bool,
+) -> Result<()> {
+    let entry_name = find_zip_entry_name(archive, "stop_times.txt")
+        .context("stop_times.txt not found in GTFS")?;
+    let entry = archive
+        .by_name(&entry_name)
+        .context("Failed to open stop_times.txt")?;
+    let mut rdr = csv::ReaderBuilder::new()
+        .flexible(true)
+        .trim(csv::Trim::All)
+        .from_reader(entry);
+    for (row, result) in rdr.deserialize::<StopTimeRecord>().enumerate() {
+        let record = result?;
+        let Some(&trip_index) = trip_id_to_index.get(&record.trip_id) else {
+            continue;
+        };
+        let Some(&stop_index) = stop_id_to_index.get(&record.stop_id) else {
+            continue;
+        };
+        let raw = RawStopTime {
+            trip_index,
+            stop_index,
+            arrival: record.arrival_time.as_deref().and_then(parse_time),
+            departure: record.departure_time.as_deref().and_then(parse_time),
+            stop_sequence: parse_field(
+                &record.stop_sequence,
+                feed,
+                "stop_times.txt",
+                row + 1,
+                "stop_sequence",
+            )?,
+        };
+        if !on_row(raw) {
+            break;
+        }
+    }
+    Ok(())
+}
+
+/// Accumulates one trip's rows at a time and emits them through
+/// [`flush_trip`] on every trip transition, so only O(max stops per trip)
+/// raw rows are resident. `push` reports whether the row order is still
+/// grouped by trip; a trip that reappears after being flushed means the file
+/// is not grouped and the caller must fall back to sorting.
+struct TripFlusher<'a> {
+    stops: &'a [Stop],
+    bbox: (f64, f64, f64, f64),
+    buf: Vec<RawStopTime>,
+    current: Option<u32>,
+    seen: Vec<bool>,
+    out: Vec<StopTime>,
+    /// Rows dropped because their bracketing timepoints ran backwards.
+    dropped: usize,
+}
+
+impl<'a> TripFlusher<'a> {
+    fn new(stops: &'a [Stop], num_trips: usize, bbox: (f64, f64, f64, f64)) -> Self {
+        Self {
+            stops,
+            bbox,
+            buf: Vec::new(),
+            current: None,
+            seen: vec![false; num_trips],
+            out: Vec::new(),
+            dropped: 0,
+        }
+    }
+
+    fn push(&mut self, raw: RawStopTime) -> bool {
+        if self.current != Some(raw.trip_index) {
+            self.flush();
+            if std::mem::replace(&mut self.seen[raw.trip_index as usize], true) {
+                return false;
+            }
+            self.current = Some(raw.trip_index);
+        }
+        self.buf.push(raw);
+        true
+    }
+
+    fn flush(&mut self) {
+        self.dropped += flush_trip(&mut self.buf, self.stops, self.bbox, &mut self.out);
+    }
+
+    fn reset(&mut self) {
+        self.buf.clear();
+        self.current = None;
+        self.seen.iter_mut().for_each(|s| *s = false);
+        self.out.clear();
+        self.dropped = 0;
+    }
+
+    fn finish(mut self) -> (Vec<StopTime>, usize) {
+        self.flush();
+        (self.out, self.dropped)
+    }
+}
+
+/// Parse `stop_times.txt` into in-bbox rows with complete, strictly
+/// increasing times.
+///
+/// GTFS feeds almost universally emit stop_times grouped by trip, so the
+/// fast path streams the file and flushes on trip transitions. A feed that
+/// interleaves trips (Prince George's County "TheBus") used to flush almost
+/// every row as its own trip: untimed rows were dropped and the monotonicity
+/// pass never saw consecutive stops, leaving 47,928 zero-length legs in
+/// `washington_dc.bin`. Such a feed is now detected on the first reappearing
+/// trip and re-read in full, sorted by `(trip, stop_sequence)`.
+fn parse_stop_times(
+    archive: &mut zip::ZipArchive<std::fs::File>,
+    feed: &str,
+    trip_id_to_index: &HashMap<String, u32>,
+    stop_id_to_index: &HashMap<String, u32>,
+    stops: &[Stop],
+    num_trips: usize,
+    bbox: (f64, f64, f64, f64),
+) -> Result<Vec<StopTime>> {
+    let mut flusher = TripFlusher::new(stops, num_trips, bbox);
+    let mut grouped = true;
+    for_each_stop_time_row(archive, feed, trip_id_to_index, stop_id_to_index, |raw| {
+        grouped = flusher.push(raw);
+        grouped
+    })?;
+
+    if !grouped {
+        eprintln!("WARNING: {feed}: stop_times.txt is not grouped by trip — sorting all rows");
+        flusher.reset();
+        let mut rows: Vec<RawStopTime> = Vec::new();
+        for_each_stop_time_row(archive, feed, trip_id_to_index, stop_id_to_index, |raw| {
+            rows.push(raw);
+            true
+        })?;
+        // Stable: rows with equal stop_sequence keep file order.
+        rows.sort_by_key(|r| (r.trip_index, r.stop_sequence));
+        for raw in rows {
+            let ok = flusher.push(raw);
+            debug_assert!(ok, "sorted rows must be grouped by trip");
+        }
+    }
+
+    let (stop_times, dropped) = flusher.finish();
+    if dropped > 0 {
+        eprintln!(
+            "WARNING: {feed}: dropped {dropped} untimed stop_times row(s) whose bracketing timepoints run backwards"
+        );
+    }
+    Ok(stop_times)
+}
+
+/// Interpolate missing times, enforce monotonicity and emit the in-bbox rows
+/// of one trip from `buf` (drained). Returns the number of rows dropped
+/// because their bracketing timepoints ran backwards.
+///
+/// GTFS allows empty arrival/departure at non-timepoint stops; consumers
+/// must interpolate (spec §stop_times.txt). Hong Kong, for example, only
+/// timestamps the first and last stop of each trip. Only stops within the
+/// bbox are emitted so the stop_times Vec stays small even for large feeds
+/// (e.g. UK Rail with 5M null-timed rows worldwide); out-of-bbox stops are
+/// still used as interpolation anchors.
+fn flush_trip(
+    buf: &mut Vec<RawStopTime>,
+    stops: &[Stop],
+    bbox: (f64, f64, f64, f64),
+    out: &mut Vec<StopTime>,
+) -> usize {
+    if buf.is_empty() {
+        return 0;
+    }
+    let (min_lon, min_lat, max_lon, max_lat) = bbox;
+    let mut dropped = 0usize;
+    buf.sort_by_key(|r| r.stop_sequence);
+    let n = buf.len();
+    let mut i = 0;
+    while i < n {
+        let dep_known = buf[i].departure.or(buf[i].arrival);
+        let arr_known = buf[i].arrival.or(buf[i].departure);
+        if dep_known.is_some() && arr_known.is_some() {
+            buf[i].departure = dep_known;
+            buf[i].arrival = arr_known;
+            i += 1;
+        } else {
+            // Find bracketing timepoints.
+            let prev = (0..i)
+                .rev()
+                .find(|&j| buf[j].arrival.is_some() || buf[j].departure.is_some());
+            let next = (i..n).find(|&j| buf[j].arrival.is_some() || buf[j].departure.is_some());
+            match (prev, next) {
+                (Some(p), Some(q)) if q > i => {
+                    let t_p = buf[p].departure.or(buf[p].arrival).unwrap() as i64;
+                    let t_q = buf[q].arrival.or(buf[q].departure).unwrap() as i64;
+                    if t_q < t_p {
+                        // Timepoints run backwards: nothing sensible to
+                        // interpolate. Leave the rows untimed so they are
+                        // dropped below rather than given garbage times
+                        // (the u32 subtraction used to wrap here).
+                        dropped += (i..q).filter(|&k| buf[k].arrival.is_none()).count();
+                    } else {
+                        let span = (q - p) as i64;
+                        for k in i..q {
+                            if buf[k].arrival.is_some() {
+                                continue;
+                            }
+                            let t = (t_p + (k - p) as i64 * (t_q - t_p) / span) as u32;
+                            buf[k].arrival = Some(t);
+                            buf[k].departure = Some(t);
+                        }
+                    }
+                    i = q;
+                }
+                _ => {
+                    i += 1;
+                }
+            }
+        }
+    }
+    // Enforce strict monotonicity across the trip: every stop's
+    // arrival must be at least 1s after the previous stop's departure,
+    // and departure >= arrival. Many feeds emit minute-rounded times
+    // (HH:MM:00 at every stop), so two consecutive bus stops a half
+    // minute apart end up with `to.arrival == from.departure`.
+    //
+    // Downstream uses `travel_time == 0` (i.e. `to.arrival ==
+    // from.departure`) as the trip-end sentinel marker, so a
+    // non-sentinel zero-second leg would be indistinguishable from a
+    // trip terminator. Bumping forward by 1s per tie stretches the
+    // trip by at most a few seconds — negligible vs. the rounding
+    // already baked into the source data.
+    let mut prev_dep: Option<u32> = None;
+    for r in buf.iter_mut() {
+        let (Some(arr), Some(dep)) = (r.arrival, r.departure) else {
+            continue;
+        };
+        let new_arr = match prev_dep {
+            Some(pd) if arr <= pd => pd + 1,
+            _ => arr,
+        };
+        let new_dep = new_arr.max(dep);
+        r.arrival = Some(new_arr);
+        r.departure = Some(new_dep);
+        prev_dep = Some(new_dep);
+    }
+
+    for r in buf.drain(..) {
+        if let (Some(arr), Some(dep)) = (r.arrival, r.departure) {
+            let s = &stops[r.stop_index as usize];
+            if s.lat >= min_lat && s.lat <= max_lat && s.lon >= min_lon && s.lon <= max_lon {
+                out.push(StopTime {
+                    trip_index: r.trip_index,
+                    stop_index: r.stop_index,
+                    arrival_time: arr,
+                    departure_time: dep,
+                    stop_sequence: r.stop_sequence,
+                });
+            }
+        }
+    }
+    dropped
 }
 
 pub fn build_service_patterns(data: &GtfsData) -> Vec<ServicePattern> {
