@@ -23,11 +23,18 @@ pub fn unix_days_now() -> u32 {
     (chrono::Utc::now().date_naive() - unix_epoch()).num_days() as u32
 }
 
-pub fn yyyymmdd_to_days(date: u32) -> u32 {
+/// Decode a GTFS `YYYYMMDD` integer. `None` for impossible dates such as
+/// `20240230`. All dates are validated with this at parse time
+/// (`gtfs::parse_gtfs`), so later stages may `expect` it.
+pub fn parse_yyyymmdd(date: u32) -> Option<NaiveDate> {
     let y = (date / 10000) as i32;
     let m = (date / 100) % 100;
     let d = date % 100;
-    let nd = NaiveDate::from_ymd_opt(y, m, d).expect("invalid YYYYMMDD date");
+    NaiveDate::from_ymd_opt(y, m, d)
+}
+
+pub fn yyyymmdd_to_days(date: u32) -> u32 {
+    let nd = parse_yyyymmdd(date).expect("invalid YYYYMMDD date");
     (nd - unix_epoch()).num_days() as u32
 }
 

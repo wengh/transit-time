@@ -67,14 +67,13 @@ pub fn prepare(
         })
         .collect::<Result<Vec<_>>>()?;
 
-    let mut merged: Option<gtfs::GtfsData> = None;
-    for data in parsed {
-        match merged {
-            Some(ref mut m) => m.merge(data),
-            None => merged = Some(data),
-        }
+    let mut parsed = parsed.into_iter().enumerate();
+    let Some((_, mut gtfs_data)) = parsed.next() else {
+        anyhow::bail!("no GTFS feeds given for '{city_id}'");
+    };
+    for (ordinal, data) in parsed {
+        gtfs_data.merge(data, ordinal);
     }
-    let mut gtfs_data = merged.unwrap();
 
     eprintln!("\n--- GTFS summary ---");
     eprintln!(

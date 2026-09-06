@@ -98,18 +98,18 @@ pub struct GtfsData {
 impl GtfsData {
     /// Merge another feed into this one.
     ///
-    /// All string IDs in `other` are prefixed with `"<stop_count>:"` before
-    /// insertion so that stop/trip/route/service IDs can never collide across
-    /// feeds. Without this, two feeds that happen to share a stop ID (e.g.
-    /// both use "1234") would have their stop_times cross-mapped to the wrong
-    /// physical location, producing phantom "instant" transit legs.
-    pub fn merge(&mut self, other: GtfsData) {
+    /// All string IDs in `other` are prefixed with `"<ordinal>:"` (the feed's
+    /// position in the city's feed list; the first feed is the merge base and
+    /// stays unprefixed) before insertion so that stop/trip/route/service IDs
+    /// can never collide across feeds. Without this, two feeds that happen to
+    /// share a stop ID (e.g. both use "1234") would have their stop_times
+    /// cross-mapped to the wrong physical location, producing phantom
+    /// "instant" transit legs.
+    pub fn merge(&mut self, other: GtfsData, ordinal: usize) {
         let stop_offset = self.stops.len() as u32;
         let route_offset = self.routes.len() as u32;
         let trip_offset = self.trips.len() as u32;
-        // Derive a per-feed prefix from the current stop count — guaranteed
-        // unique because it grows monotonically with each merge call.
-        let p = format!("{}:", stop_offset);
+        let p = format!("{ordinal}:");
 
         for mut stop in other.stops {
             stop.id = format!("{p}{}", stop.id);
@@ -283,6 +283,35 @@ struct ShapeRecord {
     shape_pt_sequence: String,
 }
 
+/// Parse a numeric CSV field, naming the feed, file, data row (1-based,
+/// header excluded) and column on failure. A bare `parse().unwrap()` here
+/// aborts the whole build inside a rayon worker with no way to tell which
+/// of a city's twenty feeds is at fault.
+fn parse_field<T: std::str::FromStr>(
+    value: &str,
+    feed: &str,
+    file: &str,
+    row: usize,
+    field: &str,
+) -> Result<T>
+where
+    T::Err: std::fmt::Display,
+{
+    value
+        .trim()
+        .parse::<T>()
+        .map_err(|e| anyhow::anyhow!("{feed}: {file} row {row}: invalid {field} {value:?}: {e}"))
+}
+
+/// Parse a `YYYYMMDD` field and reject impossible dates (`20240230`) so no
+/// later stage can panic on them.
+fn parse_date_field(value: &str, feed: &str, file: &str, row: usize, field: &str) -> Result<u32> {
+    let date: u32 = parse_field(value, feed, file, row, field)?;
+    crate::stale::parse_yyyymmdd(date)
+        .map(|_| date)
+        .ok_or_else(|| anyhow::anyhow!("{feed}: {file} row {row}: invalid {field} {value:?}"))
+}
+
 fn parse_time(s: &str) -> Option<u32> {
     let s = s.trim();
     if s.is_empty() {
@@ -339,8 +368,15 @@ fn find_zip_entry_name(archive: &zip::ZipArchive<std::fs::File>, name: &str) -> 
 }
 
 pub fn parse_gtfs(path: &Path, bbox: (f64, f64, f64, f64)) -> Result<GtfsData> {
-    let file = std::fs::File::open(path).context("Failed to open GTFS zip")?;
+    let file =
+        std::fs::File::open(path).with_context(|| format!("Failed to open GTFS zip {path:?}"))?;
     let mut archive = zip::ZipArchive::new(file)?;
+    // Feed name for error messages: which of a city's feeds is at fault.
+    let feed = path
+        .file_name()
+        .map(|f| f.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string());
+    let feed = feed.as_str();
 
     // Parse stops
     let stops_csv =
@@ -548,7 +584,7 @@ pub fn parse_gtfs(path: &Path, bbox: (f64, f64, f64, f64)) -> Result<GtfsData> {
             }
         };
 
-        for result in rdr.deserialize::<StopTimeRecord>() {
+        for (row, result) in rdr.deserialize::<StopTimeRecord>().enumerate() {
             let record = result?;
             let trip_idx = match trip_id_to_index.get(&record.trip_id) {
                 Some(&i) => i,
@@ -570,7 +606,13 @@ pub fn parse_gtfs(path: &Path, bbox: (f64, f64, f64, f64)) -> Result<GtfsData> {
                 stop_index: stop_idx,
                 arrival,
                 departure,
-                stop_sequence: record.stop_sequence.parse().unwrap(),
+                stop_sequence: parse_field(
+                    &record.stop_sequence,
+                    feed,
+                    "stop_times.txt",
+                    row + 1,
+                    "stop_sequence",
+                )?,
             });
         }
         // Flush the last trip.
@@ -584,8 +626,17 @@ pub fn parse_gtfs(path: &Path, bbox: (f64, f64, f64, f64)) -> Result<GtfsData> {
             .flexible(true)
             .trim(csv::Trim::All)
             .from_reader(cal_csv.as_bytes());
-        for result in rdr.deserialize::<CalendarRecord>() {
+        for (row, result) in rdr.deserialize::<CalendarRecord>().enumerate() {
             let record = result?;
+            let start_date = parse_date_field(
+                &record.start_date,
+                feed,
+                "calendar.txt",
+                row + 1,
+                "start_date",
+            )?;
+            let end_date =
+                parse_date_field(&record.end_date, feed, "calendar.txt", row + 1, "end_date")?;
             services.insert(
                 record.service_id.clone(),
                 Service {
@@ -599,8 +650,8 @@ pub fn parse_gtfs(path: &Path, bbox: (f64, f64, f64, f64)) -> Result<GtfsData> {
                         record.saturday == "1",
                         record.sunday == "1",
                     ],
-                    start_date: record.start_date.parse().unwrap(),
-                    end_date: record.end_date.parse().unwrap(),
+                    start_date,
+                    end_date,
                     added_dates: Vec::new(),
                     removed_dates: Vec::new(),
                 },
@@ -614,9 +665,9 @@ pub fn parse_gtfs(path: &Path, bbox: (f64, f64, f64, f64)) -> Result<GtfsData> {
             .flexible(true)
             .trim(csv::Trim::All)
             .from_reader(cal_dates_csv.as_bytes());
-        for result in rdr.deserialize::<CalendarDateRecord>() {
+        for (row, result) in rdr.deserialize::<CalendarDateRecord>().enumerate() {
             let record = result?;
-            let date: u32 = record.date.parse().unwrap();
+            let date = parse_date_field(&record.date, feed, "calendar_dates.txt", row + 1, "date")?;
             let service = services
                 .entry(record.service_id.clone())
                 .or_insert_with(|| Service {
@@ -668,18 +719,34 @@ pub fn parse_gtfs(path: &Path, bbox: (f64, f64, f64, f64)) -> Result<GtfsData> {
             .flexible(true)
             .trim(csv::Trim::All)
             .from_reader(freq_csv.as_bytes());
-        for result in rdr.deserialize::<FrequencyRecord>() {
+        for (row, result) in rdr.deserialize::<FrequencyRecord>().enumerate() {
             let record = result?;
-            if let (Some(start), Some(end)) =
+            let (Some(start), Some(end)) =
                 (parse_time(&record.start_time), parse_time(&record.end_time))
-            {
-                frequencies.push(Frequency {
-                    trip_id: record.trip_id,
-                    start_time: start,
-                    end_time: end,
-                    headway_secs: record.headway_secs.parse().unwrap(),
-                });
-            }
+            else {
+                continue;
+            };
+            // A malformed frequency row only loses that row's departures, so
+            // warn and skip rather than fail the city build.
+            let headway_secs: u32 = match parse_field(
+                &record.headway_secs,
+                feed,
+                "frequencies.txt",
+                row + 1,
+                "headway_secs",
+            ) {
+                Ok(h) => h,
+                Err(e) => {
+                    eprintln!("WARNING: {e:#} — skipping row");
+                    continue;
+                }
+            };
+            frequencies.push(Frequency {
+                trip_id: record.trip_id,
+                start_time: start,
+                end_time: end,
+                headway_secs,
+            });
         }
     }
 

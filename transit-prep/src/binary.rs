@@ -539,10 +539,8 @@ fn write_i32(buf: &mut Vec<u8>, v: i32) {
 
 fn yyyymmdd_to_days(v: u32) -> i32 {
     use chrono::Datelike;
-    let y = (v / 10_000) as i32;
-    let m = (v / 100) % 100;
-    let d = v % 100;
-    chrono::NaiveDate::from_ymd_opt(y, m, d)
+    // Dates were validated in `gtfs::parse_gtfs`.
+    crate::stale::parse_yyyymmdd(v)
         .unwrap_or_else(|| panic!("invalid YYYYMMDD: {v}"))
         .num_days_from_ce()
 }
