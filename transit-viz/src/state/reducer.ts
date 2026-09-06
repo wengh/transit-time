@@ -77,7 +77,6 @@ export function currentDest(state: AppState): Destination | null {
 export interface HoverData {
   allPaths: HoverPath[];
   representativeIndex: number | null;
-  travelTimes: number[];
   // Per-node analytic summary from the Rust profile router. Populated from
   // `state.travelTimes[node]` and `state.sampleCounts[node] / state.totalSamples`.
   // `avgTravelTime` is null when the node is unreachable.

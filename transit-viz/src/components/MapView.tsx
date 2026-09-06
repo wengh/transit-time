@@ -4,10 +4,9 @@ import { useAppState } from '../state/AppContext';
 import { animationStore, useAnimMode, useAnimRenderedDeparture } from '../state/animationStore';
 import { cancelInflightQuery, snapToNode, type HoverPath } from '../utils/router';
 import type { HoverData } from '../state/reducer';
-import { deriveDisplayPath } from './HoverInfo';
 import { ROUTE_COLORS } from '../utils/colors';
 import { getHashParams, setHashParams } from '../utils/urlHash';
-import { buildHoverData } from '../utils/hoverInfo';
+import { buildHoverData, deriveDisplayPath } from '../utils/hoverInfo';
 import { resolveMapStyle, tuneStyleForZoomOut, REPO_ATTR, type MapStyle } from '../utils/mapStyles';
 import { MapOverlays, toLngLat, type PointFeature, type RouteFeature } from '../utils/mapOverlays';
 import { mapToSlippyZoom, slippyToMapZoom } from '../utils/zoom';
@@ -53,6 +52,12 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
   // live animation state without re-running the map-events effect.
   const resolveRoutePathsRef = useRef<(hd: HoverData) => HoverPath[]>(() => []);
   const lastHoveredNodeRef = useRef<number | null>(null);
+  // The single path last drawn for the pinned destination during playback,
+  // so a playhead move that resolves to the same path skips the GeoJSON
+  // rebuild and source re-upload (deriveDisplayPath returns paths by
+  // reference, so identity is meaningful here). Null when the last draw was
+  // the full Pareto fan or nothing.
+  const lastDrawnPathRef = useRef<HoverPath | null>(null);
 
   // Refs to closures (updated each time the map-events effect runs)
   // so the imperative handle can call them from outside MapView.
@@ -664,8 +669,15 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
   // `showDestination`, not here.
   useEffect(() => {
     const pinnedHoverData = state.pinnedDest?.hoverData;
-    if (!drawRouteLayersRef.current || !pinnedHoverData) return;
-    drawRouteLayersRef.current(resolveRoutePathsRef.current(pinnedHoverData));
+    if (!drawRouteLayersRef.current || !pinnedHoverData) {
+      lastDrawnPathRef.current = null;
+      return;
+    }
+    const paths = resolveRoutePathsRef.current(pinnedHoverData);
+    const single = paths.length === 1 ? paths[0] : null;
+    if (single !== null && single === lastDrawnPathRef.current) return;
+    lastDrawnPathRef.current = single;
+    drawRouteLayersRef.current(paths);
   }, [state.pinnedDest, animMode, animDep]);
 
   // Draw source marker when sourceNode is set externally (URL restore)

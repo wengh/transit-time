@@ -42,7 +42,8 @@ export interface RunQueryParams {
 
 export interface HoverPath {
   segments: PathSegment[];
-  totalTime: number | null;
+  /** Seconds. Always present: the Rust side only emits reachable paths. */
+  totalTime: number;
   departureTime: number;
   routeColor: string;
   display: PathDisplay | null;

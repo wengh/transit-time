@@ -1,15 +1,20 @@
 import React, { useEffect, useRef, useState, useCallback, useId } from 'react';
 import { useAppState } from '../state/AppContext';
 import type { HoverPath } from '../utils/router';
-import { currentDest, type HoverData } from '../state/reducer';
-import { getMedianPath } from '../utils/hoverInfo';
+import { currentDest } from '../state/reducer';
+import {
+  CHART_PAD,
+  computeChartInfo,
+  pathIdxAtTime,
+  timeAtCanvasX,
+  useDestinationSummary,
+  type ChartInfo,
+} from '../utils/hoverInfo';
 import { formatTime } from '../utils/format';
-import { formatDistance, haversineKm } from '../utils/geo';
 import {
   animationStore,
   useAnimMode,
   useAnimTime,
-  useAnimRenderedDeparture,
   useAnimPlaying,
   useAnimReady,
   useAnimCommittedPlayhead,
@@ -17,73 +22,7 @@ import {
 } from '../state/animationStore';
 import PathSegmentList from './PathSegmentList';
 
-// ─── chart data types ────────────────────────────────────────────────────────
-
-interface ChartTip {
-  tipX: number; // absolute departure time when you just catch this trip (seconds)
-  tipY: number; // travel time if you just catch it (seconds)
-  pathIdx: number; // index into allPaths for the representative path for this trip
-  color: string;
-}
-
-interface ChartInfo {
-  tips: ChartTip[];
-  walkTime: number | null;
-  walkPathIdx: number | null;
-  windowStart: number;
-  windowEnd: number;
-  yMax: number;
-}
-
-// ─── chart computation ────────────────────────────────────────────────────────
-
-function computeChartInfo(
-  allPaths: HoverPath[],
-  windowStart: number,
-  windowEnd: number,
-  maxTimeSec: number
-): ChartInfo {
-  let walkTime: number | null = null;
-  let walkPathIdx: number | null = null;
-  const rawTips: Array<ChartTip> = [];
-
-  for (let i = 0; i < allPaths.length; i++) {
-    const p = allPaths[i];
-    if (p.totalTime === null) continue;
-
-    const isWalkOnly = p.segments.length > 0 && p.segments.every((s) => s.edgeType === 0);
-    if (isWalkOnly) {
-      if (walkTime === null || p.totalTime < walkTime) {
-        walkTime = p.totalTime;
-        walkPathIdx = i;
-      }
-      continue;
-    }
-
-    const firstTransit = p.segments.find((s) => s.edgeType === 1);
-    if (!firstTransit) continue;
-
-    const w = firstTransit.waitTime;
-    const tipX = p.departureTime + w;
-    const tipY = p.totalTime - w;
-    if (tipY < 0) continue;
-
-    // No arrival-time dedup: Pareto dominance in the Rust profile router
-    // already guarantees unique (arrival, home_departure) pairs. If two
-    // entries collide here, that's a bug in the Rust filter — surface it
-    // rather than masking it in the chart.
-    rawTips.push({ tipX, tipY, pathIdx: i, color: p.routeColor });
-  }
-
-  const tips: ChartTip[] = rawTips.sort((a, b) => a.tipX - b.tipX);
-
-  const yMax = maxTimeSec;
-  return { tips, walkTime, walkPathIdx, windowStart, windowEnd, yMax };
-}
-
 // ─── chart drawing ────────────────────────────────────────────────────────────
-
-const PAD = { top: 8, right: 8, bottom: 22, left: 34 };
 
 interface ChartTheme {
   bg: string;
@@ -188,7 +127,7 @@ function drawChart(
   const { tips, walkTime, walkPathIdx, windowStart, windowEnd, yMax } = info;
   const W = size,
     H = height;
-  const { top: pT, right: pR, bottom: pB, left: pL } = PAD;
+  const { top: pT, right: pR, bottom: pB, left: pL } = CHART_PAD;
   // The left gutter is constant whether or not there's a destination: with no
   // y-axis it simply stays empty. Keeping pL fixed means the plot region — and
   // thus the time→x mapping — is identical in both states, so the playhead and
@@ -391,32 +330,6 @@ function drawChart(
   drawPlayhead(previewTime, theme.playheadPreview, true);
 }
 
-// ─── time ↔ x-position ↔ path index ──────────────────────────────────────────
-
-/** Map a canvas x-pixel to the departure time it represents on the chart. */
-function timeAtCanvasX(canvasX: number, canvasWidth: number, info: ChartInfo): number {
-  const plotW = canvasWidth - PAD.left - PAD.right;
-  const frac = (canvasX - PAD.left) / plotW;
-  return info.windowStart + frac * (info.windowEnd - info.windowStart);
-}
-
-/** Which path in `allPaths` is optimal when departing at time `t`. */
-function pathIdxAtTime(t: number, info: ChartInfo): number | null {
-  const { tips, walkPathIdx, windowStart, yMax, walkTime } = info;
-  const clipY = walkTime !== null ? Math.min(walkTime, yMax) : yMax;
-
-  for (let i = 0; i < tips.length; i++) {
-    const leftBound = i === 0 ? windowStart : tips[i - 1].tipX;
-    const { tipX, tipY } = tips[i];
-    if (t >= leftBound && t <= tipX) {
-      // Entire trip is slower than walk/maxTime, or departure is in the grey zone
-      if (tipY > clipY || t < tipX - (clipY - tipY)) return walkPathIdx;
-      return tips[i].pathIdx;
-    }
-  }
-  return walkPathIdx;
-}
-
 // ─── hint button ──────────────────────────────────────────────────────────────
 
 function ChartHintButton(): React.ReactNode {
@@ -504,62 +417,7 @@ interface HoverInfoProps {
   onActivate: () => void;
 }
 
-// ── Shared helpers + components reused by the mobile bottom sheet ──────────
-
-// Resolve the path to show in the detail panel. With no departure time chosen
-// (average view) this is the representative/median path; with one chosen it is
-// the path optimal for that departure — found by replaying the chart's
-// time→path-index mapping. Unlike the old per-sample view, the leading wait is
-// *kept*: when you pick a clock time, the wait until the vehicle arrives is
-// real time you'd spend, so it belongs in the trip.
-export function deriveDisplayPath(
-  hoverData: HoverData,
-  departureTime: number | null,
-  windowStart: number,
-  windowEnd: number,
-  maxTimeSec: number
-): HoverPath | null {
-  const { allPaths, representativeIndex } = hoverData;
-  if (departureTime === null) {
-    return representativeIndex !== null && allPaths[representativeIndex]
-      ? { ...allPaths[representativeIndex] }
-      : getMedianPath(allPaths);
-  }
-  const info = computeChartInfo(allPaths, windowStart, windowEnd, maxTimeSec);
-  const idx = pathIdxAtTime(departureTime, info);
-  return idx !== null && allPaths[idx] ? { ...allPaths[idx] } : null;
-}
-
-/**
- * One-line summary above the chart, e.g. `avg 24 min / 100% reachable / 10 km`.
- * `distanceKm` is the straight-line origin→destination distance (null if unknown).
- */
-export function deriveTitleText(
-  hoverData: HoverData,
-  departureTime: number | null,
-  displayPath: HoverPath | null,
-  distanceKm: number | null = null
-): string {
-  const parts: string[] = [];
-  if (departureTime !== null) {
-    if (displayPath?.totalTime != null) {
-      const depStr = formatTime(displayPath.departureTime);
-      parts.push(`${Math.round(displayPath.totalTime / 60)} min (depart ${depStr})`);
-    } else {
-      parts.push('Unreachable');
-    }
-  } else {
-    const avgSec = hoverData.avgTravelTime;
-    const frac = hoverData.reachableFraction ?? 0;
-    if (avgSec === null || frac <= 0) {
-      parts.push('Unreachable');
-    } else {
-      parts.push(`avg ${Math.round(avgSec / 60)} min`, `${Math.round(frac * 100)}% reachable`);
-    }
-  }
-  if (distanceKm !== null) parts.push(formatDistance(distanceKm));
-  return parts.join(' / ');
-}
+// ── Shared chart components reused by the mobile bottom sheet ──────────────
 
 interface TripChartProps {
   // CSS aspect-ratio for the canvas. Default '1/1'; the mobile bottom drawer
@@ -571,6 +429,9 @@ interface TripChartProps {
   // expand/collapse state changes only the chart's width, not its height.
   height?: string;
 }
+
+// Stable empty list: `computeChartInfo` memoises per path-list identity.
+const NO_PATHS: HoverPath[] = [];
 
 // Sawtooth chart canvas. No outer chrome — callers decide the wrapping
 // container and padding. The chart doubles as a scrubber: clicking or dragging
@@ -597,7 +458,7 @@ export function TripChart({ aspectRatio = '1/1', height }: TripChartProps = {}):
     // and stays scrubbable — computeChartInfo over an empty path list still
     // yields a valid x-range from the window bounds.
     const info = computeChartInfo(
-      hoverData?.allPaths ?? [],
+      hoverData?.allPaths ?? NO_PATHS,
       state.windowStart,
       state.windowEnd,
       maxTimeMin * 60
@@ -751,14 +612,11 @@ export default function HoverInfo({ isFront, onActivate }: HoverInfoProps): Reac
   const [expanded, setExpanded] = useState(false);
 
   const ready = useAnimReady();
-  const animMode = useAnimMode();
-  const animDep = useAnimRenderedDeparture();
-  const departureTime = animMode === 'frame' ? animDep : null;
-  const hoverData = currentDest(state)?.hoverData ?? null;
+  const summary = useDestinationSummary(state, currentDest(state));
 
-  if (!hoverData && !ready) return null;
+  if (!summary && !ready) return null;
 
-  if (hoverData && hidden) {
+  if (summary && hidden) {
     return (
       <button
         id="hover-info"
@@ -784,7 +642,7 @@ export default function HoverInfo({ isFront, onActivate }: HoverInfoProps): Reac
 
   // No destination: minimal always-on panel with controls and a short
   // scrubbable chart strip.
-  if (!hoverData) {
+  if (!summary) {
     return (
       <div
         id="hover-info"
@@ -808,17 +666,7 @@ export default function HoverInfo({ isFront, onActivate }: HoverInfoProps): Reac
     );
   }
 
-  const displayPath = deriveDisplayPath(
-    hoverData,
-    departureTime,
-    state.windowStart,
-    state.windowEnd,
-    state.maxTimeMin * 60
-  );
-  const dest = currentDest(state);
-  const distanceKm =
-    dest && state.sourceLatLng ? haversineKm(state.sourceLatLng, dest.latLng) : null;
-  const titleText = deriveTitleText(hoverData, departureTime, displayPath, distanceKm);
+  const { displayPath, titleText } = summary;
 
   return (
     <div

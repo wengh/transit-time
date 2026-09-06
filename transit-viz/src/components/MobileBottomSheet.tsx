@@ -1,9 +1,9 @@
 import React, { useState } from 'react';
 import { useAppState } from '../state/AppContext';
-import { useAnimMode, useAnimReady, useAnimRenderedDeparture } from '../state/animationStore';
+import { useAnimReady } from '../state/animationStore';
 import PathSegmentList from './PathSegmentList';
-import { TripChart, ChartPlaybackControls, deriveDisplayPath, deriveTitleText } from './HoverInfo';
-import { haversineKm } from '../utils/geo';
+import { TripChart, ChartPlaybackControls } from './HoverInfo';
+import { useDestinationSummary } from '../utils/hoverInfo';
 
 // Bottom info strip + expandable drawer. Only renders when a destination is
 // pinned (mobile has no hover, so the pinned destination is the only source
@@ -13,12 +13,9 @@ export default function MobileBottomSheet(): React.ReactNode {
   const { state, dispatch } = useAppState();
   const [expanded, setExpanded] = useState(false);
 
-  const animMode = useAnimMode();
-  const animDep = useAnimRenderedDeparture();
   const ready = useAnimReady();
-  const departureTime = animMode === 'frame' ? animDep : null;
-
-  const pinnedHoverData = state.pinnedDest?.hoverData ?? null;
+  // Mobile has no hover, so the pinned destination is the only summary source.
+  const summary = useDestinationSummary(state, state.pinnedDest);
 
   // Nothing until a query arms the animation window. After that the sheet is
   // always on screen: a slim scrubbable plot strip with nothing pinned, the
@@ -27,7 +24,7 @@ export default function MobileBottomSheet(): React.ReactNode {
     return null;
   }
 
-  if (!pinnedHoverData) {
+  if (!summary) {
     return (
       <div
         className="fixed left-0 right-0 bottom-0 z-[1100]
@@ -45,18 +42,7 @@ export default function MobileBottomSheet(): React.ReactNode {
     );
   }
 
-  const displayPath = deriveDisplayPath(
-    pinnedHoverData,
-    departureTime,
-    state.windowStart,
-    state.windowEnd,
-    state.maxTimeMin * 60
-  );
-  const distanceKm =
-    state.pinnedDest && state.sourceLatLng
-      ? haversineKm(state.sourceLatLng, state.pinnedDest.latLng)
-      : null;
-  const titleText = deriveTitleText(pinnedHoverData, departureTime, displayPath, distanceKm);
+  const { displayPath, titleText } = summary;
 
   function toggle() {
     setExpanded((v) => !v);
