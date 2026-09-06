@@ -48,8 +48,7 @@ export default function MobileBottomSheet(): React.ReactNode {
     setExpanded((v) => !v);
   }
 
-  function unpin(e: React.MouseEvent) {
-    e.stopPropagation();
+  function unpin() {
     dispatch({ type: 'UNPIN_DESTINATION' });
     setExpanded(false);
   }
@@ -66,30 +65,36 @@ export default function MobileBottomSheet(): React.ReactNode {
         pb-[max(env(safe-area-inset-bottom),0.5rem)]`}
       style={{ maxHeight: expanded ? '68vh' : '56px' }}
     >
-      <button
-        onClick={toggle}
-        aria-label={expanded ? 'Collapse details' : 'Expand details'}
-        className="flex flex-col items-stretch text-left px-3 pt-1.5 pb-1
-          flex-shrink-0 select-none"
-      >
-        <div className="self-center w-9 h-1 rounded-full bg-zinc-300 dark:bg-zinc-600 mb-1.5" />
-        <div className="flex items-center gap-2">
-          <div className="text-[13px] flex-1 min-w-0 truncate">{titleText}</div>
+      {/* Two sibling buttons rather than a role="button" span nested inside
+          a button: nested interactive content is invalid HTML and screen
+          readers handle it inconsistently. The toggle spans the whole header
+          (handle included); Clear floats over its right end. */}
+      <div className="relative flex-shrink-0 select-none">
+        <button
+          type="button"
+          onClick={toggle}
+          aria-expanded={expanded}
+          aria-label={expanded ? 'Collapse details' : 'Expand details'}
+          className="relative block w-full text-left px-3 pt-4 pb-1 pr-16 text-[13px] truncate"
+        >
           <span
-            role="button"
-            tabIndex={0}
-            onClick={unpin}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' || e.key === ' ') unpin(e as any);
-            }}
-            className="text-[12px] text-zinc-500 dark:text-zinc-400 px-2 py-0.5 rounded
-              hover:bg-zinc-100 dark:hover:bg-zinc-800
-              active:bg-zinc-200 dark:active:bg-zinc-700 cursor-pointer"
-          >
-            Clear
-          </span>
-        </div>
-      </button>
+            aria-hidden="true"
+            className="absolute top-1.5 left-1/2 -translate-x-1/2 w-9 h-1 rounded-full
+              bg-zinc-300 dark:bg-zinc-600"
+          />
+          {titleText}
+        </button>
+        <button
+          type="button"
+          onClick={unpin}
+          className="absolute right-3 bottom-1 text-[12px] text-zinc-500 dark:text-zinc-400
+            px-2 py-0.5 rounded
+            hover:bg-zinc-100 dark:hover:bg-zinc-800
+            active:bg-zinc-200 dark:active:bg-zinc-700 cursor-pointer"
+        >
+          Clear
+        </button>
+      </div>
 
       {expanded && (
         <div className="overflow-y-auto px-3 pb-3 text-[12px]">
