@@ -17,10 +17,10 @@ pub struct PreparedData {
     pub leg_shapes: Vec<((u32, u32, u32), Vec<(f64, f64)>)>,
 }
 
-// Binary format v11:
+// Binary format v12 (all integers little-endian):
 // Header:
 //   magic: [u8; 4] = "TRNS"
-//   version: u32 = 11
+//   version: u32 = 12
 //   num_nodes: u32
 //   num_edges: u32
 //   num_stops: u32
@@ -55,10 +55,12 @@ pub struct PreparedData {
 // Route colors: per route: has_color: u8, [r: u8, g: u8, b: u8 if has_color]
 //
 // Patterns section: for each pattern:
-//   pattern_id: u32, day_mask: u8, start_date: u32, end_date: u32
-//   num_date_add: u32, dates_add: [u32; n]
-//   num_date_remove: u32, dates_remove: [u32; n]
+//   pattern_id: u32, day_mask: u8, start_date: i32, end_date: i32
+//   num_date_add: u32, dates_add: [i32; n]
+//   num_date_remove: u32, dates_remove: [i32; n]
 //   min_time: u32, max_time: u32
+//   Dates are days from the Common Era (chrono `num_days_from_ce`);
+//   start/end use i32::MIN for "unbounded" (v12; v11 wrote YYYYMMDD u32).
 //   num_events: u32
 //   [PCO columns: time_offsets, stop_indices, travel_times, next_event_indices]
 //   [PCO stop_offsets, PCO sentinel_routes]
@@ -445,7 +447,7 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
     // Leg shapes (v9): six global PCO columns. Concatenating across legs avoids
     // paying PCO's per-frame overhead 2× per leg (was dominant for short legs).
     // Signed i32 offsets at 0.1 m let shape points extend beyond the pedestrian
-    // node bbox; ±214 km range is ample.
+    // node bbox; the ±214,748 km range is ample.
     {
         let n = data.leg_shapes.len();
         let mut routes: Vec<u32> = Vec::with_capacity(n);
