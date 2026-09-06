@@ -215,6 +215,11 @@ fn cmd_pipeline(
 
     let mut cities: Vec<City> = Vec::new();
     let mut feed_ids: BTreeSet<String> = BTreeSet::new();
+    // Disabled cities are neither probed nor built, but their downloads stay
+    // in the cache: the orphan cleanup used to delete hundreds of MB of
+    // extracts and feeds every time a city was switched off.
+    let mut disabled: Vec<City> = Vec::new();
+    let mut cached_feed_ids: BTreeSet<String> = BTreeSet::new();
 
     let mut entries: Vec<_> = std::fs::read_dir(cities_dir)?
         .filter_map(|e| e.ok())
@@ -231,22 +236,25 @@ fn cmd_pipeline(
         let path = entry.path();
         let config: CityConfig = load_city_config(&path)?;
 
-        if config.enabled == Some(false) {
-            eprintln!("Skipping {} (disabled)", config.id);
-            continue;
-        }
-
-        for fid in &config.feed_ids {
-            validate_feed_id(fid, api_key.as_deref())?;
-            feed_ids.insert(fid.clone());
-        }
-
+        cached_feed_ids.extend(config.feed_ids.iter().cloned());
         let config_hash = sha1_file(&path)?;
-        cities.push(City {
+        let city = City {
             id: config.id.clone(),
             config,
             config_hash,
-        });
+        };
+
+        if city.config.enabled == Some(false) {
+            eprintln!("Skipping {} (disabled)", city.id);
+            disabled.push(city);
+            continue;
+        }
+
+        for fid in &city.config.feed_ids {
+            validate_feed_id(fid, api_key.as_deref())?;
+            feed_ids.insert(fid.clone());
+        }
+        cities.push(city);
     }
 
     let tl_feeds: Vec<_> = feed_ids
@@ -522,20 +530,167 @@ fn cmd_pipeline(
         }
     }
 
-    if cities_to_rebuild.is_empty() {
+    let needs_rebuild = !cities_to_rebuild.is_empty();
+    if needs_rebuild {
+        eprintln!(
+            "\n  {} cities to rebuild: {}",
+            cities_to_rebuild.len(),
+            cities_to_rebuild.join(", ")
+        );
+    } else {
         eprintln!("\nNothing to rebuild.");
-        return Ok(false);
     }
-
-    eprintln!(
-        "\n  {} cities to rebuild: {}",
-        cities_to_rebuild.len(),
-        cities_to_rebuild.join(", ")
-    );
 
     if check_only {
-        return Ok(true);
+        return Ok(needs_rebuild);
     }
+
+    // Stages 4 and 5 run only when something needs rebuilding; the record
+    // update and the orphan cleanup below run either way, so a removed
+    // city's `.bin` and record go away even on a run that builds nothing.
+    let (built, first_error) = if needs_rebuild {
+        build_stale_cities(
+            &cities,
+            &cities_to_rebuild,
+            &stale_feeds,
+            &remote_osm,
+            &recorded,
+            api_key.as_deref(),
+            cache_dir,
+            output_dir,
+        )?
+    } else {
+        (Vec::new(), None)
+    };
+
+    // Merge over the prior record so cities that didn't rebuild keep theirs,
+    // then drop any city that no longer has a config.
+    let mut updated = recorded;
+    updated.cities.extend(built);
+    let active: HashSet<&str> = cities.iter().map(|c| c.id.as_str()).collect();
+    updated.cities.retain(|id, _| active.contains(id.as_str()));
+    updated.save(output_dir)?;
+    eprintln!(
+        "\nRecorded build metadata for {} cities",
+        updated.cities.len()
+    );
+
+    // ── Cleanup: Remove orphaned cache files ──
+    eprintln!("\n=== Cleanup: Remove orphaned cache files ===");
+
+    let mut expected_files: HashSet<PathBuf> = HashSet::new();
+
+    for feed_id in &cached_feed_ids {
+        expected_files.insert(gtfs_cache_path(feed_id, cache_dir));
+        expected_files.insert(gtfs_sha1_path(feed_id, cache_dir));
+    }
+
+    for City { id, config, .. } in cities.iter().chain(&disabled) {
+        if let Some(url) = osm_fetch::pick_source_url(
+            config.interline_extract.as_deref(),
+            config.bbbike_name.as_deref(),
+            config.osm_url.as_deref(),
+        ) {
+            expected_files.insert(osm_fetch::pbf_cache_path(
+                cache_dir,
+                id,
+                &url,
+                osm_fetch::source_ext(config.osm_url.as_deref()),
+            ));
+        }
+        if let Ok(bbox) = parse_bbox(&config.bbox) {
+            expected_files.insert(osm_fetch::overpass_cache_path(cache_dir, bbox));
+        }
+    }
+
+    // An ETag sidecar is expected wherever its cache file is.
+    for path in expected_files.clone() {
+        expected_files.insert(http_cache::sidecar_path(&path));
+    }
+
+    let mut removed = 0usize;
+    if let Ok(entries) = std::fs::read_dir(cache_dir) {
+        for entry in entries.filter_map(|e| e.ok()) {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            if (name.ends_with(".gtfs.zip")
+                || name.ends_with(".osm.pbf")
+                || name.ends_with(".osm.xml")
+                || (name.starts_with("osm_") && name.ends_with(".xml")))
+                && !expected_files.contains(&path)
+            {
+                eprintln!("  removing orphaned: {}", name);
+                let _ = std::fs::remove_file(&path);
+                removed += 1;
+            }
+        }
+    }
+
+    for (subdir, ext) in [("sha1", "sha1"), ("etag", "etag")] {
+        let dir = cache_dir.join(subdir);
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.filter_map(|e| e.ok()) {
+                let path = entry.path();
+                if path.is_file()
+                    && path.extension().is_some_and(|e| e == ext)
+                    && !expected_files.contains(&path)
+                {
+                    let name = path.file_name().unwrap_or_default().to_string_lossy();
+                    eprintln!("  removing orphaned: {}/{}", subdir, name);
+                    let _ = std::fs::remove_file(&path);
+                    removed += 1;
+                }
+            }
+        }
+    }
+
+    let active_city_ids: HashSet<&str> = cities.iter().map(|c| c.id.as_str()).collect();
+    if let Ok(entries) = std::fs::read_dir(output_dir) {
+        for entry in entries.filter_map(|e| e.ok()) {
+            let path = entry.path();
+            if path.extension().map_or(false, |e| e == "bin") {
+                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                    if !active_city_ids.contains(stem) {
+                        eprintln!("  removing orphaned: {}.bin", stem);
+                        let _ = std::fs::remove_file(&path);
+                        removed += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    if removed == 0 {
+        eprintln!("  no orphaned files");
+    } else {
+        eprintln!("  removed {} orphaned file(s)", removed);
+    }
+
+    if let Some(e) = first_error {
+        return Err(e.context("one or more cities failed to build"));
+    }
+    eprintln!("\n=== Pipeline complete ===");
+    Ok(needs_rebuild)
+}
+
+/// Stages 4 and 5: download the stale feeds of the cities to rebuild, then
+/// build them. Returns the build records of the cities that succeeded and
+/// the first error, if any — every city runs to completion either way.
+#[allow(clippy::too_many_arguments)]
+fn build_stale_cities(
+    cities: &[City],
+    cities_to_rebuild: &[String],
+    stale_feeds: &HashSet<String>,
+    remote_osm: &HashMap<&str, metadata::SourceId>,
+    recorded: &metadata::Metadata,
+    api_key: Option<&str>,
+    cache_dir: &Path,
+    output_dir: &Path,
+) -> Result<(Vec<(String, metadata::CityMetadata)>, Option<anyhow::Error>)> {
+    use rayon::prelude::*;
 
     // ── Stage 4: Download stale GTFS feeds ──
     eprintln!("\n=== Stage 4: Download data ===");
@@ -560,12 +715,7 @@ fn cmd_pipeline(
             // Stage 2 already decided whether this feed is stale, so skip the
             // re-probe: a sidecar refreshed within the freshness window would
             // otherwise make `fetch_gtfs` hand back the old zip.
-            let fetched = fetch_gtfs(
-                feed_id,
-                api_key.as_deref(),
-                cache_dir,
-                stale_feeds.contains(*feed_id),
-            )?;
+            let fetched = fetch_gtfs(feed_id, api_key, cache_dir, stale_feeds.contains(*feed_id))?;
             Ok(fetched.fell_back.then_some(*feed_id))
         })
         .collect::<Result<Vec<_>>>()?
@@ -707,118 +857,7 @@ fn cmd_pipeline(
             }
         }
     }
-
-    // Merge over the prior record so cities that didn't rebuild keep theirs,
-    // then drop any city that no longer has a config.
-    let mut updated = recorded;
-    updated.cities.extend(built);
-    let active: HashSet<&str> = cities.iter().map(|c| c.id.as_str()).collect();
-    updated.cities.retain(|id, _| active.contains(id.as_str()));
-    updated.save(output_dir)?;
-    eprintln!(
-        "\nRecorded build metadata for {} cities",
-        updated.cities.len()
-    );
-    if let Some(e) = first_error {
-        return Err(e.context("one or more cities failed to build"));
-    }
-
-    // ── Cleanup: Remove orphaned cache files ──
-    eprintln!("\n=== Cleanup: Remove orphaned cache files ===");
-
-    let mut expected_files: HashSet<PathBuf> = HashSet::new();
-
-    for feed_id in &feed_ids {
-        expected_files.insert(gtfs_cache_path(feed_id, cache_dir));
-        expected_files.insert(gtfs_sha1_path(feed_id, cache_dir));
-    }
-
-    for City { id, config, .. } in &cities {
-        if let Some(url) = osm_fetch::pick_source_url(
-            config.interline_extract.as_deref(),
-            config.bbbike_name.as_deref(),
-            config.osm_url.as_deref(),
-        ) {
-            expected_files.insert(osm_fetch::pbf_cache_path(
-                cache_dir,
-                id,
-                &url,
-                osm_fetch::source_ext(config.osm_url.as_deref()),
-            ));
-        }
-        if let Ok(bbox) = parse_bbox(&config.bbox) {
-            expected_files.insert(osm_fetch::overpass_cache_path(cache_dir, bbox));
-        }
-    }
-
-    // An ETag sidecar is expected wherever its cache file is.
-    for path in expected_files.clone() {
-        expected_files.insert(http_cache::sidecar_path(&path));
-    }
-
-    let mut removed = 0usize;
-    if let Ok(entries) = std::fs::read_dir(cache_dir) {
-        for entry in entries.filter_map(|e| e.ok()) {
-            let path = entry.path();
-            if !path.is_file() {
-                continue;
-            }
-            let name = path.file_name().unwrap_or_default().to_string_lossy();
-            if (name.ends_with(".gtfs.zip")
-                || name.ends_with(".osm.pbf")
-                || name.ends_with(".osm.xml")
-                || (name.starts_with("osm_") && name.ends_with(".xml")))
-                && !expected_files.contains(&path)
-            {
-                eprintln!("  removing orphaned: {}", name);
-                let _ = std::fs::remove_file(&path);
-                removed += 1;
-            }
-        }
-    }
-
-    for (subdir, ext) in [("sha1", "sha1"), ("etag", "etag")] {
-        let dir = cache_dir.join(subdir);
-        if let Ok(entries) = std::fs::read_dir(&dir) {
-            for entry in entries.filter_map(|e| e.ok()) {
-                let path = entry.path();
-                if path.is_file()
-                    && path.extension().is_some_and(|e| e == ext)
-                    && !expected_files.contains(&path)
-                {
-                    let name = path.file_name().unwrap_or_default().to_string_lossy();
-                    eprintln!("  removing orphaned: {}/{}", subdir, name);
-                    let _ = std::fs::remove_file(&path);
-                    removed += 1;
-                }
-            }
-        }
-    }
-
-    let active_city_ids: HashSet<&str> = cities.iter().map(|c| c.id.as_str()).collect();
-    if let Ok(entries) = std::fs::read_dir(output_dir) {
-        for entry in entries.filter_map(|e| e.ok()) {
-            let path = entry.path();
-            if path.extension().map_or(false, |e| e == "bin") {
-                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                    if !active_city_ids.contains(stem) {
-                        eprintln!("  removing orphaned: {}.bin", stem);
-                        let _ = std::fs::remove_file(&path);
-                        removed += 1;
-                    }
-                }
-            }
-        }
-    }
-
-    if removed == 0 {
-        eprintln!("  no orphaned files");
-    } else {
-        eprintln!("  removed {} orphaned file(s)", removed);
-    }
-
-    eprintln!("\n=== Pipeline complete ===");
-    Ok(true)
+    Ok((built, first_error))
 }
 
 fn cmd_generate(
