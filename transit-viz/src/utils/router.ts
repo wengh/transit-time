@@ -87,6 +87,18 @@ function getWorker(): Worker {
         p.resolve(msg.value);
       }
     };
+    // An uncaught error inside the worker (e.g. a WASM trap outside the
+    // dispatcher's try/catch) would otherwise leave every pending promise
+    // unresolved and the app stuck at "Loading…". Fail them all, drop the
+    // dead worker, and let the next call spawn a fresh one.
+    worker.onerror = (e: ErrorEvent) => {
+      const err = new Error(`Router worker crashed: ${e.message || 'unknown error'}`);
+      for (const p of pending.values()) p.reject(err);
+      pending.clear();
+      activeCancelBuf = null;
+      worker?.terminate();
+      worker = null;
+    };
   }
   return worker;
 }
@@ -130,6 +142,10 @@ export async function loadRouter(
 }
 
 export function freeProfile(): Promise<void> {
+  // The worker processes messages serially, so without this a "Change city"
+  // during a compute would queue freeProfile/loadRouter behind the running
+  // query and sit at 0% until it finished.
+  cancelInflightQuery();
   return call({ type: 'freeProfile' });
 }
 

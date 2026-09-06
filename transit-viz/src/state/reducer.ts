@@ -183,6 +183,7 @@ export function reducer(state: AppState, action: Action): AppState {
     case 'START_LOADING':
       return { ...state, loadingState: 'loading', loadingProgress: 0, currentCity: action.city };
     case 'LOADING_PROGRESS':
+      if (state.loadingProgress === action.progress) return state;
       return { ...state, loadingProgress: action.progress };
     case 'START_INITIALIZING':
       return { ...state, loadingState: 'initializing' };
@@ -267,8 +268,11 @@ export function reducer(state: AppState, action: Action): AppState {
         computeProgress: null,
         pendingSource: null,
       };
-    case 'COMPUTE_PROGRESS':
+    case 'COMPUTE_PROGRESS': {
+      const cur = state.computeProgress;
+      if (cur && cur.done === action.done && cur.total === action.total) return state;
       return { ...state, computeProgress: { done: action.done, total: action.total } };
+    }
     case 'QUERY_DONE':
       return {
         ...state,

@@ -56,10 +56,18 @@ async function handleInitWasm() {
 }
 
 async function handleLoadRouter(id: number, cityFile: string) {
+  // Release the previous city's profile and decoded dataset before pulling
+  // in the next one; the WASM heap never shrinks, so leaking the old router
+  // on every switch grows it by a whole city each time.
+  freeCurrentProfile();
+  router?.free();
+  router = null;
+
   const resp = await fetch(`${import.meta.env.BASE_URL}data/${cityFile}`);
   if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
   const total = parseInt(resp.headers.get('content-length') || '0');
   let loaded = 0;
+  let lastPct = -1;
 
   const decompressedStream = resp
     .body!.pipeThrough(
@@ -67,11 +75,13 @@ async function handleLoadRouter(id: number, cityFile: string) {
         transform(chunk, controller) {
           loaded += chunk.length;
           if (total > 0) {
-            postMessage({
-              id,
-              type: 'loadProgress',
-              progress: Math.round((loaded / total) * 100),
-            } satisfies WorkerResponse);
+            // One message per integer percent, not per fetch chunk — each
+            // one is a whole-tree React render on the main thread.
+            const pct = Math.round((loaded / total) * 100);
+            if (pct !== lastPct) {
+              lastPct = pct;
+              postMessage({ id, type: 'loadProgress', progress: pct } satisfies WorkerResponse);
+            }
           }
           controller.enqueue(chunk);
         },
@@ -300,12 +310,16 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
         break;
       case 'loadRouter':
         value = await handleLoadRouter(id, e.data.cityFile);
+        transfer.push(value.nodeCoords.buffer);
         break;
       case 'runQuery':
         cancelFlag = new Int32Array(e.data.cancelBuf);
         value = handleRunQuery(id, e.data.params);
+        transfer.push(value.travelTimes.buffer, value.sampleCounts.buffer);
         break;
       case 'getHoverData':
+        // Not transferred: segment shapes are shared between paths and must
+        // stay aliased so the structured clone serialises each one once.
         value = handleGetHoverData(e.data.node);
         break;
       case 'travelTimesAt':
