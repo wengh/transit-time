@@ -49,13 +49,6 @@ enum Commands {
         #[arg(long, default_value = "cache")]
         cache_dir: PathBuf,
     },
-    /// Check if any Transitland feeds have newer versions upstream.
-    Check {
-        #[arg(long)]
-        city_file: PathBuf,
-        #[arg(long, default_value = "cache")]
-        cache_dir: PathBuf,
-    },
     /// Build all cities: check feeds, download stale ones, rebuild affected .bin files.
     Pipeline {
         #[arg(long, default_value = "cities")]
@@ -96,16 +89,6 @@ fn main() -> Result<()> {
             output,
             cache_dir,
         } => cmd_prep(&city_file, &output, &cache_dir),
-        Commands::Check {
-            city_file,
-            cache_dir,
-        } => {
-            let stale = cmd_check(&city_file, &cache_dir)?;
-            if stale {
-                std::process::exit(1);
-            }
-            Ok(())
-        }
         Commands::Pipeline {
             cities_dir,
             output_dir,
@@ -186,60 +169,6 @@ fn cmd_prep(city_file: &Path, output: &Path, cache_dir: &Path) -> Result<()> {
         output,
         city.allow_stale,
     )
-}
-
-fn cmd_check(city_file: &Path, cache_dir: &Path) -> Result<bool> {
-    let city: CityConfig = load_city_config(city_file)?;
-    if city.enabled == Some(false) {
-        eprintln!("City '{}' is disabled, skipping check", city.id);
-        return Ok(false);
-    }
-
-    let api_key = transitland::get_api_key().ok();
-
-    for feed_id in &city.feed_ids {
-        if !is_transitland_id(feed_id) {
-            continue; // direct URLs — no remote check available
-        }
-        let key = api_key
-            .as_deref()
-            .with_context(|| format!("Feed '{}' requires TRANSITLAND_API_KEY", feed_id))?;
-
-        let sha1_path = gtfs_sha1_path(feed_id, cache_dir);
-
-        if sha1_recently_checked(&sha1_path) {
-            eprintln!("Feed '{}': fresh (checked recently)", feed_id);
-            continue;
-        }
-
-        let local_sha1 = std::fs::read_to_string(&sha1_path).unwrap_or_default();
-
-        if local_sha1.is_empty() {
-            eprintln!("Feed '{}': no local sha1 — needs download", feed_id);
-            return Ok(true);
-        }
-
-        match transitland::latest_feed_sha1(key, feed_id) {
-            Ok(Some(remote_sha1)) if remote_sha1 != local_sha1 => {
-                eprintln!(
-                    "Feed '{}': stale (local: {}..., remote: {}...)",
-                    feed_id,
-                    &local_sha1[..12.min(local_sha1.len())],
-                    &remote_sha1[..12.min(remote_sha1.len())]
-                );
-                return Ok(true);
-            }
-            Ok(Some(remote_sha1)) => {
-                let _ = std::fs::write(&sha1_path, &remote_sha1);
-                eprintln!("Feed '{}': up to date", feed_id);
-            }
-            Ok(None) => eprintln!("Feed '{}': no remote sha1 available", feed_id),
-            Err(e) => eprintln!("WARNING: could not check '{}': {}", feed_id, e),
-        }
-    }
-
-    eprintln!("All feeds up to date");
-    Ok(false)
 }
 
 /// Build pipeline: check all cities, download stale feeds, rebuild affected .bin files.
