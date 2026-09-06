@@ -230,7 +230,7 @@ Feed IDs can be Transitland onestop IDs (e.g. `f-dp3-cta`) or direct GTFS zip UR
 
 ### CI/CD pipeline
 
-The GitHub Actions workflow (`.github/workflows/deploy.yml`) runs on every push to `main`, on a weekly Sunday-at-03:00-UTC schedule to pick up fresh GTFS feeds, and can be triggered manually. Only one deployment runs at a time; a new push cancels any in-flight run.
+The GitHub Actions workflow (`.github/workflows/deploy.yml`) runs on every push to `main`, on a daily 03:00 UTC schedule that a gate job lets through every 6 days (GitHub evicts Actions caches untouched for 7 days, so a weekly cron raced that deadline) to pick up fresh GTFS feeds, and can be triggered manually. Only one deployment runs at a time; a new push cancels any in-flight run.
 
 The deploy job has four phases:
 

@@ -226,7 +226,9 @@ fn cmd_pipeline(
         .filter(|e| {
             e.path()
                 .extension()
-                .map(|ext| ext == "jsonc" || ext == "json")
+                // Only `.jsonc`: the frontend lists cities from the same
+                // files, and a `.json` here would build a city it never shows.
+                .map(|ext| ext == "jsonc")
                 .unwrap_or(false)
         })
         .collect();
@@ -278,8 +280,9 @@ fn cmd_pipeline(
     //     (stage 3). Payload-independent, so it works from a cold cache.
     //   * `remote_feeds` vs. the local sidecar → does the *download* need
     //     refetching (`stale_feeds`, stage 4).
-    // Conflating the two is what made this undecidable in CI, where the outputs
-    // are restored but `cache/` is not.
+    // Conflating the two is what made this undecidable in CI, where the
+    // outputs and `cache/` are separate cache layers with independent
+    // lifetimes.
     eprintln!("\n=== Stage 2: Probe upstream source identities ===");
 
     let mut remote_feeds: HashMap<String, metadata::SourceId> = HashMap::new();
@@ -616,10 +619,14 @@ fn cmd_pipeline(
                 continue;
             }
             let name = path.file_name().unwrap_or_default().to_string_lossy();
+            // `.tmp` is an interrupted download, `.lock` a leftover of an
+            // older fetcher; neither is ever expected.
             if (name.ends_with(".gtfs.zip")
                 || name.ends_with(".osm.pbf")
                 || name.ends_with(".osm.xml")
-                || (name.starts_with("osm_") && name.ends_with(".xml")))
+                || (name.starts_with("osm_") && name.ends_with(".xml"))
+                || name.ends_with(".tmp")
+                || name.ends_with(".lock"))
                 && !expected_files.contains(&path)
             {
                 eprintln!("  removing orphaned: {}", name);
@@ -651,14 +658,17 @@ fn cmd_pipeline(
     if let Ok(entries) = std::fs::read_dir(output_dir) {
         for entry in entries.filter_map(|e| e.ok()) {
             let path = entry.path();
-            if path.extension().map_or(false, |e| e == "bin") {
-                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                    if !active_city_ids.contains(stem) {
-                        eprintln!("  removing orphaned: {}.bin", stem);
-                        let _ = std::fs::remove_file(&path);
-                        removed += 1;
-                    }
-                }
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            // An interrupted `write_binary` leaves `<city>.bin.tmp` behind.
+            let orphaned = if let Some(stem) = name.strip_suffix(".bin") {
+                !active_city_ids.contains(stem)
+            } else {
+                name.ends_with(".bin.tmp")
+            };
+            if orphaned {
+                eprintln!("  removing orphaned: {}", name);
+                let _ = std::fs::remove_file(&path);
+                removed += 1;
             }
         }
     }

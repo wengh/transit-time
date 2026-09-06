@@ -3,17 +3,18 @@
 //! This is the record that answers "does this `.bin` need rebuilding?" — as
 //! opposed to [`crate::http_cache`], whose sidecars answer "is this *download*
 //! still current?". The two questions look identical on a developer machine,
-//! where the cache and the outputs are always restored together, but they come
-//! apart in CI: the workflow restores `transit-viz/public/data/` before the
-//! `--check-only` run and the multi-GB `cache/` directory only afterwards, and
-//! only when a rebuild was already decided on. A record stored beside the
-//! payload therefore can't be consulted when the decision is made.
+//! where the cache and the outputs always change together, but in CI they
+//! are separate cache layers with independent lifetimes: the download cache
+//! is saved only after a rebuild and can be evicted or restored from an
+//! older snapshot on its own, so a record stored beside the payload can say
+//! nothing reliable about the `.bin` files.
 //!
 //! So the record lives beside the artifact it describes. `metadata.json` sits
 //! in the output directory, rides the same cache layer as the `.bin` files, and
-//! lets the rebuild decision be made from validators alone — no payload on disk
-//! and no age heuristics, except as a fallback for sources that expose neither
-//! a hash nor an HTTP validator.
+//! lets the rebuild decision be made from recorded content alone — source
+//! validators, the config hash and the code fingerprint — with no payload on
+//! disk and no age or mtime heuristics, except as a fallback for sources that
+//! expose neither a hash nor an HTTP validator.
 //!
 //! The output directory is web-served, so this file is public. It records only
 //! opaque validator tokens keyed by city id and feed id — never a source URL,

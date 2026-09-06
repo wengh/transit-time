@@ -23,7 +23,9 @@ wasm: $(WASM_OUT)
 $(WASM_OUT): $(ROUTER_SRC) transit-router/Cargo.toml transit-router-wasm/Cargo.toml transit-data/Cargo.toml .cargo/config.toml Makefile $(PROFDATA)
 	RUSTUP_TOOLCHAIN=nightly wasm-pack build transit-router-wasm --target web --out-dir ../transit-viz/pkg --out-name transit_router -- -Z build-std=panic_abort,std --config 'target.wasm32-unknown-unknown.rustflags=[$(WASM_RUSTFLAGS_PGO)]'
 
-$(PROFDATA): $(ROUTER_SRC) transit-router/Cargo.toml transit-data/Cargo.toml scripts/pgo-train.sh
+# Depends on chicago.bin: the training run loads it, and a rebuilt fixture
+# must retrain the profile.
+$(PROFDATA): $(ROUTER_SRC) transit-router/Cargo.toml transit-data/Cargo.toml scripts/pgo-train.sh transit-viz/public/data/chicago.bin
 	./scripts/pgo-train.sh $@
 
 # Build all data via pipeline (checks feeds, downloads stale, rebuilds affected)
@@ -105,4 +107,4 @@ clean:
 	cargo clean
 	rm -rf transit-viz/pkg
 	rm -rf target/pgo-data target/pgo-instrument target/pgo-samply
-	rm -f transit-viz/public/data/*.bin
+	rm -f transit-viz/public/data/*.bin transit-viz/public/data/*.bin.tmp transit-viz/public/data/metadata.json
