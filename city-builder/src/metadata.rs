@@ -35,7 +35,7 @@ pub const METADATA_FILE: &str = "metadata.json";
 /// safe direction, and cheaper to reason about than a migration.
 const SCHEMA_VERSION: u32 = 2;
 
-/// sha1 over the `transit-prep` and `city-builder` sources, computed by
+/// sha1 over the `transit-data`, `transit-prep` and `city-builder` sources, computed by
 /// `build.rs` at compile time. Recorded per city so a `.bin` built by older
 /// preprocessing code is rebuilt, without depending on file mtimes.
 pub const CODE_FINGERPRINT: &str = env!("CODE_FINGERPRINT");

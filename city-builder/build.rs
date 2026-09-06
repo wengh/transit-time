@@ -27,7 +27,11 @@ fn main() {
         .parent()
         .expect("city-builder lives one level below the workspace root")
         .to_path_buf();
-    let dirs = [root.join("transit-prep/src"), root.join("city-builder/src")];
+    let dirs = [
+        root.join("transit-data/src"),
+        root.join("transit-prep/src"),
+        root.join("city-builder/src"),
+    ];
 
     let mut files = Vec::new();
     for dir in &dirs {

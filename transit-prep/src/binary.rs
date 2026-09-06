@@ -23,7 +23,7 @@ pub struct PreparedData {
 // Binary format v12 (all integers little-endian):
 // Header:
 //   magic: [u8; 4] = "TRNS"
-//   version: u32 = 12
+//   version: u32 = transit_data::FORMAT_VERSION (12)
 //   num_nodes: u32
 //   num_edges: u32
 //   num_stops: u32
@@ -227,7 +227,7 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
 
     // Header
     buf.extend_from_slice(b"TRNS");
-    write_u32(&mut buf, 12); // version
+    write_u32(&mut buf, transit_data::FORMAT_VERSION);
     write_u32(&mut buf, num_nodes as u32);
     write_u32(&mut buf, data.edges.len() as u32);
     write_u32(&mut buf, data.stops.len() as u32);

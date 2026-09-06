@@ -12,6 +12,7 @@ name = "transit-prep"
 path = "src/main.rs"
 
 [dependencies]
+transit-data = { path = "../transit-data" }
 serde = { workspace = true }
 zip = "2"
 csv = "1"

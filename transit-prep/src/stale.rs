@@ -33,10 +33,7 @@ pub fn unix_days_now() -> u32 {
 /// `20240230`. All dates are validated with this at parse time
 /// (`gtfs::parse_gtfs`), so later stages may `expect` it.
 pub fn parse_yyyymmdd(date: u32) -> Option<NaiveDate> {
-    let y = (date / 10000) as i32;
-    let m = (date / 100) % 100;
-    let d = date % 100;
-    NaiveDate::from_ymd_opt(y, m, d)
+    transit_data::yyyymmdd_to_naive_date_opt(date)
 }
 
 pub fn yyyymmdd_to_days(date: u32) -> u32 {

@@ -8,11 +8,7 @@ use chrono::{Datelike, NaiveDate};
 
 /// Snap lat/lon to nearest OSM node using spatial grid index.
 pub fn snap_to_node(data: &PreparedData, lat: f64, lon: f64) -> Option<u32> {
-    const CELL_SIZE_LAT: f64 = 0.0045;
-    const CELL_SIZE_LON: f64 = 0.006;
-
-    let cell_lat = (lat / CELL_SIZE_LAT).floor() as i32;
-    let cell_lon = (lon / CELL_SIZE_LON).floor() as i32;
+    let (cell_lat, cell_lon) = crate::data::grid_cell(lat, lon);
     let cos_lat = lat.to_radians().cos();
 
     let mut best: Option<u32> = None;

@@ -3,6 +3,26 @@ extern crate console_error_panic_hook;
 
 use chrono::NaiveDate;
 
+/// Version of the `.bin` format this crate reads; `transit-prep` writes the
+/// same constant so writer and reader cannot drift apart silently.
+pub const FORMAT_VERSION: u32 = 12;
+
+/// Spatial-grid cell size (degrees) shared by the node snapping index here,
+/// the stop-to-street snapping in `transit-prep`, and the query-time snap in
+/// `transit-router`. Must be the same everywhere so a 3×3 neighbourhood
+/// search means the same ground distance in each place.
+pub const GRID_CELL_LAT: f64 = 0.0045;
+pub const GRID_CELL_LON: f64 = 0.006;
+
+/// Grid cell containing `(lat, lon)`.
+#[inline]
+pub fn grid_cell(lat: f64, lon: f64) -> (i32, i32) {
+    (
+        (lat / GRID_CELL_LAT).floor() as i32,
+        (lon / GRID_CELL_LON).floor() as i32,
+    )
+}
+
 /// Decode a u32 GTFS-style date (YYYYMMDD) into a [`NaiveDate`], returning
 /// `None` if the value isn't a valid calendar date. Used at the JS / CLI
 /// boundary where dates are passed as YYYYMMDD u32.
@@ -136,6 +156,18 @@ pub struct Color {
 impl Color {
     pub fn to_hex(&self) -> String {
         format!("#{:02x}{:02x}{:02x}", self.r, self.g, self.b)
+    }
+
+    /// Parse `rrggbb` or `#rrggbb`; `None` for anything else.
+    pub fn from_hex(hex: &str) -> Option<Self> {
+        let hex = hex.trim_start_matches('#');
+        if hex.len() != 6 {
+            return None;
+        }
+        let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+        let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+        let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+        Some(Color { r, g, b })
     }
 }
 
@@ -402,7 +434,7 @@ pub fn load_with_stats(buf: &[u8]) -> Result<(PreparedData, LoadStats), String> 
         return Err("Invalid magic".to_string());
     }
     let version = r.u32()?;
-    if version != 12 {
+    if version != FORMAT_VERSION {
         return Err(format!("Unsupported version {}", version));
     }
     let num_nodes = r.u32()? as usize;
@@ -533,7 +565,6 @@ pub fn load_with_stats(buf: &[u8]) -> Result<(PreparedData, LoadStats), String> 
     let t0_patterns = Instant::now();
     let pos_before = r.pos();
     let mut total_events = 0usize;
-    let total_sentinels = 0usize; // sentinels now included in total_events
     let mut total_freq = 0usize;
     let mut patterns = Vec::with_capacity(num_patterns);
     for pat_idx in 0..num_patterns {
@@ -762,16 +793,13 @@ pub fn load_with_stats(buf: &[u8]) -> Result<(PreparedData, LoadStats), String> 
 
     // Build spatial grid
     let t0 = Instant::now();
-    const CELL_SIZE_LAT: f64 = 0.0045;
-    const CELL_SIZE_LON: f64 = 0.006;
     let mut node_grid: std::collections::HashMap<(i32, i32), Vec<u32>> =
         std::collections::HashMap::new();
     for (i, node) in nodes.iter().enumerate() {
-        let cell = (
-            (node.lat / CELL_SIZE_LAT).floor() as i32,
-            (node.lon / CELL_SIZE_LON).floor() as i32,
-        );
-        node_grid.entry(cell).or_default().push(i as u32);
+        node_grid
+            .entry(grid_cell(node.lat, node.lon))
+            .or_default()
+            .push(i as u32);
     }
     timings.push(("build node_grid", t0.elapsed()));
 
@@ -854,7 +882,6 @@ pub fn load_with_stats(buf: &[u8]) -> Result<(PreparedData, LoadStats), String> 
         ("route_names", num_route_names),
         ("leg_shapes", num_shapes),
         ("total events (raw)", total_events),
-        ("sentinel events", total_sentinels),
         ("total freq entries", total_freq),
         ("grid cells", node_grid.len()),
     ];

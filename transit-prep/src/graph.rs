@@ -405,8 +405,7 @@ struct SnapResult {
 /// Each stop is guaranteed to have a unique new node, so no multiple stops share a node.
 pub fn snap_stops_to_nodes(stops: &[Stop], graph: &mut OsmGraph) -> Vec<(u32, u32)> {
     const MAX_SNAP_DISTANCE_METERS: f64 = 400.0;
-    const CELL_SIZE_LAT: f64 = 0.0045;
-    const CELL_SIZE_LON: f64 = 0.006;
+    use transit_data::{GRID_CELL_LAT as CELL_SIZE_LAT, GRID_CELL_LON as CELL_SIZE_LON};
 
     // Region-representative cos(lat) for cheap planar projection.
     // For a city-scale graph the error vs. per-segment midpoint cos_lat is

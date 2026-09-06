@@ -2085,6 +2085,7 @@ dependencies = [
  "quick-xml",
  "rayon",
  "serde",
+ "transit-data",
  "zip",
 ]
 
