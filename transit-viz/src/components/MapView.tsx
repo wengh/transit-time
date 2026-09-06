@@ -4,7 +4,7 @@ import { useAppState } from '../state/AppContext';
 import { animationStore, useAnimMode, useAnimRenderedDeparture } from '../state/animationStore';
 import { cancelInflightQuery, snapToNode, type HoverPath } from '../utils/router';
 import type { HoverData } from '../state/reducer';
-import { ROUTE_COLORS } from '../utils/colors';
+import { routeColorFor } from '../utils/colors';
 import { getHashParams, setHashParams } from '../utils/urlHash';
 import { buildHoverData, deriveDisplayPath } from '../utils/hoverInfo';
 import { resolveMapStyle, tuneStyleForZoomOut, REPO_ATTR, type MapStyle } from '../utils/mapStyles';
@@ -189,8 +189,6 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
     function drawRouteSegments(allPaths: HoverPath[]) {
       const lines: RouteFeature[] = [];
       const transfers: PointFeature[] = [];
-      const routeColorMap: Record<string, string> = {};
-      let colorIdx = 0;
       const seenSegments = new Set<string>();
       const seenTransfers = new Set<string>();
       for (const { segments } of allPaths) {
@@ -214,20 +212,7 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
             }
             color = '#888';
           } else {
-            if (!(seg.routeName in routeColorMap)) {
-              // Rust's `TransitRouter::route_color` returns the map-legible hex
-              // (already luminance-adjusted via `adjust_color_for_visibility`).
-              // Empty string means the route has no GTFS colour — fall back to
-              // the palette.
-              const s = stateRef.current;
-              let routeColor = seg.routeIdx < 0xffffffff ? s.routeColors[seg.routeIdx] || '' : '';
-              if (!routeColor) {
-                routeColor = ROUTE_COLORS[colorIdx % ROUTE_COLORS.length];
-              }
-              routeColorMap[seg.routeName] = routeColor;
-              colorIdx++;
-            }
-            color = routeColorMap[seg.routeName];
+            color = routeColorFor(seg.routeIdx, stateRef.current.routeColors);
           }
           const n = coords.length;
           const routeKey = seg.edgeType === 0 ? '' : seg.routeIdx;
