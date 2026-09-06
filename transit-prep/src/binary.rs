@@ -130,13 +130,6 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
 
     let scale = (1u32 << 16) as f64;
 
-    let node_morton = |i: usize| -> u32 {
-        let n = &data.nodes[i];
-        let x = ((n.lon - min_lon) / lon_range * scale).min(scale - 1.0) as u16;
-        let y = ((n.lat - min_lat) / lat_range * scale).min(scale - 1.0) as u16;
-        morton_encode(x, y)
-    };
-
     // Mark which old node indices carry a transit stop (and which old stop).
     // Stop-bearing nodes are pulled to the front of the array so that
     // `new_node_idx < num_stops` iff the node is a transit stop, and
@@ -154,16 +147,21 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
 
     // new_order[new_idx] = old_idx
     // Sort key: (stop-bucket, Morton). Bucket 0 is stop-bearing nodes, bucket 1
-    // everything else. Within a bucket, Morton gives spatial locality.
+    // everything else. Within a bucket, Morton gives spatial locality. The
+    // key is computed once per node rather than inside the comparator.
+    let sort_keys: Vec<u64> = data
+        .nodes
+        .iter()
+        .enumerate()
+        .map(|(i, n)| {
+            let x = ((n.lon - min_lon) / lon_range * scale).min(scale - 1.0) as u16;
+            let y = ((n.lat - min_lat) / lat_range * scale).min(scale - 1.0) as u16;
+            let bucket: u64 = (old_node_to_old_stop[i] == u32::MAX) as u64;
+            (bucket << 32) | morton_encode(x, y) as u64
+        })
+        .collect();
     let mut new_order: Vec<u32> = (0..num_nodes as u32).collect();
-    new_order.sort_unstable_by_key(|&i| {
-        let bucket: u32 = if old_node_to_old_stop[i as usize] != u32::MAX {
-            0
-        } else {
-            1
-        };
-        (bucket, node_morton(i as usize))
-    });
+    new_order.sort_unstable_by_key(|&i| sort_keys[i as usize]);
 
     // old_to_new[old_idx] = new_idx
     let mut old_to_new = vec![0u32; num_nodes];

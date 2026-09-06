@@ -158,7 +158,7 @@ pub struct ServicePattern {
     pub end_date: u32,   // YYYYMMDD, 0 = unbounded
     pub date_exceptions_add: Vec<u32>,
     pub date_exceptions_remove: Vec<u32>,
-    pub events: Vec<(u32, Event)>, // (departure_time, event), sorted by departure_time
+    pub events: Vec<(u32, Event)>, // (departure_time, event), in trip order
     pub min_time: u32,
     pub max_time: u32,
     pub frequency_routes: Vec<FrequencyEntry>,
@@ -1102,12 +1102,8 @@ pub fn build_service_patterns(data: &GtfsData) -> Vec<ServicePattern> {
                 max_time = 0;
             }
 
-            // Sort departure events by time. Avoids the dense per-second
-            // Vec<Vec<Event>> which allocates O(max_time - min_time) empty
-            // Vec headers — up to 2 MB per pattern for wide time spans (e.g.
-            // UK Rail running 24 h), causing OOM when all pattern results
-            // are collected simultaneously.
-            departure_events.sort_unstable_by_key(|(dep_time, _)| *dep_time);
+            // Left in trip order: the writer sorts by (trip, time) and then
+            // by (stop, time) itself, and nothing in between needs time order.
             let events = departure_events;
 
             // Build frequency entries
