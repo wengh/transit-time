@@ -163,7 +163,21 @@ pub fn prepare(
         .sort_unstable_by_key(|st| (st.trip_index, st.stop_sequence));
     eprintln!("\n--- Building service patterns ---");
     let mut patterns = gtfs::build_service_patterns(&gtfs_data);
-    eprintln!("Built {} service patterns", patterns.len());
+    // A pattern with no events and no frequency entries (every service in
+    // its group only has trips outside the bbox, or none at all) still costs
+    // two `(num_stops + 1)` u32 offset arrays in the browser: Amsterdam had
+    // 1745 of 3310 patterns empty, 125 MB of offsets; Berlin 254 MB. And
+    // `Index::new` scans `num_stops` per active pattern per query.
+    let built = patterns.len();
+    patterns.retain(|p| !p.events.is_empty() || !p.frequency_routes.is_empty());
+    for (i, p) in patterns.iter_mut().enumerate() {
+        p.pattern_id = i as u32;
+    }
+    eprintln!(
+        "Built {} service patterns ({} empty dropped)",
+        patterns.len(),
+        built - patterns.len()
+    );
 
     let mut used_route_indices: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
     for pattern in &patterns {
