@@ -169,6 +169,9 @@ class AnimationStore {
     this.stopRaf();
     this.playing = false;
     this.throttledTime = this.currentTime;
+    // Playback renders on the FRAME_STEP grid; the paused readout shows the
+    // exact playhead time, so fetch that exact frame for the map too.
+    this.renderCurrentFrame(false);
     this.notifyReact();
   }
 
@@ -309,27 +312,29 @@ class AnimationStore {
     // reopens even for a stale epoch — that response is simply not painted.
     this.primaryInflight = false;
     this.inflightDep = -1;
-    // Paint only if this response is still relevant: same profile, still in
-    // frame mode, and the playhead hasn't moved off this departure. A null
-    // frame means the worker errored — drop silently.
-    const current = epoch === this.epoch;
-    if (
-      frame &&
-      current &&
-      this.mode === 'frame' &&
-      this.frameRenderer &&
-      this.depForCurrent() === dep
-    ) {
+    // Stale-while-revalidate: paint any frame that belongs to the current
+    // profile, even if the playhead has since moved past it, then chase the
+    // departure that is wanted now. Requiring an exact playhead match here
+    // meant that at the default 18 h window (the playhead advances ~3 grid
+    // steps per rAF tick) any worker round-trip longer than one frame time
+    // discarded every response and the map froze while the readout ran on.
+    // A null frame means the worker errored — drop silently.
+    if (frame && epoch === this.epoch && this.mode === 'frame' && this.frameRenderer) {
       this.lastRenderedDep = dep;
       this.renderedDeparture = dep;
       this.frameRenderer(frame);
       this.notifyReact();
     }
     // `pendingPrimary` is cleared by `invalidateInflight`, so anything parked
-    // here belongs to the current epoch even when this response did not.
-    const next = this.pendingPrimary;
+    // here belongs to the current epoch even when this response did not. With
+    // nothing parked, the playhead's own frame is the one to chase — but not
+    // after an error, or a failing worker would be re-asked in a tight loop;
+    // the next tick or seek re-requests on its own.
+    const parked = this.pendingPrimary;
     this.pendingPrimary = -1;
-    if (next >= 0 && next !== this.lastRenderedDep && this.mode === 'frame') {
+    if (this.mode !== 'frame' || !this.frameRenderer) return;
+    const next = parked >= 0 ? parked : frame ? this.depForCurrent() : -1;
+    if (next >= 0 && next !== this.lastRenderedDep) {
       this.requestFrame(next);
     }
   }
@@ -351,7 +356,6 @@ class AnimationStore {
     if (elapsed >= TIME_THROTTLE_MS) {
       this.lastReactNotify = now;
       this.throttledTime = this.currentTime;
-      this.renderedDeparture = this.snapToFrame(this.currentTime);
       this.notifyReact();
     } else if (!this.throttleTimer) {
       this.throttleTimer = setTimeout(() => {
