@@ -973,8 +973,10 @@ pub fn build_service_patterns(data: &GtfsData) -> Vec<ServicePattern> {
         let mask = crate::stale::day_mask(&service.days);
         let mut added_dates = service.added_dates.clone();
         added_dates.sort_unstable();
+        added_dates.dedup();
         let mut removed_dates = service.removed_dates.clone();
         removed_dates.sort_unstable();
+        removed_dates.dedup();
 
         let key = ServiceKey {
             mask,
@@ -1019,32 +1021,19 @@ pub fn build_service_patterns(data: &GtfsData) -> Vec<ServicePattern> {
         .into_par_iter()
         .enumerate()
         .map(|(pattern_id, (key, services))| {
-            let mask = key.mask;
+            // Every service in the group shares the key's mask, date range
+            // and (sorted) exception lists, so take them from the key once.
+            // Appending each service's copy made Waterloo write 12,321
+            // add-dates of which 11,170 were duplicates, all scanned
+            // linearly by `patterns_for_date`.
+            let ServiceKey {
+                mask,
+                start_date,
+                end_date,
+                added_dates: adds,
+                removed_dates: removes,
+            } = key;
             let service_ids: HashSet<&str> = services.iter().map(|s| s.id.as_str()).collect();
-
-            // Collect date exceptions and compute validity range
-            let mut adds = Vec::new();
-            let mut removes = Vec::new();
-            let mut start_date = 0u32;
-            let mut end_date = 0u32;
-            for svc in services {
-                adds.extend_from_slice(&svc.added_dates);
-                removes.extend_from_slice(&svc.removed_dates);
-                if svc.start_date != 0 {
-                    start_date = if start_date == 0 {
-                        svc.start_date
-                    } else {
-                        start_date.min(svc.start_date)
-                    };
-                }
-                if svc.end_date != 0 {
-                    end_date = if end_date == 0 {
-                        svc.end_date
-                    } else {
-                        end_date.max(svc.end_date)
-                    };
-                }
-            }
 
             // Find min/max departure times for trips in this pattern
             let mut min_time = u32::MAX;
