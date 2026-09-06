@@ -354,12 +354,6 @@ impl TransitRouter {
     /// line polyline for a walk segment, from a node sequence. Returns a flat
     /// `[lat, lon, …]` `f32` array.
     pub fn segment_shape(&self, route_index: Option<u32>, nodes: Vec<u32>) -> Vec<f32> {
-        let ri = match route_index {
-            None => None,
-            Some(r) if r == u32::MAX => None,
-            Some(r) if r <= u16::MAX as u32 - 1 => Some(r as u16),
-            Some(_) => None,
-        };
-        path_display::segment_shape(self.inner.data(), ri, &nodes)
+        path_display::segment_shape(self.inner.data(), route_index, &nodes)
     }
 }

@@ -77,34 +77,33 @@ fn format_segment(seg: &PathSegment) -> Vec<String> {
 ///
 /// `route_index`: `None` for walk (straight line through nodes); `Some(r)` for
 /// transit (chains per-leg GTFS shapes with straight-line fallback).
-pub fn segment_shape(data: &PreparedData, route_index: Option<u16>, nodes: &[u32]) -> Vec<f32> {
+pub fn segment_shape(data: &PreparedData, route_index: Option<u32>, nodes: &[u32]) -> Vec<f32> {
     if nodes.len() < 2 {
         return Vec::new();
     }
+    let push_node = |out: &mut Vec<f32>, n: u32| {
+        out.push(data.nodes[n as usize].lat as f32);
+        out.push(data.nodes[n as usize].lon as f32);
+    };
     match route_index {
         None => {
             let mut out = Vec::with_capacity(nodes.len() * 2);
             for &n in nodes {
-                out.push(data.nodes[n as usize].lat as f32);
-                out.push(data.nodes[n as usize].lon as f32);
+                push_node(&mut out, n);
             }
             out
         }
         Some(route_idx) => {
             let mut out: Vec<f32> = Vec::new();
             for pair in nodes.windows(2) {
-                let leg =
-                    leg_shape_between(data, route_idx as u32, pair[0], pair[1]).unwrap_or_default();
-                let skip = if out.is_empty() { 0 } else { 2 };
-                if leg.len() >= 4 {
-                    out.extend(leg[skip..].iter().copied());
-                } else {
+                // Consecutive legs share their junction point; drop the
+                // duplicate unless this is the first leg.
+                let skip_first = !out.is_empty();
+                if !append_leg_shape(data, route_idx, pair[0], pair[1], skip_first, &mut out) {
                     if out.is_empty() {
-                        out.push(data.nodes[pair[0] as usize].lat as f32);
-                        out.push(data.nodes[pair[0] as usize].lon as f32);
+                        push_node(&mut out, pair[0]);
                     }
-                    out.push(data.nodes[pair[1] as usize].lat as f32);
-                    out.push(data.nodes[pair[1] as usize].lon as f32);
+                    push_node(&mut out, pair[1]);
                 }
             }
             out
@@ -112,36 +111,46 @@ pub fn segment_shape(data: &PreparedData, route_index: Option<u16>, nodes: &[u32
     }
 }
 
-/// Chain a pre-decoded leg shape (route × from-stop × to-stop) into a flat
-/// `[lat, lon, …]` `f32` polyline. Returns `None` when the leg is absent or
-/// its stored shape is empty.
-pub fn leg_shape_between(
+/// Append the pre-decoded leg shape (route × from-stop × to-stop) to `out`
+/// as `[lat, lon, …]` `f32` pairs, optionally skipping its first point.
+/// Returns `false` (leaving `out` untouched) when the leg is absent or its
+/// stored shape has fewer than two points.
+fn append_leg_shape(
     data: &PreparedData,
     route_idx: u32,
     from_node: u32,
     to_node: u32,
-) -> Option<Vec<f32>> {
-    let from_stop = data.node_to_stop(from_node)?;
-    let to_stop = data.node_to_stop(to_node)?;
+    skip_first: bool,
+    out: &mut Vec<f32>,
+) -> bool {
+    let Some(from_stop) = data.node_to_stop(from_node) else {
+        return false;
+    };
+    let Some(to_stop) = data.node_to_stop(to_node) else {
+        return false;
+    };
     let key = (route_idx, from_stop, to_stop);
-    let idx = data.leg_shape_keys.binary_search(&key).ok()?;
+    let Ok(idx) = data.leg_shape_keys.binary_search(&key) else {
+        return false;
+    };
     let start = data.leg_shape_offsets[idx] as usize;
     let end = data.leg_shape_offsets[idx + 1] as usize;
     let lats = &data.leg_shapes_lat[start..end];
     let lons = &data.leg_shapes_lon[start..end];
-    if lats.is_empty() {
-        return None;
+    if lats.len() < 2 {
+        return false;
     }
     let min_lat = data.coord_min_lat as f32;
     let min_lon = data.coord_min_lon as f32;
     let lat_scale = data.coord_lat_scale as f32;
     let lon_scale = data.coord_lon_scale as f32;
-    let mut out = Vec::with_capacity(lats.len() * 2);
-    for i in 0..lats.len() {
-        out.push(min_lat + lats[i] as f32 / lat_scale);
-        out.push(min_lon + lons[i] as f32 / lon_scale);
+    let first = skip_first as usize;
+    out.reserve((lats.len() - first) * 2);
+    for (&lat, &lon) in lats[first..].iter().zip(&lons[first..]) {
+        out.push(min_lat + lat as f32 / lat_scale);
+        out.push(min_lon + lon as f32 / lon_scale);
     }
-    Some(out)
+    true
 }
 
 /// Brightness-adjust a `#rrggbb` route colour into the `[100, 220]` luminance
