@@ -141,8 +141,9 @@ pub enum SegmentKind {
 // Trait
 // ============================================================================
 
-/// Contract for profile routing. Implement this to replace the routing engine
-/// without touching callers in `lib.rs` or tests.
+/// Contract between the routing engine and the [`crate::api`] facade.
+/// [`SplitProfileRouting`] is the only implementor; the trait exists to keep
+/// the facade independent of the engine's internal representation.
 pub trait ProfileRouter: Sized {
     /// Run profile routing from `query.source_node` over the departure window.
     /// `progress` is called from the calling thread with `(done, total)`; return
@@ -162,18 +163,14 @@ pub trait ProfileRouter: Sized {
     /// `home_departure`. Stop and route names resolved from `data`.
     fn optimal_paths(&self, data: &PreparedData, destination: u32) -> Vec<Path>;
 
-    /// Iterate the Pareto-optimal `(home_departure, arrival_time)` frontier
-    /// for `destination`, in ascending `home_departure` order. Both values
-    /// are absolute seconds-of-day. Empty if `destination` is unreachable
-    /// by transit within the budget. Walking-only reachability
-    /// (a constant-time fallback at every home-departure) is
-    /// *not* yielded as a discrete entry; consumers that need it should
-    /// compute it independently from the walk graph.
-    fn entries<'a>(&'a self, destination: u32) -> Box<dyn Iterator<Item = (u32, u32)> + 'a>;
-
-    /// Returns `true` if `destination` is reachable via at least one
-    /// Pareto-optimal transit path within the budget.
-    fn has_any_transit_paths(&self, destination: u32) -> bool;
+    /// The Pareto-optimal `(home_departure, arrival_time)` frontier for
+    /// `destination`, in ascending `home_departure` order. Both values are
+    /// absolute seconds-of-day. Empty if `destination` is unreachable by
+    /// transit within the budget. Walking-only reachability (a constant-time
+    /// fallback at every home-departure) is *not* yielded as a discrete
+    /// entry; consumers that need it should compute it independently from
+    /// the walk graph.
+    fn entries(&self, destination: u32) -> Vec<(u32, u32)>;
 
     /// Number of nodes — the required length of `out` for `travel_times_at_into`.
     fn num_nodes(&self) -> usize;
@@ -484,7 +481,7 @@ impl ProfileRouter for SplitProfileRouting {
         paths
     }
 
-    fn entries<'a>(&'a self, destination: u32) -> Box<dyn Iterator<Item = (u32, u32)> + 'a> {
+    fn entries(&self, destination: u32) -> Vec<(u32, u32)> {
         // Concatenate per-chunk entries in chunk order (which is ascending
         // window_start, hence ascending absolute home_departure). Within a
         // chunk, frontier.iter yields ascending (home_departure, arrival).
@@ -509,13 +506,7 @@ impl ProfileRouter for SplitProfileRouting {
                 out.push(pair);
             }
         }
-        Box::new(out.into_iter())
-    }
-
-    fn has_any_transit_paths(&self, destination: u32) -> bool {
-        self.chunks
-            .iter()
-            .any(|c| c.frontier.nodes[destination as usize].has_head())
+        out
     }
 
     fn stats(&self) -> String {
@@ -1095,13 +1086,6 @@ impl ProfileRouting {
         self.patterns
             .walk_time(destination)
             .map(|_| self.reconstruct_path(&self.query_context(data), destination, None))
-    }
-
-    // Only reached via the trait default; `SplitProfileRouting` calls
-    // `chunk.travel_times_at_into` directly.
-    #[allow(dead_code)]
-    fn num_nodes(&self) -> usize {
-        self.frontier.nodes.len()
     }
 
     fn travel_times_at_into(&self, t_abs: u32, out: &mut [u16]) {

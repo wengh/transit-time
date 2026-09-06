@@ -60,8 +60,9 @@ id_impls!(RouteId);
 ///
 /// Used uniformly for window bounds, entry departures, and entry arrivals.
 /// Values ≤ 24h are clock-time-of-day on the query date; values past 24h
-/// represent the following day(s) — arrivals can roll past midnight even
-/// though the engine constrains window bounds to `[0, 24h)`.
+/// represent the following day(s) (GTFS-style: a 25:30 trip is 91 800 s).
+/// Nothing constrains the window to a single day — arrivals, and window
+/// bounds themselves, may roll past midnight.
 ///
 /// Stored as `u32` seconds (`repr(transparent)`); conversions to
 /// [`chrono::Duration`] are explicit via [`SinceMidnight::as_duration`] /
@@ -109,8 +110,10 @@ impl std::ops::Sub for SinceMidnight {
     }
 }
 
-/// Half-open departure window `[start, end)` on [`IsochroneParams::date`].
-/// Engine asserts `start <= end` and both within `[0, 24h)`.
+/// Inclusive departure window `[start, end]` on [`IsochroneParams::date`]:
+/// every integer second from `start` through `end` is a candidate home
+/// departure. [`Router::isochrone`] rejects `end < start` with
+/// [`RouterError::InvalidParams`].
 #[derive(Debug, Copy, Clone)]
 pub struct TimeWindow {
     pub start: SinceMidnight,
@@ -328,9 +331,10 @@ impl Isochrone {
         &self.params
     }
 
-    /// Mean travel time (seconds) per node, indexed by [`NodeId`]. Undefined
-    /// when `reachable_fraction()[i] == 0`; the sentinel is [`u16::MAX`].
-    /// Length = `data().num_nodes`.
+    /// Mean travel time (seconds) per node, indexed by [`NodeId`], taken over
+    /// the departures at which the node is reachable. Meaningless when
+    /// `reachable_fraction()[i] == 0` (the engine writes `0` there — check
+    /// the fraction first). Length = `data().num_nodes`.
     pub fn mean_travel_time(&self) -> &[u16] {
         &self.inner.isochrone().mean_travel_time
     }
@@ -369,6 +373,7 @@ impl Isochrone {
     pub fn entries(&self, dest: NodeId) -> Vec<Entry> {
         self.inner
             .entries(dest.get())
+            .into_iter()
             .map(|(d, a)| Entry {
                 departure: SinceMidnight::from_seconds(d),
                 arrival: SinceMidnight::from_seconds(a),
@@ -382,16 +387,16 @@ impl Isochrone {
         self.inner.optimal_paths(&self.data, dest.get())
     }
 
-    /// Number of worker threads actually used for the parallel split phase.
-    /// Driven by the rayon thread pool at query time. Surfaced for the
-    /// frontend's debug overlay.
+    /// Upper bound on the worker threads the parallel split phase could use:
+    /// `min(rayon threads, window chunks)`. It is derived from the chunking
+    /// decision, not measured. Surfaced for the frontend's debug overlay.
     pub fn num_threads_used(&self) -> u32 {
         self.inner.isochrone().num_threads
     }
 
-    /// Opaque diagnostic string with engine-internal phase timings
-    /// (`phase1=… phase2=… phase3=… …`). Useful for benchmarks; not stable
-    /// across releases — don't parse it.
+    /// Opaque diagnostic string (currently the total number of Pareto
+    /// entries across all chunks). Useful for benchmarks; not stable across
+    /// releases — don't parse it. Phase timings go to stderr instead.
     pub fn stats(&self) -> String {
         self.inner.stats()
     }
