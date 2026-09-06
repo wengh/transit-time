@@ -5,10 +5,8 @@
 //! orchestrator (see the `city-builder` crate).
 
 use anyhow::Result;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
-
-use std::collections::BTreeSet;
 
 use crate::shape_match::match_stops_to_shape;
 use crate::stale::{apply_stale_policy, unix_days_now, warn_if_expired};
@@ -108,21 +106,6 @@ pub fn prepare(
     });
     gtfs_data.stop_times.shrink_to_fit();
     eprintln!("  {} stops within bbox", gtfs_data.stops.len());
-
-    let mut stops_per_trip: HashMap<u32, usize> = HashMap::new();
-    for st in &gtfs_data.stop_times {
-        *stops_per_trip.entry(st.trip_index).or_default() += 1;
-    }
-    let valid_trip_indices: HashSet<u32> = stops_per_trip
-        .into_iter()
-        .filter(|(_, count)| *count >= 2)
-        .map(|(idx, _)| idx)
-        .collect();
-    eprintln!(
-        "  {} trips with ≥2 in-bbox stops (of {} total)",
-        valid_trip_indices.len(),
-        gtfs_data.trips.len()
-    );
 
     eprintln!("\n--- Building OSM graph ---");
     let mut osm_graph = graph::build_graph(osm_path, bbox)?;
@@ -263,12 +246,7 @@ pub fn prepare(
     }
 
     eprintln!("\n--- Building leg shapes ---");
-    let leg_shapes = build_leg_shapes(
-        &gtfs_data,
-        &route_remap,
-        &valid_trip_indices,
-        (min_lat, max_lat),
-    );
+    let leg_shapes = build_leg_shapes(&gtfs_data, &route_remap, (min_lat, max_lat));
 
     eprintln!("\n--- Writing binary output ---");
     let prepared = binary::PreparedData {
@@ -296,7 +274,6 @@ pub fn prepare(
 fn build_leg_shapes(
     gtfs_data: &gtfs::GtfsData,
     route_remap: &HashMap<u32, u32>,
-    valid_trip_indices: &HashSet<u32>,
     lat_range: (f64, f64),
 ) -> Vec<((u32, u32, u32), Vec<(f64, f64)>)> {
     use rayon::prelude::*;
@@ -307,125 +284,94 @@ fn build_leg_shapes(
         .map(|r| (r.id.as_str(), r.index))
         .collect();
 
-    let mut stop_times_by_trip: HashMap<u32, Vec<&gtfs::StopTime>> = HashMap::new();
-    for st in &gtfs_data.stop_times {
-        stop_times_by_trip
-            .entry(st.trip_index)
-            .or_default()
-            .push(st);
+    // The DP result depends only on the shape and the stop sequence, so run
+    // it once per distinct `(shape_id, stops)` and reuse the legs for every
+    // trip (and route) with that key. GO Transit has 146,514 trips over 460
+    // shapes; per-trip matching did the same work hundreds of times over.
+    struct Group {
+        routes: BTreeSet<u32>, // new route indices
+        trips: usize,
     }
-    for times in stop_times_by_trip.values_mut() {
-        times.sort_by_key(|st| st.stop_sequence);
+    let mut groups: HashMap<(&str, Vec<u32>), Group> = HashMap::new();
+    let mut trips_with_shape = 0usize;
+    for (trip_idx, trip) in gtfs_data.trips.iter().enumerate() {
+        let Some(shape_id) = trip.shape_id.as_deref() else {
+            continue;
+        };
+        if !gtfs_data
+            .shapes
+            .get(shape_id)
+            .is_some_and(|pts| pts.len() >= 2)
+        {
+            continue;
+        }
+        let times = gtfs::trip_stop_times(&gtfs_data.stop_times, trip_idx as u32);
+        if times.len() < 2 {
+            continue;
+        }
+        let Some(new_route_idx) = route_id_to_old_idx
+            .get(trip.route_id.as_str())
+            .and_then(|old| route_remap.get(old))
+        else {
+            continue;
+        };
+        trips_with_shape += 1;
+        let stops: Vec<u32> = times.iter().map(|st| st.stop_index).collect();
+        let group = groups.entry((shape_id, stops)).or_insert_with(|| Group {
+            routes: BTreeSet::new(),
+            trips: 0,
+        });
+        group.routes.insert(*new_route_idx);
+        group.trips += 1;
     }
+    let groups: Vec<((&str, Vec<u32>), Group)> = groups.into_iter().collect();
 
     let (min_lat, max_lat) = lat_range;
     let center_lat = (min_lat + max_lat) / 2.0;
     let cos_lat = center_lat.to_radians().cos();
 
-    struct TripShapeResult {
-        had_shape: bool,
-        legs: Option<Vec<((u32, u32, u32), (f64, Vec<(f64, f64)>))>>,
-    }
+    type LegEntry = (f64, Vec<(f64, f64)>);
+    type LegMap = HashMap<(u32, u32, u32), LegEntry>;
 
-    type LegMap = HashMap<(u32, u32, u32), (f64, Vec<(f64, f64)>)>;
-
-    fn merge_leg_maps(mut a: LegMap, b: LegMap) -> LegMap {
-        for (key, (quality, leg_points)) in b {
-            match a.get(&key) {
-                Some((best_q, _)) if quality >= *best_q => {}
-                _ => {
-                    a.insert(key, (quality, leg_points));
+    /// Keep the better-quality (lower max projection distance) leg per key.
+    fn insert_best(map: &mut LegMap, key: (u32, u32, u32), entry: LegEntry) {
+        use std::collections::hash_map::Entry;
+        match map.entry(key) {
+            Entry::Occupied(mut o) => {
+                if entry.0 < o.get().0 {
+                    o.insert(entry);
                 }
+            }
+            Entry::Vacant(v) => {
+                v.insert(entry);
             }
         }
-        a
     }
 
-    let trip_results: Vec<TripShapeResult> = gtfs_data
-        .trips
+    // (trips matched, legs) per group
+    let group_results: Vec<(usize, Vec<((u32, u32, u32), LegEntry)>)> = groups
         .par_iter()
-        .enumerate()
-        .map(|(trip_idx, trip)| {
-            let trip_idx = trip_idx as u32;
-            if !valid_trip_indices.contains(&trip_idx) {
-                return TripShapeResult {
-                    had_shape: false,
-                    legs: None,
-                };
-            }
-            let shape_id = match &trip.shape_id {
-                Some(id) => id.as_str(),
-                None => {
-                    return TripShapeResult {
-                        had_shape: false,
-                        legs: None,
-                    };
-                }
-            };
-            let shape = match gtfs_data.shapes.get(shape_id) {
-                Some(pts) if pts.len() >= 2 => pts,
-                _ => {
-                    return TripShapeResult {
-                        had_shape: false,
-                        legs: None,
-                    };
-                }
-            };
-            let times = match stop_times_by_trip.get(&trip_idx) {
-                Some(t) if t.len() >= 2 => t,
-                _ => {
-                    return TripShapeResult {
-                        had_shape: false,
-                        legs: None,
-                    };
-                }
-            };
-            let old_route_idx = match route_id_to_old_idx.get(trip.route_id.as_str()) {
-                Some(&idx) => idx,
-                None => {
-                    return TripShapeResult {
-                        had_shape: false,
-                        legs: None,
-                    };
-                }
-            };
-            let new_route_idx = match route_remap.get(&old_route_idx) {
-                Some(&idx) => idx,
-                None => {
-                    return TripShapeResult {
-                        had_shape: false,
-                        legs: None,
-                    };
-                }
-            };
-
-            let stop_coords: Vec<(f64, f64)> = times
+        .map(|((shape_id, stops), group)| {
+            let shape = &gtfs_data.shapes[*shape_id];
+            let stop_coords: Vec<(f64, f64)> = stops
                 .iter()
-                .map(|st| {
-                    let stop = &gtfs_data.stops[st.stop_index as usize];
+                .map(|&s| {
+                    let stop = &gtfs_data.stops[s as usize];
                     (stop.lat, stop.lon)
                 })
                 .collect();
-
-            let shape_matches = match match_stops_to_shape(&stop_coords, shape, cos_lat) {
-                Some(m) => m,
-                None => {
-                    return TripShapeResult {
-                        had_shape: true,
-                        legs: None,
-                    };
-                }
+            let Some(shape_matches) = match_stops_to_shape(&stop_coords, shape, cos_lat) else {
+                return (0, Vec::new());
             };
 
-            let mut legs = Vec::new();
-            for w in 0..times.len() - 1 {
-                let from_stop = times[w].stop_index;
-                let to_stop = times[w + 1].stop_index;
-                let key = (new_route_idx, from_stop, to_stop);
-
+            let mut legs: Vec<((u32, u32), LegEntry)> = Vec::with_capacity(stops.len() - 1);
+            for w in 0..stops.len() - 1 {
+                let (from_stop, to_stop) = (stops[w], stops[w + 1]);
+                if from_stop == to_stop {
+                    continue;
+                }
                 let mf = shape_matches[w];
                 let mt = shape_matches[w + 1];
-
                 let quality = mf.dist_sq.max(mt.dist_sq);
 
                 let forward = (mf.seg_idx, mf.t) <= (mt.seg_idx, mt.t);
@@ -440,41 +386,47 @@ fn build_leg_shapes(
                     leg_points.extend(shape[mt.seg_idx + 1..=mf.seg_idx].iter().rev().copied());
                 }
                 leg_points.push(mt.proj);
+                legs.push(((from_stop, to_stop), (quality, leg_points)));
+            }
 
-                legs.push((key, (quality, leg_points)));
+            // Expand to every route that uses this key; only the last route
+            // takes the points by move.
+            let mut out = Vec::with_capacity(legs.len() * group.routes.len());
+            let last = group.routes.len().saturating_sub(1);
+            for (ri, &route) in group.routes.iter().enumerate() {
+                if ri == last {
+                    out.extend(legs.drain(..).map(|((f, t), e)| ((route, f, t), e)));
+                } else {
+                    out.extend(legs.iter().map(|((f, t), e)| ((route, *f, *t), e.clone())));
+                }
             }
-            TripShapeResult {
-                had_shape: true,
-                legs: Some(legs),
-            }
+            (group.trips, out)
         })
         .collect();
 
-    let trips_with_shape = trip_results.iter().filter(|r| r.had_shape).count() as u32;
-    let trips_matched = trip_results.iter().filter(|r| r.legs.is_some()).count() as u32;
+    let trips_matched: usize = group_results.iter().map(|(n, _)| n).sum();
 
-    let best_legs: LegMap = trip_results
+    let best_legs: LegMap = group_results
         .into_par_iter()
-        .filter_map(|r| r.legs)
+        .map(|(_, legs)| legs)
         .fold(LegMap::new, |mut acc, legs| {
             for (key, entry) in legs {
-                acc.entry(key)
-                    .and_modify(|(best_q, best_pts)| {
-                        if entry.0 < *best_q {
-                            *best_q = entry.0;
-                            *best_pts = entry.1.clone();
-                        }
-                    })
-                    .or_insert(entry);
+                insert_best(&mut acc, key, entry);
             }
             acc
         })
-        .reduce(LegMap::new, merge_leg_maps);
+        .reduce(LegMap::new, |mut a, b| {
+            for (key, entry) in b {
+                insert_best(&mut a, key, entry);
+            }
+            a
+        });
 
     eprintln!(
-        "  {} trips with shapes, {} matched successfully, {} leg shapes",
+        "  {} trips with shapes, {} matched successfully ({} distinct shape/stop sequences), {} leg shapes",
         trips_with_shape,
         trips_matched,
+        groups.len(),
         best_legs.len()
     );
 

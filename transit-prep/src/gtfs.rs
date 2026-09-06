@@ -940,6 +940,15 @@ fn flush_trip(
     dropped
 }
 
+/// The stop_times of one trip, in stop_sequence order. `stop_times` must be
+/// sorted by `(trip_index, stop_sequence)`; the slice is found by binary
+/// search, so no per-trip grouping structure is needed.
+pub fn trip_stop_times(stop_times: &[StopTime], trip_idx: u32) -> &[StopTime] {
+    let start = stop_times.partition_point(|st| st.trip_index < trip_idx);
+    let end = start + stop_times[start..].partition_point(|st| st.trip_index <= trip_idx);
+    &stop_times[start..end]
+}
+
 pub fn build_service_patterns(data: &GtfsData) -> Vec<ServicePattern> {
     // Build mappings
     let mut trip_id_to_idx: HashMap<&str, u32> = HashMap::new();
@@ -989,14 +998,8 @@ pub fn build_service_patterns(data: &GtfsData) -> Vec<ServicePattern> {
     }
 
     // stop_times are pre-sorted by (trip_index, stop_sequence) by the caller
-    // and pre-filtered to in-bbox stops. Use binary search to get a slice for
-    // each trip — no HashMap needed, so peak memory is just the Vec itself.
-    let sorted_stop_times: &[StopTime] = &data.stop_times;
-    let trip_stops = |trip_idx: u32| -> &[StopTime] {
-        let start = sorted_stop_times.partition_point(|st| st.trip_index < trip_idx);
-        let end = sorted_stop_times.partition_point(|st| st.trip_index <= trip_idx);
-        &sorted_stop_times[start..end]
-    };
+    // and pre-filtered to in-bbox stops, so `trip_stop_times` can slice.
+    let trip_stops = |trip_idx: u32| trip_stop_times(&data.stop_times, trip_idx);
 
     // Group trips by service_id for O(1) per-pattern access instead of scanning all trips.
     let mut trips_by_service_id: HashMap<&str, Vec<&Trip>> = HashMap::new();
