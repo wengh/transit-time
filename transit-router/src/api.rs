@@ -205,7 +205,7 @@ pub struct Router {
 impl Router {
     /// Decode a `.bin` payload and build a router over it.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, RouterError> {
-        let data = crate::data::load(bytes).map_err(|e| RouterError::Data(format!("{e}")))?;
+        let data = crate::data::load(bytes).map_err(RouterError::Data)?;
         Ok(Self {
             data: Arc::new(data),
         })

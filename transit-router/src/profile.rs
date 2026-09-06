@@ -771,8 +771,8 @@ fn compute_isochrone_chunks(
     });
 
     Isochrone {
-        mean_travel_time: mean_travel_time,
-        reachable_fraction: reachable_fraction,
+        mean_travel_time,
+        reachable_fraction,
         num_threads,
         query: *query,
     }
@@ -785,7 +785,7 @@ fn destination_totals_to_stats(
 ) -> DestinationStats {
     let fraction_q = (denominator * u16::MAX as u64 / window_length as u64) as u16;
     let mean = if denominator > 0 {
-        (numerator / denominator as u64).min(u16::MAX as u64) as u16
+        (numerator / denominator).min(u16::MAX as u64) as u16
     } else {
         0
     };
@@ -882,7 +882,7 @@ impl ProfileRouting {
             let node_id = node_id as u32;
             let window_length = (query.window_end - query.window_start) as u16;
             let max_arrival = query.window_end + query.max_time;
-            let _ = context.expand_transit_legs(
+            context.expand_transit_legs(
                 ExpandTransitLegQuery {
                     node: node_id,
                     min_departure: query.window_start + walk_time as u32,
@@ -1006,7 +1006,7 @@ impl ProfileRouting {
                     continue;
                 }
 
-                let _ = context.expand_transit_legs(
+                context.expand_transit_legs(
                     ExpandTransitLegQuery {
                         node: node_id,
                         min_departure: min_departure_time,
@@ -1107,7 +1107,7 @@ impl ProfileRouting {
         let arena = &self.frontier.arena;
         let nodes = &self.frontier.nodes;
         crate::maybe_par_for_each_mut2(&mut guard, out, |node_id, slot, out_elem| {
-            let walk = self.patterns.walk_only_time[node_id as usize];
+            let walk = self.patterns.walk_only_time[node_id];
 
             let (mut curr, mut next_slot) = 'get_curr: {
                 if *slot != SLOT_MISSING {
@@ -1122,7 +1122,7 @@ impl ProfileRouting {
                         break 'get_curr (arena[curr_idx as usize], curr_idx);
                     }
                 }
-                let node = nodes[node_id as usize];
+                let node = nodes[node_id];
                 if !node.has_head() {
                     *out_elem = walk;
                     return;
@@ -1163,11 +1163,9 @@ impl ProfileRouting {
         destination: u32,
         entry: Option<Entry>, // None for getting walk path
     ) -> Path {
-        let home_departure_delta = if entry.is_none() {
-            0 // For walk-only entries, just use window_start as home departure since it doesn't matter
-        } else {
-            entry.unwrap().home_departure_delta
-        };
+        // For walk-only entries (`None`), just use window_start as home
+        // departure since it doesn't matter.
+        let home_departure_delta = entry.map_or(0, |e| e.home_departure_delta);
 
         // Helper functions
         let delta_to_time = |delta: u16| delta as u32 + self.query.window_start;
@@ -1243,7 +1241,7 @@ impl ProfileRouting {
                                     reached_end_stop = true;
                                 }
                                 if event.is_trip_end() {
-                                    break pat.sentinel_routes[&(curr_event_idx as u32)];
+                                    break pat.sentinel_routes[&curr_event_idx];
                                 }
                                 curr_event_idx = event.next_event_index;
                             };
@@ -1517,7 +1515,7 @@ impl<'a> ProfileQueryContext<'a> {
         }
 
         DestinationTotals {
-            numerator: numerator,
+            numerator,
             denominator,
         }
     }
@@ -1846,7 +1844,8 @@ impl<'a> ProfileQueryContext<'a> {
                     let valid = curr_freq.headway_secs != 0
                         && board_time >= curr_freq.start_time
                         && board_time < curr_freq.end_time
-                        && (board_time - curr_freq.start_time) % curr_freq.headway_secs == 0;
+                        && (board_time - curr_freq.start_time)
+                            .is_multiple_of(curr_freq.headway_secs);
                     if valid {
                         let board_node = data.stop_to_node(curr_freq.stop_index);
                         if let Some(prev_entry) = check_boarding(board_node, board_time) {

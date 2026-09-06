@@ -836,8 +836,8 @@ pub fn load_with_stats(buf: &[u8]) -> Result<(PreparedData, LoadStats), String> 
 
     // node_grid HashMap
     let ng_mem: usize = node_grid
-        .iter()
-        .map(|(_, v)| {
+        .values()
+        .map(|v| {
             16 + 64 + v.capacity() * 4 // key + hashmap overhead + data
         })
         .sum();

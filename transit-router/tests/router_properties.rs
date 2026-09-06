@@ -351,10 +351,10 @@ fn mean_and_fraction_by_exact_integration() {
     let mut count: u64 = 0;
     for t in window_start..=window_end {
         let mut best = u32::MAX;
-        if let Some(walk) = walk_in_budget {
-            if walk <= max_time_secs {
-                best = best.min(walk);
-            }
+        if let Some(walk) = walk_in_budget
+            && walk <= max_time_secs
+        {
+            best = best.min(walk);
         }
         // Smallest entry with home_departure ≥ t.
         let idx = entries.partition_point(|e: &(u32, u32)| e.0 < t);

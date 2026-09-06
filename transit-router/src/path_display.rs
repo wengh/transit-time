@@ -49,7 +49,7 @@ pub fn dominant_route_color(data: &PreparedData, path: &Path) -> Option<String> 
         .iter()
         .filter(|s| s.kind == SegmentKind::Transit)
         .max_by_key(|s| s.end_time.saturating_sub(s.start_time))?;
-    route_color(data, dominant.route_index? as u32)
+    route_color(data, dominant.route_index?)
 }
 
 fn format_segment(seg: &PathSegment) -> Vec<String> {

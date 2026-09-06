@@ -304,6 +304,7 @@ impl TransitRouter {
     /// (an invalid `date`, a `max_time` of zero or ≥ 65535 s, …) also
     /// yields `None` rather than trapping: a wasm-bindgen panic would kill
     /// the worker.
+    #[allow(clippy::too_many_arguments)] // flat JS ABI; mirrors the frontend call
     pub fn compute_profile(
         &self,
         source_node: u32,
