@@ -109,17 +109,19 @@ fn check_index(what: &str, idx: u32, len: usize, allow_sentinel: bool) -> Result
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-use std::time::Instant;
+pub use std::time::Instant;
 
-/// Zero-cost no-op Instant for wasm32 where std::time::Instant panics.
+/// Zero-cost no-op stand-in for `std::time::Instant` on wasm32, where the
+/// real one panics. Shared with `transit-router` so timing code can be
+/// written once for both targets.
 #[cfg(target_arch = "wasm32")]
-struct Instant;
+pub struct Instant;
 #[cfg(target_arch = "wasm32")]
 impl Instant {
-    fn now() -> Self {
+    pub fn now() -> Self {
         Instant
     }
-    fn elapsed(&self) -> Duration {
+    pub fn elapsed(&self) -> Duration {
         Duration::ZERO
     }
 }
@@ -273,6 +275,44 @@ pub struct PatternStopIndex {
     pub events_by_stop: JaggedArray<EventData>,
 }
 
+/// Backward chains for a pattern, mirroring the forward `next_event_index` /
+/// `next_freq_index` pointers. Query-independent, so it is built lazily at
+/// most once per pattern (see [`PatternData::pattern_reverse`]) and only
+/// consumed during path reconstruction.
+pub struct PatternReverse {
+    /// Same length as `stop_index.events_by_stop.data`. For event index `i`,
+    /// holds the index of the event whose `next_event_index == i`, or
+    /// `u32::MAX` if `i` is the first event of its trip (no predecessor).
+    pub event_prev: Vec<u32>,
+    /// Same length as `frequency_routes`. For freq index `i`, holds the index
+    /// of the freq whose `next_freq_index == i`, or `u32::MAX` if `i` is the
+    /// first leg of its trip.
+    pub freq_prev: Vec<u32>,
+}
+
+impl PatternReverse {
+    fn build(pat: &PatternData) -> Self {
+        let events = &pat.stop_index.events_by_stop.data;
+        let mut event_prev = vec![u32::MAX; events.len()];
+        for (i, e) in events.iter().enumerate() {
+            if e.next_event_index != u32::MAX {
+                event_prev[e.next_event_index as usize] = i as u32;
+            }
+        }
+        let freqs = &pat.frequency_routes;
+        let mut freq_prev = vec![u32::MAX; freqs.len()];
+        for (i, f) in freqs.iter().enumerate() {
+            if f.next_freq_index != u32::MAX {
+                freq_prev[f.next_freq_index as usize] = i as u32;
+            }
+        }
+        Self {
+            event_prev,
+            freq_prev,
+        }
+    }
+}
+
 pub struct PatternData {
     pub day_mask: u8,
     /// Inclusive lower bound of the service window. `None` = unbounded.
@@ -288,6 +328,16 @@ pub struct PatternData {
     /// Maps flat event index to route_index for trip-end sentinel events
     /// (see `EventData::is_trip_end`).
     pub sentinel_routes: std::collections::HashMap<u32, u32>,
+    /// Lazily built reverse chains; see [`PatternData::pattern_reverse`].
+    reverse: std::sync::OnceLock<PatternReverse>,
+}
+
+impl PatternData {
+    /// Reverse event/frequency chains for this pattern, built on first use
+    /// and cached for the lifetime of the data.
+    pub fn pattern_reverse(&self) -> &PatternReverse {
+        self.reverse.get_or_init(|| PatternReverse::build(self))
+    }
 }
 
 pub struct PreparedData {
@@ -627,6 +677,7 @@ pub fn load_with_stats(buf: &[u8]) -> Result<(PreparedData, LoadStats), String> 
                 events_by_stop,
             },
             sentinel_routes: pattern_sentinel_routes,
+            reverse: std::sync::OnceLock::new(),
         });
     }
     binary_sections.push(("patterns", r.pos() - pos_before));

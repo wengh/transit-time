@@ -27,24 +27,11 @@ use std::{
 use radix_heap::RadixHeapMap;
 use rayon::prelude::*;
 
-#[cfg(not(target_arch = "wasm32"))]
-use std::time::Instant;
-
-use crate::{data::PreparedData, maybe_par_collect, maybe_par_unzip};
+use crate::{
+    data::{Instant, PreparedData},
+    maybe_par_collect, maybe_par_unzip,
+};
 use serde::Serialize;
-
-/// Zero-cost no-op Instant for wasm32 where std::time::Instant panics.
-#[cfg(target_arch = "wasm32")]
-struct Instant;
-#[cfg(target_arch = "wasm32")]
-impl Instant {
-    fn now() -> Self {
-        Instant
-    }
-    fn elapsed(&self) -> std::time::Duration {
-        std::time::Duration::ZERO
-    }
-}
 
 // ============================================================================
 // Input / output types
@@ -237,7 +224,8 @@ const EMPTY_ARENA_ENTRY: ArenaEntry = ArenaEntry {
 /// (home_departure, arrival) pair.
 ///
 /// The predecessor edge is not stored — it is recovered at reconstruction time
-/// by `recover_edge`, using the per-pattern reverse arrival index in `Index`.
+/// by `recover_edge`, using each pattern's lazily built reverse chains
+/// (`PatternData::pattern_reverse`).
 #[derive(Debug, Copy, Clone)]
 struct Entry {
     /// Time leaving the source node (seconds since start of profile window)
@@ -410,46 +398,6 @@ struct Index {
     /// Walk-only travel time from the source to each node. `WALK_UNREACHABLE`
     /// means not reachable within `query.max_time`.
     walk_only_time: Vec<u16>,
-    /// Reverse arrival data per pattern. `pattern_reverse[i] == None` for
-    /// inactive patterns. Used only by `recover_edge` during path reconstruction.
-    pattern_reverse: Vec<Option<PatternReverse>>,
-}
-
-/// Backward chains for a single active pattern, mirroring the forward
-/// `next_event_index`/`next_freq_index` pointers. Built once in `Index::new`
-/// alongside `patterns_at_stop`.
-struct PatternReverse {
-    /// Same length as `pat.stop_index.events_by_stop.data`. For event index
-    /// `i`, holds the index of the event whose `next_event_index == i`, or
-    /// `u32::MAX` if `i` is the first event of its trip (no predecessor).
-    event_prev: Vec<u32>,
-    /// Same length as `pat.frequency_routes`. For freq index `i`, holds the
-    /// index of the freq whose `next_freq_index == i`, or `u32::MAX` if `i`
-    /// is the first leg of its trip.
-    freq_prev: Vec<u32>,
-}
-
-impl PatternReverse {
-    fn build(pat: &crate::data::PatternData) -> Self {
-        let events = &pat.stop_index.events_by_stop.data;
-        let mut event_prev = vec![u32::MAX; events.len()];
-        for (i, e) in events.iter().enumerate() {
-            if e.next_event_index != u32::MAX {
-                event_prev[e.next_event_index as usize] = i as u32;
-            }
-        }
-        let freqs = &pat.frequency_routes;
-        let mut freq_prev = vec![u32::MAX; freqs.len()];
-        for (i, f) in freqs.iter().enumerate() {
-            if f.next_freq_index != u32::MAX {
-                freq_prev[f.next_freq_index as usize] = i as u32;
-            }
-        }
-        Self {
-            event_prev,
-            freq_prev,
-        }
-    }
 }
 
 /// Profile router that transparently splits long departure windows into
@@ -1445,16 +1393,10 @@ impl Index {
                 }
             }
         }
-        let mut pattern_reverse: Vec<Option<PatternReverse>> =
-            (0..data.patterns.len()).map(|_| None).collect();
-        for &pat_idx in &active_patterns {
-            pattern_reverse[pat_idx] = Some(PatternReverse::build(&data.patterns[pat_idx]));
-        }
         let walk_only_time = compute_walk_only_times(data, query);
         Self {
             patterns_at_stop,
             walk_only_time,
-            pattern_reverse,
         }
     }
 
@@ -1824,9 +1766,7 @@ impl<'a> ProfileQueryContext<'a> {
         // ── Scheduled events ───────────────────────────────────────────────
         for &pat_idx in &index.patterns_at_stop[curr_stop as usize] {
             let pat = &data.patterns[pat_idx as usize];
-            let pat_rev = index.pattern_reverse[pat_idx as usize]
-                .as_ref()
-                .expect("active pattern has reverse data");
+            let pat_rev = pat.pattern_reverse();
             let events_data = &pat.stop_index.events_by_stop.data;
             let off_lo = pat.stop_index.events_by_stop.offsets[curr_stop as usize] as usize;
             let off_hi = pat.stop_index.events_by_stop.offsets[curr_stop as usize + 1] as usize;
@@ -1883,9 +1823,7 @@ impl<'a> ProfileQueryContext<'a> {
         // ── Frequency-based legs ───────────────────────────────────────────
         for &pat_idx in &index.patterns_at_stop[curr_stop as usize] {
             let pat = &data.patterns[pat_idx as usize];
-            let pat_rev = index.pattern_reverse[pat_idx as usize]
-                .as_ref()
-                .expect("active pattern has reverse data");
+            let pat_rev = pat.pattern_reverse();
             let freqs = &pat.frequency_routes;
             for (i, fi) in freqs.iter().enumerate() {
                 if fi.next_stop_index != curr_stop {
