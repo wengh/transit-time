@@ -1642,7 +1642,9 @@ impl<'a> ProfileQueryContext<'a> {
             // ── Frequency-based ───────────────────────────────────────────────
             for &fi in &pat.stop_index.freq_by_stop[stop_idx] {
                 let freq = &pat.frequency_routes[fi as usize];
-                if min_departure >= freq.end_time {
+                // A malformed feed can carry `headway_secs == 0`; skip the row
+                // rather than divide by zero below.
+                if freq.headway_secs == 0 || min_departure >= freq.end_time {
                     continue;
                 }
                 let effective_start = freq.start_time.max(min_departure);
@@ -1903,7 +1905,8 @@ impl<'a> ProfileQueryContext<'a> {
                         break;
                     }
                     let board_time = target_arrival_abs - cumulative_after;
-                    let valid = board_time >= curr_freq.start_time
+                    let valid = curr_freq.headway_secs != 0
+                        && board_time >= curr_freq.start_time
                         && board_time < curr_freq.end_time
                         && (board_time - curr_freq.start_time) % curr_freq.headway_secs == 0;
                     if valid {
