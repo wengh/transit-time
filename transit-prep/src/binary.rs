@@ -244,8 +244,8 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
             .iter()
             .map(|&i| ((data.nodes[i as usize].lon - min_lon) * lon_scale).round() as u32)
             .collect();
-        write_pco_u32(&mut buf, &lat_u32);
-        write_pco_u32(&mut buf, &lon_u32);
+        write_pco(&mut buf, &lat_u32);
+        write_pco(&mut buf, &lon_u32);
     }
 
     // Edges: u, delta (=u-v), walk_time (seconds at 1.4 m/s, min 1)
@@ -254,9 +254,9 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
         let us: Vec<u32> = canon_edges.iter().map(|&(u, _, _)| u).collect();
         let deltas: Vec<u32> = canon_edges.iter().map(|&(_, d, _)| d).collect();
         let walk_times: Vec<u32> = canon_edges.iter().map(|&(_, _, w)| w as u32).collect();
-        write_pco_u32(&mut buf, &us);
-        write_pco_u32(&mut buf, &deltas);
-        write_pco_u32(&mut buf, &walk_times);
+        write_pco(&mut buf, &us);
+        write_pco(&mut buf, &deltas);
+        write_pco(&mut buf, &walk_times);
     }
 
     // Stops — written in new_stop_idx order, so stops[s] is the stop that
@@ -310,6 +310,7 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
         write_u32(&mut buf, pattern.max_time);
 
         // Convert (dep_time, Event) pairs into flat events with time_offset.
+        #[derive(Clone, Copy)]
         struct FlatEvent {
             time_offset: u32,
             stop_index: u32,
@@ -337,15 +338,8 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
         let n = flat_events.len();
         let mut with_sentinels: Vec<FlatEvent> = Vec::with_capacity(n + n / 10);
         for i in 0..n {
-            let e = &flat_events[i];
-            with_sentinels.push(FlatEvent {
-                time_offset: e.time_offset,
-                stop_index: e.stop_index,
-                route_index: e.route_index,
-                trip_index: e.trip_index,
-                next_stop_index: e.next_stop_index,
-                travel_time: e.travel_time,
-            });
+            let e = flat_events[i];
+            with_sentinels.push(e);
             let is_last = i + 1 == n || flat_events[i + 1].trip_index != e.trip_index;
             // Every non-sentinel event has travel_time > 0 after the
             // monotonicity enforcement in gtfs.rs, so every trip-final row
@@ -386,20 +380,8 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
         }
 
         // Apply permutation and remap next_event_index
-        let sorted_events: Vec<FlatEvent> = order
-            .iter()
-            .map(|&i| {
-                let e = &with_sentinels[i as usize];
-                FlatEvent {
-                    time_offset: e.time_offset,
-                    stop_index: e.stop_index,
-                    route_index: e.route_index,
-                    trip_index: e.trip_index,
-                    next_stop_index: e.next_stop_index,
-                    travel_time: e.travel_time,
-                }
-            })
-            .collect();
+        let sorted_events: Vec<FlatEvent> =
+            order.iter().map(|&i| with_sentinels[i as usize]).collect();
         let remapped_nei: Vec<u32> = order
             .iter()
             .map(|&i| {
@@ -434,29 +416,18 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
             remapped_nei,
         ];
         for col in &cols {
-            let compressed = pco::standalone::simple_compress(col, &pco::ChunkConfig::default())
-                .expect("pco compress failed");
-            write_u32(&mut buf, compressed.len() as u32);
-            buf.extend_from_slice(&compressed);
+            write_pco(&mut buf, col);
         }
 
         // Stop offsets (num_stops + 1 entries)
-        let compressed_offsets =
-            pco::standalone::simple_compress(&stop_offsets, &pco::ChunkConfig::default())
-                .expect("pco compress failed");
-        write_u32(&mut buf, compressed_offsets.len() as u32);
-        buf.extend_from_slice(&compressed_offsets);
+        write_pco(&mut buf, &stop_offsets);
 
         // Sentinel routes: for each event, if it's a sentinel (travel_time == 0), store its route_index
         let sentinel_routes: Vec<u32> = sorted_events
             .iter()
             .map(|e| if e.travel_time == 0 { e.route_index } else { 0 })
             .collect();
-        let compressed_sentinel_routes =
-            pco::standalone::simple_compress(&sentinel_routes, &pco::ChunkConfig::default())
-                .expect("pco compress failed");
-        write_u32(&mut buf, compressed_sentinel_routes.len() as u32);
-        buf.extend_from_slice(&compressed_sentinel_routes);
+        write_pco(&mut buf, &sentinel_routes);
 
         write_u32(&mut buf, pattern.frequency_routes.len() as u32);
         for freq in &pattern.frequency_routes {
@@ -506,12 +477,12 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
                 lons_global.push(((lon - min_lon) * lon_scale).round() as i32);
             }
         }
-        write_pco_u32(&mut buf, &routes);
-        write_pco_u32(&mut buf, &from_stops);
-        write_pco_u32(&mut buf, &to_stops);
-        write_pco_u32(&mut buf, &point_counts);
-        write_pco_i32(&mut buf, &lats_global);
-        write_pco_i32(&mut buf, &lons_global);
+        write_pco(&mut buf, &routes);
+        write_pco(&mut buf, &from_stops);
+        write_pco(&mut buf, &to_stops);
+        write_pco(&mut buf, &point_counts);
+        write_pco(&mut buf, &lats_global);
+        write_pco(&mut buf, &lons_global);
     }
 
     // Compress with gzip
@@ -557,18 +528,10 @@ fn write_f64(buf: &mut Vec<u8>, v: f64) {
     buf.extend_from_slice(&v.to_le_bytes());
 }
 
-fn write_pco_u32(buf: &mut Vec<u8>, data: &[u32]) {
-    let compressed = if data.is_empty() {
-        Vec::new()
-    } else {
-        pco::standalone::simple_compress(data, &pco::ChunkConfig::default())
-            .expect("pco compress failed")
-    };
-    write_u32(buf, compressed.len() as u32);
-    buf.extend_from_slice(&compressed);
-}
-
-fn write_pco_i32(buf: &mut Vec<u8>, data: &[i32]) {
+/// Write one PCO column: `len: u32` followed by the compressed bytes. An
+/// empty column is written as `len = 0` with no payload, which the reader
+/// treats as an empty Vec.
+fn write_pco<T: pco::data_types::Number>(buf: &mut Vec<u8>, data: &[T]) {
     let compressed = if data.is_empty() {
         Vec::new()
     } else {
