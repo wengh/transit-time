@@ -7,6 +7,9 @@ edition = "2024"
 name = "city-builder"
 path = "src/main.rs"
 
+[build-dependencies]
+sha1 = "0.10"
+
 [dependencies]
 transit-prep = { path = "../transit-prep" }
 serde = { workspace = true }

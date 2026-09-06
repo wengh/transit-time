@@ -20,8 +20,8 @@ use std::path::{Path, PathBuf};
 
 use crate::config::CityConfig;
 use crate::gtfs_fetch::{
-    fetch_gtfs, gtfs_cache_path, gtfs_sha1_path, is_transitland_id, sha1_recently_checked,
-    validate_feed_id,
+    fetch_gtfs, gtfs_cache_path, gtfs_sha1_path, is_transitland_id, sha1_file,
+    sha1_recently_checked, validate_feed_id,
 };
 use transit_prep::parse_bbox;
 
@@ -126,6 +126,14 @@ fn load_city_config(city_file: &Path) -> Result<CityConfig> {
         .with_context(|| format!("Failed to parse city file: {:?}", city_file))
 }
 
+/// A city config as loaded by the pipeline, with the hash of its file bytes
+/// that the build record compares against.
+struct City {
+    id: String,
+    config: CityConfig,
+    config_hash: String,
+}
+
 fn cmd_prep(city_file: &Path, output: &Path, cache_dir: &Path) -> Result<()> {
     let city: CityConfig = load_city_config(city_file)?;
     if city.enabled == Some(false) {
@@ -188,7 +196,7 @@ fn cmd_pipeline(
     // ── Stage 1: Extract feeds from city configs ──
     eprintln!("=== Stage 1: Extract feeds from city configs ===");
 
-    let mut cities: Vec<(String, CityConfig, PathBuf)> = Vec::new();
+    let mut cities: Vec<City> = Vec::new();
     let mut feed_ids: BTreeSet<String> = BTreeSet::new();
 
     let mut entries: Vec<_> = std::fs::read_dir(cities_dir)?
@@ -216,7 +224,12 @@ fn cmd_pipeline(
             feed_ids.insert(fid.clone());
         }
 
-        cities.push((config.id.clone(), config, path));
+        let config_hash = sha1_file(&path)?;
+        cities.push(City {
+            id: config.id.clone(),
+            config,
+            config_hash,
+        });
     }
 
     let tl_feeds: Vec<_> = feed_ids
@@ -372,7 +385,7 @@ fn cmd_pipeline(
         let client = http_cache::client(http_cache::CHECK_TIMEOUT)?;
         cities
             .par_iter()
-            .map(|(id, config, _)| {
+            .map(|City { id, config, .. }| {
                 let source_url = osm_fetch::osm_request_url(
                     config.interline_extract.as_deref(),
                     config.bbbike_name.as_deref(),
@@ -399,29 +412,25 @@ fn cmd_pipeline(
 
     let recorded = metadata::Metadata::load(output_dir);
 
-    let exe_mtime = std::env::current_exe()
-        .ok()
-        .and_then(|p| std::fs::metadata(&p).ok())
-        .and_then(|m| m.modified().ok());
-
     let mut cities_to_rebuild: Vec<String> = Vec::new();
 
-    for (id, config, city_path) in &cities {
+    for City {
+        id,
+        config,
+        config_hash,
+        ..
+    } in &cities
+    {
         let bin_path = output_dir.join(format!("{}.bin", id));
         let bin_missing = !bin_path.exists();
-        let bin_mtime = std::fs::metadata(&bin_path)
-            .ok()
-            .and_then(|m| m.modified().ok());
-        let code_changed = exe_mtime
-            .and_then(|exe_t| bin_mtime.map(|bin_t| exe_t > bin_t))
-            .unwrap_or(false);
-        let config_changed = std::fs::metadata(city_path)
-            .ok()
-            .and_then(|m| m.modified().ok())
-            .and_then(|cfg_t| bin_mtime.map(|bin_t| cfg_t > bin_t))
-            .unwrap_or(false);
 
         let prior = recorded.cities.get(id);
+        // Recorded content, not mtimes: in CI `actions/checkout` writes every
+        // source and config file at checkout time while the restored `.bin`
+        // keeps its original mtime, so an mtime comparison reported "config
+        // changed" for every city on every scheduled run.
+        let code_changed = prior.is_some_and(|p| p.code_fingerprint != metadata::CODE_FINGERPRINT);
+        let config_changed = prior.is_some_and(|p| &p.config_hash != config_hash);
 
         // Compare every input against the identity that produced this .bin.
         // `same_as` returning None means "not comparable" — treated as
@@ -517,8 +526,8 @@ fn cmd_pipeline(
     let feeds_to_download: Vec<&String> = {
         let needed: HashSet<&String> = cities
             .iter()
-            .filter(|(id, _, _)| cities_to_rebuild.contains(id))
-            .flat_map(|(_, config, _)| config.feed_ids.iter())
+            .filter(|c| cities_to_rebuild.contains(&c.id))
+            .flat_map(|c| c.config.feed_ids.iter())
             .collect();
         needed
             .into_iter()
@@ -547,9 +556,15 @@ fn cmd_pipeline(
 
     let built: Vec<(String, metadata::CityMetadata)> = cities
         .par_iter()
-        .filter(|(id, _, _)| cities_to_rebuild.contains(id))
+        .filter(|c| cities_to_rebuild.contains(&c.id))
         .map(
-            |(id, config, _)| -> Result<(String, metadata::CityMetadata)> {
+            |City {
+                 id,
+                 config,
+                 config_hash,
+                 ..
+             }|
+             -> Result<(String, metadata::CityMetadata)> {
                 let bbox = parse_bbox(&config.bbox)?;
 
                 let osm_path = osm_fetch::fetch_osm(
@@ -600,6 +615,8 @@ fn cmd_pipeline(
                             .get(id.as_str())
                             .cloned()
                             .filter(|s| !s.is_empty()),
+                        config_hash: config_hash.clone(),
+                        code_fingerprint: metadata::CODE_FINGERPRINT.to_string(),
                     },
                 ))
             },
@@ -610,7 +627,7 @@ fn cmd_pipeline(
     // then drop any city that no longer has a config.
     let mut updated = recorded;
     updated.cities.extend(built);
-    let active: HashSet<&str> = cities.iter().map(|(id, _, _)| id.as_str()).collect();
+    let active: HashSet<&str> = cities.iter().map(|c| c.id.as_str()).collect();
     updated.cities.retain(|id, _| active.contains(id.as_str()));
     updated.save(output_dir)?;
     eprintln!(
@@ -628,7 +645,7 @@ fn cmd_pipeline(
         expected_files.insert(gtfs_sha1_path(feed_id, cache_dir));
     }
 
-    for (id, config, _) in &cities {
+    for City { id, config, .. } in &cities {
         if let Some(url) = osm_fetch::pick_source_url(
             config.interline_extract.as_deref(),
             config.bbbike_name.as_deref(),
@@ -690,7 +707,7 @@ fn cmd_pipeline(
         }
     }
 
-    let active_city_ids: HashSet<&str> = cities.iter().map(|(id, _, _)| id.as_str()).collect();
+    let active_city_ids: HashSet<&str> = cities.iter().map(|c| c.id.as_str()).collect();
     if let Ok(entries) = std::fs::read_dir(output_dir) {
         for entry in entries.filter_map(|e| e.ok()) {
             let path = entry.path();

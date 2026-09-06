@@ -32,7 +32,12 @@ pub const METADATA_FILE: &str = "metadata.json";
 /// Bumped when the schema changes in a way that invalidates existing records.
 /// A mismatch is treated as "no metadata", which forces a full rebuild — the
 /// safe direction, and cheaper to reason about than a migration.
-const SCHEMA_VERSION: u32 = 1;
+const SCHEMA_VERSION: u32 = 2;
+
+/// sha1 over the `transit-prep` and `city-builder` sources, computed by
+/// `build.rs` at compile time. Recorded per city so a `.bin` built by older
+/// preprocessing code is rebuilt, without depending on file mtimes.
+pub const CODE_FINGERPRINT: &str = env!("CODE_FINGERPRINT");
 
 /// Identity of one input source as its origin reports it.
 ///
@@ -104,6 +109,10 @@ pub struct CityMetadata {
     /// query with no validators.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub osm: Option<SourceId>,
+    /// sha1 of the city's config file bytes at build time.
+    pub config_hash: String,
+    /// [`CODE_FINGERPRINT`] of the binary that built it.
+    pub code_fingerprint: String,
 }
 
 impl CityMetadata {
@@ -249,6 +258,8 @@ mod tests {
                     etag: Some("\"deadbeef\"".into()),
                     last_modified: Some("Fri, 17 Jul 2026 08:26:43 GMT".into()),
                 }),
+                config_hash: "cfg".into(),
+                code_fingerprint: CODE_FINGERPRINT.into(),
             },
         );
 
@@ -261,6 +272,8 @@ mod tests {
         assert_eq!(back.version, SCHEMA_VERSION);
         let city = back.cities.get("chicago").unwrap();
         assert_eq!(city.feeds["f-dp3-cta"].sha1.as_deref(), Some("abc123"));
+        assert_eq!(city.config_hash, "cfg");
+        assert_eq!(city.code_fingerprint, CODE_FINGERPRINT);
         assert_eq!(
             city.osm.as_ref().unwrap().etag.as_deref(),
             Some("\"deadbeef\"")
@@ -275,13 +288,19 @@ mod tests {
     }
 
     #[test]
+    fn code_fingerprint_is_a_sha1_hex() {
+        assert_eq!(CODE_FINGERPRINT.len(), 40);
+        assert!(CODE_FINGERPRINT.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
     fn a_future_schema_version_reads_as_absent() {
         let dir = std::env::temp_dir().join("city-builder-metadata-version-test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             metadata_path(&dir),
-            r#"{"version": 999, "cities": {"chicago": {"built_at": "2026-01-01T00:00:00Z", "feeds": {}}}}"#,
+            r#"{"version": 999, "cities": {"chicago": {"built_at": "2026-01-01T00:00:00Z", "feeds": {}, "config_hash": "", "code_fingerprint": ""}}}"#,
         )
         .unwrap();
         assert!(Metadata::load(&dir).cities.is_empty());
@@ -302,6 +321,8 @@ mod tests {
             built_at: chrono::Utc::now().to_rfc3339(),
             feeds: BTreeMap::new(),
             osm: None,
+            config_hash: String::new(),
+            code_fingerprint: String::new(),
         };
         assert_eq!(recent.age_days(), 0);
 
@@ -309,6 +330,8 @@ mod tests {
             built_at: (chrono::Utc::now() - chrono::Duration::days(20)).to_rfc3339(),
             feeds: BTreeMap::new(),
             osm: None,
+            config_hash: String::new(),
+            code_fingerprint: String::new(),
         };
         assert_eq!(old.age_days(), 20);
         assert!(old.age().unwrap() > Duration::from_secs(19 * 86_400));
@@ -317,6 +340,8 @@ mod tests {
             built_at: "not a timestamp".into(),
             feeds: BTreeMap::new(),
             osm: None,
+            config_hash: String::new(),
+            code_fingerprint: String::new(),
         };
         assert!(broken.age().is_none());
     }
