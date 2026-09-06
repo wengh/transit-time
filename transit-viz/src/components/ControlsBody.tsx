@@ -186,7 +186,6 @@ function DualRangeSlider({ windowStart, windowEnd, onChange, onCommit }: DualRan
 }
 
 interface ControlsBodyProps {
-  onRunQuery: (overrides?: Record<string, any>) => void;
   onCopy: () => void;
   // When true, omits the city title and the "Change city" button (the mobile
   // top bar already shows the city, and Change City lives elsewhere). Defaults
@@ -198,7 +197,6 @@ interface ControlsBodyProps {
 }
 
 export default function ControlsBody({
-  onRunQuery,
   onCopy,
   compact = false,
   onChangeCity,
@@ -234,7 +232,6 @@ export default function ControlsBody({
     numPatternsForDate(dateToYYYYMMDD(e.target.value)).then((count) => {
       dispatch({ type: 'SET_PATTERN_COUNT', count });
     });
-    onRunQuery({ date: e.target.value });
   }
 
   function handleChangeCity() {
@@ -302,10 +299,7 @@ export default function ControlsBody({
               setLiveStart(s);
               setLiveEnd(e);
             }}
-            onCommit={(s, e) => {
-              dispatch({ type: 'SET_WINDOW', windowStart: s, windowEnd: e });
-              onRunQuery({ windowStart: s, windowEnd: e });
-            }}
+            onCommit={(s, e) => dispatch({ type: 'SET_WINDOW', windowStart: s, windowEnd: e })}
           />
         </label>
       </div>
@@ -320,10 +314,7 @@ export default function ControlsBody({
             step={5}
             defaultValue={maxTimeMin}
             formatDisplay={(v) => `${v} min`}
-            onCommit={(val) => {
-              dispatch({ type: 'SET_MAX_TIME', value: val });
-              onRunQuery({ maxTimeMin: val });
-            }}
+            onCommit={(val) => dispatch({ type: 'SET_MAX_TIME', value: val })}
           />
         </label>
       </div>
@@ -338,10 +329,7 @@ export default function ControlsBody({
             step={15}
             defaultValue={transferSlack}
             formatDisplay={(v) => formatSlack(v)}
-            onCommit={(val) => {
-              dispatch({ type: 'SET_SLACK', value: val });
-              onRunQuery({ transferSlack: val });
-            }}
+            onCommit={(val) => dispatch({ type: 'SET_SLACK', value: val })}
           />
         </label>
       </div>

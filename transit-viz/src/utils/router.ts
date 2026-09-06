@@ -136,6 +136,10 @@ export function freeProfile(): Promise<void> {
 // Cancel flag for the in-flight query. Main thread sets [0]=1 to request
 // cancellation; the worker's progress callback reads it via Atomics.load.
 let activeCancelBuf: Int32Array | null = null;
+// Id of the most recently issued query. A query whose compute already finished
+// when it was superseded still resolves; its result must not be landed on top
+// of the newer query's state, so `runQuery` rejects it as cancelled.
+let latestQueryId = 0;
 
 export async function runQuery(
   params: RunQueryParams,
@@ -144,7 +148,13 @@ export async function runQuery(
   cancelInflightQuery();
   const sab = new SharedArrayBuffer(4);
   activeCancelBuf = new Int32Array(sab);
-  return call({ type: 'runQuery', params, cancelBuf: sab }, { onProgress });
+  const id = ++latestQueryId;
+  const result = await call<QueryResult>(
+    { type: 'runQuery', params, cancelBuf: sab },
+    { onProgress }
+  );
+  if (id !== latestQueryId) throw new Error('cancelled');
+  return result;
 }
 
 /// Signal cancellation to any in-flight query without queueing a new one.

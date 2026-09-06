@@ -155,78 +155,92 @@ function AppInner() {
     state.transferSlack,
   ]);
 
-  // Run query when source or params change
-  const handleRunQuery = useCallback(
-    (overrides: Record<string, any> = {}) => {
-      const s = stateRef.current;
-      if (s.loadingState !== 'ready' || s.sourceNode === null) return;
-
-      const params: RunQueryParams = {
-        sourceNode: s.sourceNode,
-        windowStart: overrides.windowStart ?? s.windowStart,
-        windowEnd: overrides.windowEnd ?? s.windowEnd,
-        date: overrides.date ?? s.date,
-        transferSlack: overrides.transferSlack ?? s.transferSlack,
-        maxTime: (overrides.maxTimeMin ?? s.maxTimeMin) * 60,
-      };
-
-      dispatch({ type: 'COMPUTING' });
-      // The worker's profile is about to be replaced; drop the animation
-      // store's cached frames and stop any playback before the new query.
-      animationStore.reset();
-      const start = performance.now();
-      runQuery(params, (done, total) => {
-        dispatch({ type: 'COMPUTE_PROGRESS', done, total });
-      })
-        .then(async (result) => {
-          dispatch({
-            type: 'QUERY_DONE',
-            travelTimes: result.travelTimes,
-            sampleCounts: result.sampleCounts,
-            totalSamples: result.totalSamples,
-            timeMs: performance.now() - start,
-            numThreads: result.numThreads,
-          });
-          // A fresh profile is now in the worker — arm the timeline over the
-          // departure window this query was run for.
-          animationStore.setWindow(params.windowStart, params.windowEnd);
-          // Don't unpin here — parameter-only changes should keep the destination
-          // pin and sample selection. Pin teardown happens in `SET_SOURCE`.
-
-          // Refresh pinned destination data when a new query completes (e.g. parameter change).
-          const currentS = stateRef.current;
-          if (currentS.pinnedDest !== null) {
-            const node = currentS.pinnedDest.node;
-            const hoverData = await buildHoverData(
-              node,
-              result.travelTimes,
-              result.sampleCounts,
-              result.totalSamples
-            );
-
-            // Abort if another query started or the user unpinned/changed the node
-            // while we were waiting for the worker round-trip.
-            const latestS = stateRef.current;
-            if (latestS.computeStatus !== 'done' || latestS.pinnedDest?.node !== node) return;
-
-            dispatch({ type: 'SET_PINNED_HOVER_DATA', hoverData });
-          }
-        })
-        .catch((e) => {
-          if (String(e).includes('cancelled')) return; // query was superseded
-          console.error(e);
-          dispatch({ type: 'QUERY_ERROR' });
-        });
-    },
-    [dispatch]
-  );
-
-  // Re-run query when source changes
+  // The query is a pure function of state: whenever the city is ready and a
+  // source plus any query parameter changes, run it. Keying on `querySeq` (not
+  // just `sourceNode`) means re-selecting the same origin — which the reducer
+  // treats as a fresh SET_SOURCE and wipes `travelTimes` for — re-runs the
+  // query instead of leaving an empty isochrone behind. Superseded queries are
+  // rejected as 'cancelled' by `runQuery` and ignored here.
+  const {
+    loadingState,
+    sourceNode,
+    querySeq,
+    windowStart,
+    windowEnd,
+    date,
+    transferSlack,
+    maxTimeMin,
+  } = state;
   useEffect(() => {
-    if (state.sourceNode !== null && state.loadingState === 'ready') {
-      handleRunQuery();
-    }
-  }, [state.sourceNode, handleRunQuery]);
+    if (loadingState !== 'ready' || sourceNode === null) return;
+
+    const params: RunQueryParams = {
+      sourceNode,
+      windowStart,
+      windowEnd,
+      date,
+      transferSlack,
+      maxTime: maxTimeMin * 60,
+    };
+
+    dispatch({ type: 'COMPUTING' });
+    // The worker's profile is about to be replaced; drop the animation
+    // store's cached frames and stop any playback before the new query.
+    animationStore.reset();
+    const start = performance.now();
+    runQuery(params, (done, total) => {
+      dispatch({ type: 'COMPUTE_PROGRESS', done, total });
+    })
+      .then(async (result) => {
+        dispatch({
+          type: 'QUERY_DONE',
+          travelTimes: result.travelTimes,
+          sampleCounts: result.sampleCounts,
+          totalSamples: result.totalSamples,
+          timeMs: performance.now() - start,
+          numThreads: result.numThreads,
+        });
+        // A fresh profile is now in the worker — arm the timeline over the
+        // departure window this query was run for.
+        animationStore.setWindow(params.windowStart, params.windowEnd);
+        // Don't unpin here — parameter-only changes should keep the destination
+        // pin and sample selection. Pin teardown happens in `SET_SOURCE`.
+
+        // Refresh pinned destination data when a new query completes (e.g. parameter change).
+        const currentS = stateRef.current;
+        if (currentS.pinnedDest !== null) {
+          const node = currentS.pinnedDest.node;
+          const hoverData = await buildHoverData(
+            node,
+            result.travelTimes,
+            result.sampleCounts,
+            result.totalSamples
+          );
+
+          // Abort if another query started or the user unpinned/changed the node
+          // while we were waiting for the worker round-trip.
+          const latestS = stateRef.current;
+          if (latestS.computeStatus !== 'done' || latestS.pinnedDest?.node !== node) return;
+
+          dispatch({ type: 'SET_PINNED_HOVER_DATA', hoverData });
+        }
+      })
+      .catch((e) => {
+        if (String(e).includes('cancelled')) return; // query was superseded
+        console.error(e);
+        dispatch({ type: 'QUERY_ERROR' });
+      });
+  }, [
+    loadingState,
+    sourceNode,
+    querySeq,
+    windowStart,
+    windowEnd,
+    date,
+    transferSlack,
+    maxTimeMin,
+    dispatch,
+  ]);
 
   // Copy info to clipboard
   const copyInfo = useCallback(() => {
@@ -359,11 +373,7 @@ function AppInner() {
           <MobileTopBar onOpenSettings={() => setSettingsOpen(true)} mapViewRef={mapViewRef} />
           <MobileBottomSheet />
           {settingsOpen && (
-            <MobileSettingsSheet
-              onClose={() => setSettingsOpen(false)}
-              onRunQuery={handleRunQuery}
-              onCopy={handleCopy}
-            />
+            <MobileSettingsSheet onClose={() => setSettingsOpen(false)} onCopy={handleCopy} />
           )}
         </>
       ) : (
@@ -395,7 +405,6 @@ function AppInner() {
             </div>
           </div>
           <Controls
-            onRunQuery={handleRunQuery}
             onCopy={handleCopy}
             isFront={frontPanel === 'controls'}
             onActivate={() => setFrontPanel('controls')}

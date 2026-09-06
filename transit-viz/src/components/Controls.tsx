@@ -3,7 +3,6 @@ import { useAppState } from '../state/AppContext';
 import ControlsBody from './ControlsBody';
 
 interface ControlsProps {
-  onRunQuery: (overrides?: Record<string, any>) => void;
   onCopy: () => void;
   isFront: boolean;
   onActivate: () => void;
@@ -11,12 +10,7 @@ interface ControlsProps {
 
 // Desktop-only positioned panel. Mobile UI uses MobileSettingsSheet instead,
 // rendered conditionally from App.tsx.
-export default function Controls({
-  onRunQuery,
-  onCopy,
-  isFront,
-  onActivate,
-}: ControlsProps): React.ReactNode {
+export default function Controls({ onCopy, isFront, onActivate }: ControlsProps): React.ReactNode {
   const { state } = useAppState();
 
   // Render as soon as a city is chosen (even while data is still loading) so
@@ -38,7 +32,7 @@ export default function Controls({
         'shadow-[0_2px_12px_rgba(0,0,0,0.5)]',
       ].join(' ')}
     >
-      <ControlsBody onRunQuery={onRunQuery} onCopy={onCopy} />
+      <ControlsBody onCopy={onCopy} />
     </div>
   );
 }

@@ -21,6 +21,10 @@ export interface AppState {
   routeColors: string[];
   sourceNode: number | null;
   sourceLatLng: [number, number] | null;
+  // Bumped on every SET_SOURCE, including re-selection of the same node. The
+  // query effect in App.tsx keys on it so that "same source, new request"
+  // still re-runs the query instead of being coalesced away.
+  querySeq: number;
 
   // Query results
   travelTimes: Float32Array | null;
@@ -145,6 +149,7 @@ export const initialState: AppState = {
   routeColors: [],
   sourceNode: null,
   sourceLatLng: null,
+  querySeq: 0,
 
   // Query results
   travelTimes: null,
@@ -230,6 +235,7 @@ export function reducer(state: AppState, action: Action): AppState {
         ...state,
         sourceNode: action.node,
         sourceLatLng: action.latLng,
+        querySeq: state.querySeq + 1,
         travelTimes: null,
         sampleCounts: null,
         pinnedDest: keepDest && state.pinnedDest ? { ...state.pinnedDest, hoverData: null } : null,

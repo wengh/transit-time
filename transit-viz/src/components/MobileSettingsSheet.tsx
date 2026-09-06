@@ -5,13 +5,11 @@ import { useAppState } from '../state/AppContext';
 
 interface MobileSettingsSheetProps {
   onClose: () => void;
-  onRunQuery: (overrides?: Record<string, any>) => void;
   onCopy: () => void;
 }
 
 export default function MobileSettingsSheet({
   onClose,
-  onRunQuery,
   onCopy,
 }: MobileSettingsSheetProps): React.ReactNode {
   const { state } = useAppState();
@@ -68,7 +66,7 @@ export default function MobileSettingsSheet({
           </button>
         </div>
 
-        <ControlsBody onRunQuery={onRunQuery} onCopy={onCopy} compact onChangeCity={onClose} />
+        <ControlsBody onCopy={onCopy} compact onChangeCity={onClose} />
       </div>
     </div>,
     document.body
