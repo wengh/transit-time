@@ -429,11 +429,17 @@ impl ProfileRouter for SplitProfileRouting {
         let t_index = Instant::now();
         let index = Arc::new(Index::new(data, query));
         let index_ms = t_index.elapsed().as_secs_f64() * 1e3;
-        let chunks =
+        let mut chunks =
             compute_profile_chunks(data, &chunk_queries, Arc::clone(&index), &mut progress)?;
         let num_threads = get_thread_count().min(chunks.len()).max(1) as u32;
         let t_isochrone = Instant::now();
         let isochrone = compute_isochrone_chunks(data, query, &chunks, num_threads);
+        // The per-chunk totals (8 B × nodes × chunks) are only needed for the
+        // merge above; release them rather than keep them for the isochrone's
+        // lifetime.
+        for chunk in &mut chunks {
+            drop(std::mem::take(&mut chunk.destination_totals));
+        }
         let isochrone_ms = t_isochrone.elapsed().as_secs_f64() * 1e3;
         eprintln!(
             "[profile/split] index_build={:.1}ms compute_isochrone={:.1}ms chunks={}",
@@ -449,14 +455,20 @@ impl ProfileRouter for SplitProfileRouting {
     }
 
     fn optimal_paths(&self, data: &PreparedData, destination: u32) -> Vec<Path> {
-        let mut paths: Vec<Path> = Vec::new();
-        let mut walk_path: Option<Path> = None;
-
         let chunk_results =
-            maybe_par_collect(&self.chunks, |chunk| chunk.optimal_paths(data, destination));
+            maybe_par_collect(&self.chunks, |chunk| chunk.transit_paths(data, destination));
 
+        // The walk-only path is the same for every chunk (it departs at the
+        // window start, which is chunk 0's start); reconstruct it once.
+        let walk_path = self.chunks[0].walk_only_path(data, destination);
+
+        let mut paths: Vec<Path> = Vec::with_capacity(
+            chunk_results.iter().map(Vec::len).sum::<usize>() + walk_path.is_some() as usize,
+        );
+        paths.extend(walk_path);
         for chunk_result in chunk_results {
             if let Some(prev) = paths.last()
+                && prev.segments.iter().any(|s| s.kind == SegmentKind::Transit)
                 && let Some(next) = chunk_result.first()
                 && prev.arrival_time == next.arrival_time
             {
@@ -467,21 +479,8 @@ impl ProfileRouter for SplitProfileRouting {
                 // it has a later home departure time.
                 paths.pop();
             }
-            for path in chunk_result {
-                if path.segments.iter().all(|s| s.kind == SegmentKind::Walk) {
-                    if walk_path.is_none() {
-                        walk_path = Some(path);
-                    }
-                    continue;
-                }
-                paths.push(path);
-            }
+            paths.extend(chunk_result);
         }
-
-        if let Some(walk_path) = walk_path {
-            paths.push(walk_path);
-        }
-        paths.sort_by_key(|p| (p.home_departure, p.arrival_time));
         paths
     }
 
@@ -809,7 +808,8 @@ pub struct ProfileRouting {
     frontier: Frontier,
     query: ProfileQuery,
     patterns: Arc<Index>,
-    /// Can be set to empty once no longer needed
+    /// Per-node integrals for the isochrone merge. Emptied by
+    /// `SplitProfileRouting::compute` once the chunks have been merged.
     destination_totals: Vec<DestinationTotals>,
     /// Per-node cursor cache for `travel_times_at`. Each slot is either
     /// [`SLOT_MISSING`] or an arena index pointing at the *previous* entry of
@@ -882,7 +882,9 @@ impl ProfileRouting {
 
         // Our workload has monotonic pop so we can use a radix heap instead of a binary heap for better performance.
         let mut queue: RadixHeapMap<Reverse<u16>, u32> = RadixHeapMap::new();
-        for (node_id, &walk_time) in index.walk_only_time.iter().enumerate() {
+        // Only stops can board transit, and stops occupy node indices
+        // [0, num_stops) (v11 layout), so there is no need to scan every node.
+        for (node_id, &walk_time) in index.walk_only_time[..data.num_stops].iter().enumerate() {
             if walk_time == WALK_UNREACHABLE {
                 continue;
             }
@@ -915,8 +917,10 @@ impl ProfileRouting {
             );
         }
 
-        // Sort by descending home_departure (= transit_departure − walk_time)
-        initial_transit_entries.sort_by_key(|x| Reverse(x.entry.home_departure_delta));
+        // Sort by descending home_departure (= transit_departure − walk_time).
+        // Entries sharing a home_departure are relaxed as one multi-source
+        // round below, so their relative order is irrelevant: unstable is fine.
+        initial_transit_entries.sort_unstable_by_key(|x| Reverse(x.entry.home_departure_delta));
 
         let phase1_ms = t_phase1.elapsed().as_secs_f64() * 1e3;
         let initial_transit_count = initial_transit_entries.len();
@@ -1064,21 +1068,30 @@ impl ProfileRouting {
         })
     }
 
-    fn optimal_paths(&self, data: &PreparedData, destination: u32) -> Vec<Path> {
-        let context = ProfileQueryContext {
+    fn query_context<'a>(&'a self, data: &'a PreparedData) -> ProfileQueryContext<'a> {
+        ProfileQueryContext {
             data,
             query: &self.query,
             index: &self.patterns,
-        };
-        let entries: Vec<Option<Entry>> = self
-            .frontier
-            .iter(destination)
-            .map(|entry| Some(*entry))
-            .chain(self.patterns.walk_time(destination).map(|_| None))
-            .collect();
+        }
+    }
+
+    /// One path per Pareto entry of `destination`, in frontier chain order
+    /// (ascending home departure).
+    fn transit_paths(&self, data: &PreparedData, destination: u32) -> Vec<Path> {
+        let context = self.query_context(data);
+        let entries: Vec<Entry> = self.frontier.iter(destination).copied().collect();
         maybe_par_collect(entries, |entry| {
-            self.reconstruct_path(&context, destination, entry)
+            self.reconstruct_path(&context, destination, Some(entry))
         })
+    }
+
+    /// The walk-only path to `destination`, if it is walk-reachable within
+    /// the budget. Departs at this chunk's window start.
+    fn walk_only_path(&self, data: &PreparedData, destination: u32) -> Option<Path> {
+        self.patterns
+            .walk_time(destination)
+            .map(|_| self.reconstruct_path(&self.query_context(data), destination, None))
     }
 
     // Only reached via the trait default; `SplitProfileRouting` calls
