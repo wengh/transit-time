@@ -404,8 +404,7 @@ function ChartExpandButton({
       aria-pressed={expanded}
       title={expanded ? 'Shrink chart width' : 'Expand chart to full width'}
       onClick={onToggle}
-      className="hidden sm:block
-        flex-shrink-0 w-[18px] h-[18px] text-[11px] leading-[16px] cursor-pointer
+      className="flex-shrink-0 w-[18px] h-[18px] text-[11px] leading-[16px] cursor-pointer
         rounded-full p-0
         bg-transparent border border-zinc-600 text-zinc-500
         dark:border-zinc-600 dark:text-zinc-500"
@@ -612,38 +611,13 @@ const CARD_CHROME =
 
 export default function HoverInfo({ isFront, onActivate }: HoverInfoProps): React.ReactNode {
   const { state } = useAppState();
-  const [hidden, setHidden] = useState(false);
-  /** Desktop "wide mode": panel spans the full viewport for a roomier sawtooth. */
+  /** "Wide mode": panel spans the full viewport for a roomier sawtooth. */
   const [expanded, setExpanded] = useState(false);
 
   const ready = useAnimReady();
   const summary = useDestinationSummary(state, currentDest(state));
 
   if (!summary && !ready) return null;
-
-  if (summary && hidden) {
-    return (
-      <button
-        id="hover-info"
-        onClick={() => setHidden(false)}
-        onPointerDown={() => {
-          if (!isFront) onActivate();
-        }}
-        className={`absolute bottom-5 right-2.5 ${isFront ? 'z-[1001]' : 'z-[1000]'}
-          bg-zinc-900 dark:bg-zinc-900
-          [@media(prefers-color-scheme:light)]:bg-white
-          px-3 py-1.5 rounded-lg shadow-[0_2px_12px_rgba(0,0,0,0.5)]
-          text-[12px] text-zinc-400 dark:text-zinc-400
-          [@media(prefers-color-scheme:light)]:text-zinc-500
-          hover:text-zinc-200 dark:hover:text-zinc-200
-          [@media(prefers-color-scheme:light)]:hover:text-zinc-700
-          max-sm:bottom-auto max-sm:top-2.5 max-sm:left-auto max-sm:right-2.5
-          cursor-pointer`}
-      >
-        Details ▴
-      </button>
-    );
-  }
 
   // No destination: minimal always-on panel with controls and a short
   // scrubbable chart strip.
@@ -657,7 +631,7 @@ export default function HoverInfo({ isFront, onActivate }: HoverInfoProps): Reac
         className={`absolute bottom-5 right-2.5 ${isFront ? 'z-[1001]' : 'z-[1000]'}
           ${CARD_CHROME} p-3
           w-[320px]
-          ${expanded ? 'sm:left-2.5 sm:right-2.5 sm:w-auto' : ''}`}
+          ${expanded ? 'left-2.5 right-2.5 w-auto' : ''}`}
       >
         <div className="relative">
           <div className="absolute bottom-[26px] right-2 z-[5] flex items-center gap-1">
@@ -693,46 +667,33 @@ export default function HoverInfo({ isFront, onActivate }: HoverInfoProps): Reac
               // below — without it the full-width transparent shell silently
               // swallows hover events there. The two cards re-enable hit-testing
               // for themselves with pointer-events-auto.
-              'sm:left-2.5 sm:right-2.5 gap-2 sm:pointer-events-none'
+              'left-2.5 right-2.5 gap-2 pointer-events-none'
             : `${CARD_CHROME} p-3 min-w-[220px] max-w-[320px]`
-        }
-        max-sm:bottom-auto max-sm:top-2.5 max-sm:left-2.5 max-sm:right-2.5
-        max-sm:max-w-none max-sm:max-h-[calc(100vh-90px)] max-sm:overflow-y-auto`}
+        }`}
     >
       <div
         id="hover-info-details"
         className={`overflow-y-auto max-h-[30vh] ${
-          expanded ? `${CARD_CHROME} p-3 w-[320px] sm:pointer-events-auto` : ''
+          expanded ? `${CARD_CHROME} p-3 w-[320px] pointer-events-auto` : ''
         }`}
       >
         {displayPath && displayPath.segments.length > 0 && <PathSegmentList path={displayPath} />}
-        <div className="flex items-start justify-between gap-2 mt-1.5">
-          <div
-            className="font-semibold text-[13px] text-zinc-100 dark:text-zinc-100
+        <div
+          className="font-semibold text-[13px] mt-1.5 text-zinc-100 dark:text-zinc-100
             [@media(prefers-color-scheme:light)]:text-zinc-900"
-          >
-            {titleText}
-          </div>
-          <button
-            onClick={() => setHidden(true)}
-            className="sm:hidden text-[11px] text-zinc-500 hover:text-zinc-300
-              [@media(prefers-color-scheme:light)]:hover:text-zinc-600
-              cursor-pointer shrink-0 leading-none"
-            title="Hide details"
-          >
-            ▾ hide
-          </button>
+        >
+          {titleText}
         </div>
       </div>
 
       <div
         id="hover-info-chart"
-        className={`relative flex-shrink-0 max-sm:[&_canvas]:[aspect-ratio:5/2]
+        className={`relative flex-shrink-0
           ${
             expanded
               ? // Own card: the canvas fills it edge-to-edge, so overflow-hidden
                 // clips the square canvas corners to the card's rounded ones.
-                `${CARD_CHROME} overflow-hidden sm:pointer-events-auto`
+                `${CARD_CHROME} overflow-hidden pointer-events-auto`
               : `border-t border-zinc-800 dark:border-zinc-800
                  [@media(prefers-color-scheme:light)]:border-zinc-200 pt-2 mt-1.5`
           }`}
