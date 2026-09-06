@@ -10,3 +10,11 @@ bytemuck = { version = "1", features = ["derive"] }
 [profile.release]
 opt-level = "z"
 lto = "fat"
+
+# `opt-level = "z"` above is WASM size tuning; the native preprocessing crates
+# are pure throughput and are not shipped, so build them for speed.
+[profile.release.package.transit-prep]
+opt-level = 3
+
+[profile.release.package.city-builder]
+opt-level = 3
