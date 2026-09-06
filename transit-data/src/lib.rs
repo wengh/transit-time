@@ -13,13 +13,99 @@ pub fn yyyymmdd_to_naive_date_opt(v: u32) -> Option<NaiveDate> {
     NaiveDate::from_ymd_opt(y, m, d)
 }
 
-fn days_to_naive_date(v: i32) -> NaiveDate {
+fn days_to_naive_date(v: i32) -> Result<NaiveDate, String> {
     NaiveDate::from_num_days_from_ce_opt(v)
-        .unwrap_or_else(|| panic!("invalid days-since-CE value in prepared binary: {v}"))
+        .ok_or_else(|| format!("invalid days-since-CE value in prepared binary: {v}"))
 }
 
-fn days_bound_to_naive_date(v: i32) -> Option<NaiveDate> {
-    (v != i32::MIN).then(|| days_to_naive_date(v))
+/// `i32::MIN` encodes "unbounded" for pattern service-window bounds.
+fn days_bound_to_naive_date(v: i32) -> Result<Option<NaiveDate>, String> {
+    if v == i32::MIN {
+        Ok(None)
+    } else {
+        days_to_naive_date(v).map(Some)
+    }
+}
+
+/// Bounds-checked little-endian cursor over the prepared binary. Every read
+/// returns `Err` on truncated input instead of panicking on a slice index, so
+/// `load` can honour its `Result` contract for corrupt files.
+struct Reader<'a> {
+    buf: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> Reader<'a> {
+    fn new(buf: &'a [u8]) -> Self {
+        Self { buf, pos: 0 }
+    }
+
+    fn pos(&self) -> usize {
+        self.pos
+    }
+
+    fn bytes(&mut self, n: usize) -> Result<&'a [u8], String> {
+        let end = self
+            .pos
+            .checked_add(n)
+            .filter(|&end| end <= self.buf.len())
+            .ok_or_else(|| {
+                format!(
+                    "truncated input: need {n} bytes at offset {}, but only {} remain",
+                    self.pos,
+                    self.buf.len() - self.pos
+                )
+            })?;
+        let out = &self.buf[self.pos..end];
+        self.pos = end;
+        Ok(out)
+    }
+
+    fn u8(&mut self) -> Result<u8, String> {
+        Ok(self.bytes(1)?[0])
+    }
+
+    fn u32(&mut self) -> Result<u32, String> {
+        Ok(u32::from_le_bytes(self.bytes(4)?.try_into().unwrap()))
+    }
+
+    fn f64(&mut self) -> Result<f64, String> {
+        Ok(f64::from_le_bytes(self.bytes(8)?.try_into().unwrap()))
+    }
+
+    /// `len: u32` followed by `len` bytes of (lossily decoded) UTF-8.
+    fn string(&mut self) -> Result<String, String> {
+        let len = self.u32()? as usize;
+        Ok(String::from_utf8_lossy(self.bytes(len)?).into_owned())
+    }
+
+    /// `pco_len: u32` followed by a PCO frame; a zero length is an empty column.
+    fn pco<T: pco::data_types::Number>(&mut self) -> Result<Vec<T>, String> {
+        let pco_len = self.u32()? as usize;
+        if pco_len == 0 {
+            return Ok(Vec::new());
+        }
+        pco::standalone::simple_decompress(self.bytes(pco_len)?)
+            .map_err(|e| format!("pco decompress failed: {}", e))
+    }
+}
+
+fn check_len(what: &str, got: usize, want: usize) -> Result<(), String> {
+    if got == want {
+        Ok(())
+    } else {
+        Err(format!("{what}: expected {want} entries, got {got}"))
+    }
+}
+
+/// `idx` must be a valid index into a table of `len` entries, or (when
+/// `allow_sentinel`) the `u32::MAX` "none" marker.
+fn check_index(what: &str, idx: u32, len: usize, allow_sentinel: bool) -> Result<(), String> {
+    if (idx as usize) < len || (allow_sentinel && idx == u32::MAX) {
+        Ok(())
+    } else {
+        Err(format!("{what}: index {idx} out of range (len {len})"))
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -258,36 +344,40 @@ pub fn load_with_stats(buf: &[u8]) -> Result<(PreparedData, LoadStats), String> 
     let mut binary_sections: Vec<(&str, usize)> = Vec::new();
     let mut timings: Vec<(&str, Duration)> = Vec::new();
 
-    let mut pos = 0;
+    let mut r = Reader::new(buf);
 
     // Header
-    if &buf[pos..pos + 4] != b"TRNS" {
+    if r.bytes(4)? != b"TRNS" {
         return Err("Invalid magic".to_string());
     }
-    pos += 4;
-    let version = read_u32(&buf, &mut pos);
+    let version = r.u32()?;
     if version != 12 {
         return Err(format!("Unsupported version {}", version));
     }
-    let num_nodes = read_u32(&buf, &mut pos) as usize;
-    let num_edges = read_u32(&buf, &mut pos) as usize;
-    let num_stops = read_u32(&buf, &mut pos) as usize;
-    let num_patterns = read_u32(&buf, &mut pos) as usize;
-    let num_route_names = read_u32(&buf, &mut pos) as usize;
-    let num_shapes = read_u32(&buf, &mut pos) as usize;
-    let header_end = pos;
+    let num_nodes = r.u32()? as usize;
+    let num_edges = r.u32()? as usize;
+    let num_stops = r.u32()? as usize;
+    let num_patterns = r.u32()? as usize;
+    let num_route_names = r.u32()? as usize;
+    let num_shapes = r.u32()? as usize;
+    if num_stops > num_nodes {
+        return Err(format!(
+            "Header says {num_stops} stops but only {num_nodes} nodes; stops must occupy [0, num_stops)"
+        ));
+    }
+    let header_end = r.pos();
     binary_sections.push(("header", header_end));
 
     // Nodes (v5): 32-bit fixed-point 0.1 m resolution, SFC-sorted.
     // Header: min_lat, min_lon (f64), lat_scale, lon_scale (f64 = units per degree).
     let t0 = Instant::now();
-    let pos_before = pos;
-    let min_lat = read_f64(&buf, &mut pos);
-    let min_lon = read_f64(&buf, &mut pos);
-    let lat_scale = read_f64(&buf, &mut pos);
-    let lon_scale = read_f64(&buf, &mut pos);
-    let lat_u32 = read_pco_u32(&buf, &mut pos)?;
-    let lon_u32 = read_pco_u32(&buf, &mut pos)?;
+    let pos_before = r.pos();
+    let min_lat = r.f64()?;
+    let min_lon = r.f64()?;
+    let lat_scale = r.f64()?;
+    let lon_scale = r.f64()?;
+    let lat_u32: Vec<u32> = r.pco()?;
+    let lon_u32: Vec<u32> = r.pco()?;
     if lat_u32.len() != num_nodes || lon_u32.len() != num_nodes {
         return Err(format!(
             "Node count mismatch: header says {}, got lat={} lon={}",
@@ -304,16 +394,16 @@ pub fn load_with_stats(buf: &[u8]) -> Result<(PreparedData, LoadStats), String> 
             lon: min_lon + lx as f64 / lon_scale,
         })
         .collect();
-    binary_sections.push(("nodes", pos - pos_before));
+    binary_sections.push(("nodes", r.pos() - pos_before));
     timings.push(("parse nodes", t0.elapsed()));
 
     // Edges: u, delta=u-v, walk_time (u32 seconds, at 1.4 m/s, min 1).
     // Canonical u > v, sorted by (u, delta).
     let t0 = Instant::now();
-    let pos_before = pos;
-    let edge_u = read_pco_u32(&buf, &mut pos)?;
-    let edge_delta = read_pco_u32(&buf, &mut pos)?;
-    let edge_walk_time = read_pco_u32(&buf, &mut pos)?;
+    let pos_before = r.pos();
+    let edge_u: Vec<u32> = r.pco()?;
+    let edge_delta: Vec<u32> = r.pco()?;
+    let edge_walk_time: Vec<u32> = r.pco()?;
     if edge_u.len() != num_edges
         || edge_delta.len() != num_edges
         || edge_walk_time.len() != num_edges
@@ -326,33 +416,33 @@ pub fn load_with_stats(buf: &[u8]) -> Result<(PreparedData, LoadStats), String> 
             edge_walk_time.len()
         ));
     }
-    let edges: Vec<EdgeData> = (0..num_edges)
-        .map(|i| {
-            let u = edge_u[i];
-            let v = u - edge_delta[i];
-            EdgeData {
-                u,
-                v,
-                walk_time: edge_walk_time[i] as u16,
-            }
-        })
-        .collect();
-    binary_sections.push(("edges", pos - pos_before));
+    let mut edges: Vec<EdgeData> = Vec::with_capacity(num_edges);
+    for i in 0..num_edges {
+        let u = edge_u[i];
+        check_index("edge u", u, num_nodes, false)?;
+        let v = u
+            .checked_sub(edge_delta[i])
+            .ok_or_else(|| format!("edge {i}: delta {} exceeds u {u}", edge_delta[i]))?;
+        edges.push(EdgeData {
+            u,
+            v,
+            walk_time: edge_walk_time[i] as u16,
+        });
+    }
+    binary_sections.push(("edges", r.pos() - pos_before));
     timings.push(("parse edges", t0.elapsed()));
 
     // Stops
     let t0 = Instant::now();
-    let pos_before = pos;
+    let pos_before = r.pos();
     let mut stops = Vec::with_capacity(num_stops);
     for _ in 0..num_stops {
-        let lat = read_f64(&buf, &mut pos);
-        let lon = read_f64(&buf, &mut pos);
-        let name_len = read_u32(&buf, &mut pos) as usize;
-        let name = String::from_utf8_lossy(&buf[pos..pos + name_len]).to_string();
-        pos += name_len;
+        let lat = r.f64()?;
+        let lon = r.f64()?;
+        let name = r.string()?;
         stops.push(StopData { lat, lon, name });
     }
-    binary_sections.push(("stops", pos - pos_before));
+    binary_sections.push(("stops", r.pos() - pos_before));
     timings.push(("parse stops", t0.elapsed()));
 
     // (v11) Stop↔node mapping is implicit: stops live at node indices
@@ -360,104 +450,133 @@ pub fn load_with_stats(buf: &[u8]) -> Result<(PreparedData, LoadStats), String> 
 
     // Route names
     let t0 = Instant::now();
-    let pos_before = pos;
+    let pos_before = r.pos();
     let mut route_names = Vec::with_capacity(num_route_names);
     for _ in 0..num_route_names {
-        let name_len = read_u32(&buf, &mut pos) as usize;
-        let name = String::from_utf8_lossy(&buf[pos..pos + name_len]).to_string();
-        pos += name_len;
-        route_names.push(name);
+        route_names.push(r.string()?);
     }
-    binary_sections.push(("route_names", pos - pos_before));
+    binary_sections.push(("route_names", r.pos() - pos_before));
     timings.push(("parse route_names", t0.elapsed()));
 
     // Route colors
     let t0 = Instant::now();
-    let pos_before = pos;
+    let pos_before = r.pos();
     let mut route_colors = Vec::with_capacity(num_route_names);
     for _ in 0..num_route_names {
-        let has_color = buf[pos];
-        pos += 1;
+        let has_color = r.u8()?;
         if has_color != 0 {
-            let r = buf[pos];
-            pos += 1;
-            let g = buf[pos];
-            pos += 1;
-            let b = buf[pos];
-            pos += 1;
-            route_colors.push(Some(Color { r, g, b }));
+            let rgb = r.bytes(3)?;
+            route_colors.push(Some(Color {
+                r: rgb[0],
+                g: rgb[1],
+                b: rgb[2],
+            }));
         } else {
             route_colors.push(None);
         }
     }
-    binary_sections.push(("route_colors", pos - pos_before));
+    binary_sections.push(("route_colors", r.pos() - pos_before));
     timings.push(("parse route_colors", t0.elapsed()));
 
     // Patterns
     let t0_patterns = Instant::now();
-    let pos_before = pos;
+    let pos_before = r.pos();
     let mut total_events = 0usize;
     let total_sentinels = 0usize; // sentinels now included in total_events
     let mut total_freq = 0usize;
     let mut patterns = Vec::with_capacity(num_patterns);
-    for _ in 0..num_patterns {
-        let _pattern_id = read_u32(&buf, &mut pos);
-        let day_mask = buf[pos];
-        pos += 1;
-        let start_date = days_bound_to_naive_date(read_u32(&buf, &mut pos) as i32);
-        let end_date = days_bound_to_naive_date(read_u32(&buf, &mut pos) as i32);
-        let num_add = read_u32(&buf, &mut pos) as usize;
-        let mut date_exceptions_add = Vec::with_capacity(num_add);
+    for pat_idx in 0..num_patterns {
+        let _pattern_id = r.u32()?;
+        let day_mask = r.u8()?;
+        let start_date = days_bound_to_naive_date(r.u32()? as i32)?;
+        let end_date = days_bound_to_naive_date(r.u32()? as i32)?;
+        let num_add = r.u32()? as usize;
+        let mut date_exceptions_add = Vec::with_capacity(num_add.min(1 << 16));
         for _ in 0..num_add {
-            date_exceptions_add.push(days_to_naive_date(read_u32(&buf, &mut pos) as i32));
+            date_exceptions_add.push(days_to_naive_date(r.u32()? as i32)?);
         }
-        let num_remove = read_u32(&buf, &mut pos) as usize;
-        let mut date_exceptions_remove = Vec::with_capacity(num_remove);
+        let num_remove = r.u32()? as usize;
+        let mut date_exceptions_remove = Vec::with_capacity(num_remove.min(1 << 16));
         for _ in 0..num_remove {
-            date_exceptions_remove.push(days_to_naive_date(read_u32(&buf, &mut pos) as i32));
+            date_exceptions_remove.push(days_to_naive_date(r.u32()? as i32)?);
         }
-        let min_time = read_u32(&buf, &mut pos);
-        let max_time = read_u32(&buf, &mut pos);
+        let min_time = r.u32()?;
+        let max_time = r.u32()?;
 
         // v3: events pre-sorted with sentinels and next_event_index precomputed
         // 4 columns + sentinel_routes
-        let num_events = read_u32(&buf, &mut pos) as usize;
+        let num_events = r.u32()? as usize;
         total_events += num_events;
 
-        let time_offsets = read_pco_u32(&buf, &mut pos)?;
-        let stop_indices = read_pco_u32(&buf, &mut pos)?;
-        let travel_times = read_pco_u32(&buf, &mut pos)?;
-        let next_event_indices = read_pco_u32(&buf, &mut pos)?;
-        let stop_offsets = read_pco_u32(&buf, &mut pos)?;
-        let sentinel_route_indices = read_pco_u32(&buf, &mut pos)?;
+        let time_offsets: Vec<u32> = r.pco()?;
+        let stop_indices: Vec<u32> = r.pco()?;
+        let travel_times: Vec<u32> = r.pco()?;
+        let next_event_indices: Vec<u32> = r.pco()?;
+        let stop_offsets: Vec<u32> = r.pco()?;
+        let sentinel_route_indices: Vec<u32> = r.pco()?;
 
-        let data_vec: Vec<EventData> = (0..num_events)
-            .map(|i| EventData {
+        check_len("pattern event time_offsets", time_offsets.len(), num_events)?;
+        check_len("pattern event stop_indices", stop_indices.len(), num_events)?;
+        check_len("pattern event travel_times", travel_times.len(), num_events)?;
+        check_len(
+            "pattern event next_event_indices",
+            next_event_indices.len(),
+            num_events,
+        )?;
+        check_len("pattern stop_offsets", stop_offsets.len(), num_stops + 1)?;
+        check_len(
+            "pattern sentinel_routes",
+            sentinel_route_indices.len(),
+            num_events,
+        )?;
+        if stop_offsets.windows(2).any(|w| w[0] > w[1])
+            || stop_offsets
+                .last()
+                .is_some_and(|&last| last as usize != num_events)
+        {
+            return Err(format!(
+                "pattern {pat_idx}: stop_offsets are not a monotone prefix sum ending at {num_events}"
+            ));
+        }
+
+        let mut data_vec: Vec<EventData> = Vec::with_capacity(num_events);
+        for i in 0..num_events {
+            check_index("event stop_index", stop_indices[i], num_stops, false)?;
+            check_index(
+                "event next_event_index",
+                next_event_indices[i],
+                num_events,
+                true,
+            )?;
+            data_vec.push(EventData {
                 time_offset: min_time + time_offsets[i],
                 stop_index: stop_indices[i],
                 travel_time: travel_times[i],
                 next_event_index: next_event_indices[i],
-            })
-            .collect();
+            });
+        }
 
         let events_by_stop = JaggedArray {
             offsets: stop_offsets,
             data: data_vec,
         };
 
-        let num_freq = read_u32(&buf, &mut pos) as usize;
+        let num_freq = r.u32()? as usize;
         total_freq += num_freq;
-        let mut freq_entries = Vec::with_capacity(num_freq);
-        let mut freq_indices = Vec::with_capacity(num_freq);
-        for i in 0..num_freq {
-            let route_index = read_u32(&buf, &mut pos);
-            let stop_index = read_u32(&buf, &mut pos);
-            let start_time = read_u32(&buf, &mut pos);
-            let end_time = read_u32(&buf, &mut pos);
-            let headway_secs = read_u32(&buf, &mut pos);
-            let next_stop_index = read_u32(&buf, &mut pos);
-            let travel_time = read_u32(&buf, &mut pos);
-            let next_freq_index = read_u32(&buf, &mut pos);
+        let mut freq_entries = Vec::with_capacity(num_freq.min(1 << 16));
+        for _ in 0..num_freq {
+            let route_index = r.u32()?;
+            let stop_index = r.u32()?;
+            let start_time = r.u32()?;
+            let end_time = r.u32()?;
+            let headway_secs = r.u32()?;
+            let next_stop_index = r.u32()?;
+            let travel_time = r.u32()?;
+            let next_freq_index = r.u32()?;
+            check_index("freq route_index", route_index, num_route_names, false)?;
+            check_index("freq stop_index", stop_index, num_stops, false)?;
+            check_index("freq next_stop_index", next_stop_index, num_stops, false)?;
+            check_index("freq next_freq_index", next_freq_index, num_freq, true)?;
             freq_entries.push(FreqData {
                 route_index,
                 stop_index,
@@ -468,8 +587,8 @@ pub fn load_with_stats(buf: &[u8]) -> Result<(PreparedData, LoadStats), String> 
                 travel_time,
                 next_freq_index,
             });
-            freq_indices.push(i as u32);
         }
+        let freq_indices: Vec<u32> = (0..num_freq as u32).collect();
 
         let freq_by_stop = JaggedArray::build(
             freq_indices,
@@ -488,6 +607,7 @@ pub fn load_with_stats(buf: &[u8]) -> Result<(PreparedData, LoadStats), String> 
         let mut pattern_sentinel_routes = std::collections::HashMap::new();
         for (i, route_idx) in sentinel_route_indices.iter().enumerate() {
             if next_event_indices[i] == u32::MAX {
+                check_index("sentinel route_index", *route_idx, num_route_names, false)?;
                 pattern_sentinel_routes.insert(i as u32, *route_idx);
             }
         }
@@ -508,19 +628,19 @@ pub fn load_with_stats(buf: &[u8]) -> Result<(PreparedData, LoadStats), String> 
             sentinel_routes: pattern_sentinel_routes,
         });
     }
-    binary_sections.push(("patterns", pos - pos_before));
+    binary_sections.push(("patterns", r.pos() - pos_before));
     timings.push(("parse+index patterns", t0_patterns.elapsed()));
 
     // Leg shapes (v9): six global PCO columns. Decompress once at load time
     // into flat Vecs so per-hover lookups are a zero-allocation slice.
     let t0 = Instant::now();
-    let pos_before = pos;
-    let routes = read_pco_u32(&buf, &mut pos)?;
-    let from_stops = read_pco_u32(&buf, &mut pos)?;
-    let to_stops = read_pco_u32(&buf, &mut pos)?;
-    let point_counts = read_pco_u32(&buf, &mut pos)?;
-    let leg_shapes_lat: Vec<i32> = read_pco_i32(&buf, &mut pos)?;
-    let leg_shapes_lon: Vec<i32> = read_pco_i32(&buf, &mut pos)?;
+    let pos_before = r.pos();
+    let routes: Vec<u32> = r.pco()?;
+    let from_stops: Vec<u32> = r.pco()?;
+    let to_stops: Vec<u32> = r.pco()?;
+    let point_counts: Vec<u32> = r.pco()?;
+    let leg_shapes_lat: Vec<i32> = r.pco()?;
+    let leg_shapes_lon: Vec<i32> = r.pco()?;
     if routes.len() != num_shapes
         || from_stops.len() != num_shapes
         || to_stops.len() != num_shapes
@@ -554,7 +674,7 @@ pub fn load_with_stats(buf: &[u8]) -> Result<(PreparedData, LoadStats), String> 
     for i in 0..num_shapes {
         leg_shape_keys.push((routes[i], from_stops[i], to_stops[i]));
     }
-    binary_sections.push(("leg_shapes", pos - pos_before));
+    binary_sections.push(("leg_shapes", r.pos() - pos_before));
     timings.push(("parse leg_shapes", t0.elapsed()));
 
     // Build adjacency list as JaggedArray<(u32, u16)>
@@ -790,38 +910,4 @@ fn fmt_dur(d: Duration) -> String {
     } else {
         format!("{:.1} ms", ms)
     }
-}
-
-fn read_pco_u32(buf: &[u8], pos: &mut usize) -> Result<Vec<u32>, String> {
-    let pco_len = read_u32(buf, pos) as usize;
-    if pco_len == 0 {
-        return Ok(Vec::new());
-    }
-    let result: Vec<u32> = pco::standalone::simple_decompress(&buf[*pos..*pos + pco_len])
-        .map_err(|e| format!("pco decompress failed: {}", e))?;
-    *pos += pco_len;
-    Ok(result)
-}
-
-fn read_pco_i32(buf: &[u8], pos: &mut usize) -> Result<Vec<i32>, String> {
-    let pco_len = read_u32(buf, pos) as usize;
-    if pco_len == 0 {
-        return Ok(Vec::new());
-    }
-    let result: Vec<i32> = pco::standalone::simple_decompress(&buf[*pos..*pos + pco_len])
-        .map_err(|e| format!("pco decompress failed: {}", e))?;
-    *pos += pco_len;
-    Ok(result)
-}
-
-fn read_u32(buf: &[u8], pos: &mut usize) -> u32 {
-    let v = u32::from_le_bytes(buf[*pos..*pos + 4].try_into().unwrap());
-    *pos += 4;
-    v
-}
-
-fn read_f64(buf: &[u8], pos: &mut usize) -> f64 {
-    let v = f64::from_le_bytes(buf[*pos..*pos + 8].try_into().unwrap());
-    *pos += 8;
-    v
 }
