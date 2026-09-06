@@ -158,6 +158,9 @@ function handleRunQuery(id: number, params: RunQueryWorkerParams) {
 
   const numNodes = router.num_nodes();
   const dateInt = parseInt(params.date.replace(/-/g, ''));
+  // A NaN here becomes 0 at the WASM boundary, where decode_yyyymmdd panics
+  // and traps the worker.
+  if (!Number.isFinite(dateInt)) throw new Error(`Invalid date: ${params.date}`);
 
   // compute_profile now returns null when the progress callback requested
   // cancellation (or any internal cancellation path fires).

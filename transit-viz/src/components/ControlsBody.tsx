@@ -1,7 +1,7 @@
 import React, { useState, useRef, useCallback } from 'react';
 import { useAppState } from '../state/AppContext';
-import { formatTime, formatSlack, dateToYYYYMMDD } from '../utils/format';
-import { freeProfile, numPatternsForDate } from '../utils/router';
+import { formatTime, formatSlack } from '../utils/format';
+import { freeProfile } from '../utils/router';
 import { MAP_STYLES } from '../utils/mapStyles';
 import { deriveStatusText } from '../utils/statusText';
 
@@ -228,10 +228,11 @@ export default function ControlsBody({
   }
 
   function handleDateChange(e: React.ChangeEvent<HTMLInputElement>) {
-    dispatch({ type: 'SET_DATE', value: e.target.value });
-    numPatternsForDate(dateToYYYYMMDD(e.target.value)).then((count) => {
-      dispatch({ type: 'SET_PATTERN_COUNT', count });
-    });
+    // Clearing the picker yields '' — keep the previous date rather than
+    // sending NaN to the router.
+    const value = e.target.value;
+    if (!value) return;
+    dispatch({ type: 'SET_DATE', value });
   }
 
   function handleChangeCity() {

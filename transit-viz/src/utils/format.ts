@@ -10,18 +10,17 @@ export function formatSlack(seconds: number): string {
   return `${m}:${String(s).padStart(2, '0')}`;
 }
 
-function getNextMonday(): string {
-  const now = new Date();
-  const day = now.getDay();
-  const daysUntilMonday = day === 0 ? 1 : 8 - day; // If today is Sunday (0), next Monday is tomorrow
-  const nextMonday = new Date(now);
-  nextMonday.setDate(nextMonday.getDate() + daysUntilMonday);
-  return nextMonday.toISOString().slice(0, 10);
+/** Local calendar date as YYYY-MM-DD (what a `<input type="date">` holds). */
+export function localISODate(d: Date = new Date()): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
 }
 
-export function dateToYYYYMMDD(dateStr?: string): number {
-  if (!dateStr) {
-    dateStr = getNextMonday();
-  }
+/** Matches the YYYY-MM-DD shape the router expects; anything else is rejected upstream. */
+export const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+export function dateToYYYYMMDD(dateStr: string): number {
   return parseInt(dateStr.replace(/-/g, ''), 10);
 }

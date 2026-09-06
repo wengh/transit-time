@@ -37,7 +37,7 @@ export default function CitySelect(): React.ReactNode {
   async function handleCityClick(city: (typeof CITIES)[0]) {
     history.replaceState(null, '', `${import.meta.env.BASE_URL}?city=${city.id}`);
     try {
-      await loadCity(city, dispatch, false);
+      await loadCity(city, dispatch);
     } catch (e) {
       history.replaceState(null, '', import.meta.env.BASE_URL);
       alert(`Failed to load ${city.name}: ${String(e)}`);

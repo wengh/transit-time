@@ -1,13 +1,11 @@
-import { initWasm, loadRouter, numPatternsForDate } from './router';
-import { dateToYYYYMMDD } from './format';
+import { initWasm, loadRouter } from './router';
 import type { Action } from '../state/reducer';
 import type { City } from '../cities';
 import { animationStore } from '../state/animationStore';
 
 export async function loadCity(
   city: City,
-  dispatch: React.Dispatch<Action>,
-  includePatternCount: boolean = false
+  dispatch: React.Dispatch<Action>
 ): Promise<{ nodeCoords: Float32Array }> {
   dispatch({ type: 'START_LOADING', city });
   // A new city means a new graph — discard any timeline state from the old one.
@@ -26,13 +24,6 @@ export async function loadCity(
       stopCount,
       routeColors,
     });
-
-    // Get pattern count for today
-    if (includePatternCount) {
-      const today = new Date().toISOString().slice(0, 10);
-      const count = await numPatternsForDate(dateToYYYYMMDD(today));
-      dispatch({ type: 'SET_PATTERN_COUNT', count });
-    }
 
     return { nodeCoords };
   } catch (e) {

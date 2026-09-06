@@ -14,10 +14,11 @@ import { useIsMobile } from './utils/useIsMobile';
 import { formatDistance, haversineKm } from './utils/geo';
 import { loadCity } from './utils/cityLoader';
 import { getCityFromUrl } from './cities';
-import { runQuery, snapToNode } from './utils/router';
+import { numPatternsForDate, runQuery, snapToNode } from './utils/router';
 import { buildHoverData, getMedianPath, flattenDisplayLines } from './utils/hoverInfo';
 import type { RunQueryParams } from './utils/router';
 import { getHashParams, setHashParams } from './utils/urlHash';
+import { ISO_DATE_RE, dateToYYYYMMDD } from './utils/format';
 import { animationStore, FRAME_STEP } from './state/animationStore';
 import './styles.css';
 
@@ -64,10 +65,14 @@ function AppInner() {
     if (hash.style) dispatch({ type: 'SET_MAP_STYLE', style: hash.style });
     if (hash.date) dispatch({ type: 'SET_DATE', value: hash.date });
     if (hash.time !== undefined) {
-      const dur = hash.dur ?? 3600;
+      // A zero-length window divides by zero in the chart's time→x mapping.
+      const dur = Math.max(hash.dur ?? 3600, 300);
       dispatch({ type: 'SET_WINDOW', windowStart: hash.time, windowEnd: hash.time + dur });
     }
-    if (hash.maxtime !== undefined) dispatch({ type: 'SET_MAX_TIME', value: hash.maxtime });
+    if (hash.maxtime !== undefined) {
+      // Same range as the slider; out-of-range values trip engine asserts.
+      dispatch({ type: 'SET_MAX_TIME', value: Math.min(180, Math.max(10, hash.maxtime)) });
+    }
     if (hash.slack !== undefined) dispatch({ type: 'SET_SLACK', value: hash.slack });
 
     // Queue placement intents — these flow through the same path as in-load
@@ -81,7 +86,7 @@ function AppInner() {
 
     (async () => {
       try {
-        await loadCity(city, dispatch, true);
+        await loadCity(city, dispatch);
       } catch (e) {
         dispatch({ type: 'LOAD_ERROR' });
         history.replaceState(null, '', import.meta.env.BASE_URL);
@@ -127,6 +132,23 @@ function AppInner() {
       });
     })();
   }, [state.computeStatus, state.pendingDest, dispatch]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Service-pattern count for the selected date. One owner for this value:
+  // it used to be fetched for today-in-UTC during load (regardless of a
+  // restored date) and again from the date picker, and not at all when a city
+  // was picked from the list. A stale response for a date the user has since
+  // moved off is dropped.
+  useEffect(() => {
+    if (state.loadingState !== 'ready') return;
+    const date = state.date;
+    if (!ISO_DATE_RE.test(date)) return;
+    numPatternsForDate(dateToYYYYMMDD(date))
+      .then((count) => {
+        if (stateRef.current.date !== date) return;
+        dispatch({ type: 'SET_PATTERN_COUNT', count });
+      })
+      .catch((e) => console.warn('numPatternsForDate failed:', e));
+  }, [state.date, state.loadingState, dispatch]);
 
   // Sync state to URL hash (only when source is selected)
   useEffect(() => {

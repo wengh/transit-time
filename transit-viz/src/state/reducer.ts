@@ -1,6 +1,7 @@
 import type { HoverPath } from '../utils/router';
 import type { City } from '../cities';
 import { DEFAULT_MAP_STYLE } from '../utils/mapStyles';
+import { localISODate } from '../utils/format';
 
 export interface AppState {
   // City loading
@@ -140,7 +141,9 @@ export const initialState: AppState = {
   mapStyle: DEFAULT_MAP_STYLE,
   windowStart: 6 * 3600, // 06:00
   windowEnd: 24 * 3600, // 24:00
-  date: new Date().toISOString().slice(0, 10),
+  // Local date, not toISOString(): that is UTC, which is still yesterday for
+  // a morning user east of Greenwich (Hong Kong, Tokyo, Sydney all ship).
+  date: localISODate(),
   maxTimeMin: 45,
   transferSlack: 60,
 

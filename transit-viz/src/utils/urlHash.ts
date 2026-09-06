@@ -1,3 +1,5 @@
+import { ISO_DATE_RE } from './format';
+
 export interface HashParams {
   src?: [number, number];
   dst?: [number, number];
@@ -41,7 +43,7 @@ export function getHashParams(): HashParams {
   const style = p.get('style');
   if (style) result.style = style;
   const date = p.get('date');
-  if (date) result.date = date;
+  if (date && ISO_DATE_RE.test(date)) result.date = date;
   result.time = parseInt2(p.get('time'));
   result.dur = parseInt2(p.get('dur'));
   result.maxtime = parseInt2(p.get('maxtime'));
