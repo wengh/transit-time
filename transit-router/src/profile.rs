@@ -606,14 +606,18 @@ impl ProfileRouter for SplitProfileRouting {
 
 fn split_profile_query(query: &ProfileQuery) -> Vec<ProfileQuery> {
     let max_chunk_points = MAX_DELTA as u32 - query.max_time + 1;
+    let window_points = query.window_end - query.window_start + 1;
+    // Every chunk must satisfy `chunk_len + max_time <= MAX_DELTA` (the u16
+    // delta bound asserted in `compute_with_index`), whatever the thread count.
+    let min_required_chunks = window_points.div_ceil(max_chunk_points) as usize;
     let chunk_count = if query.is_warmup {
         // Use thread_count chunks for warmup so each worker gets some work to do.
         // Warmup ignores `max_parallelism` — the whole point is to prime the
         // thread pool / WASM tier-up cache.
-        get_thread_count().min(max_chunk_points as usize)
+        get_thread_count()
+            .min(max_chunk_points as usize)
+            .max(min_required_chunks)
     } else {
-        let window_points = query.window_end - query.window_start + 1;
-        let min_required_chunks = window_points.div_ceil(max_chunk_points) as usize;
         let max_chunks_by_min_size = (window_points / MIN_SPLIT_CHUNK_SECONDS).max(1) as usize;
         let max_allowed_chunks = max_chunks_by_min_size.max(min_required_chunks);
         let desired_num_chunks = match query.max_parallelism {
@@ -662,21 +666,61 @@ fn get_thread_count() -> usize {
 /// per-chunk denominators that would jump under the caller.
 const PROGRESS_INCREMENTS: usize = 100;
 
+/// One chunk's position on the shared `[0, PROGRESS_INCREMENTS]` axis. Both
+/// the sequential and the parallel driver feed a chunk's raw `(done, total)`
+/// through this so the global counter only ever moves forward, by the scaled
+/// delta since the previous report.
+#[derive(Default)]
+struct ChunkProgress {
+    reported: usize,
+}
+
+impl ChunkProgress {
+    /// Advance to the scaled position for `(done, total)`; returns how many
+    /// global units that added (0 if the chunk did not move forward).
+    fn advance(&mut self, done: usize, total: usize) -> usize {
+        let local = scale_progress(done, total);
+        let delta = local.saturating_sub(self.reported);
+        self.reported += delta;
+        delta
+    }
+
+    /// Top up to `PROGRESS_INCREMENTS` so the global counter still reaches
+    /// `total_chunks * PROGRESS_INCREMENTS` for chunks whose inner progress
+    /// closure never fired (e.g. zero initial transit entries) or stopped short.
+    fn finish(&mut self) -> usize {
+        self.advance(PROGRESS_INCREMENTS, PROGRESS_INCREMENTS)
+    }
+}
+
 fn compute_profile_chunks(
     data: &PreparedData,
     chunk_queries: &[ProfileQuery],
     index: Arc<Index>,
     progress: &mut impl FnMut(usize, usize) -> ControlFlow<()>,
 ) -> ControlFlow<(), Vec<ProfileRouting>> {
-    let total = chunk_queries.len();
+    let total_chunks = chunk_queries.len();
     if crate::rayon_available() && rayon::current_num_threads() > 1 {
         return compute_profile_chunks_parallel(data, chunk_queries, index, progress);
     }
-    // Sequential fallback
-    let mut chunks = Vec::with_capacity(total);
+    // Sequential fallback. Report on the same accumulated
+    // `[0, total_chunks * PROGRESS_INCREMENTS]` axis as the parallel path so
+    // the caller never sees progress reset between chunks.
+    let total_units = total_chunks * PROGRESS_INCREMENTS;
+    let mut global_done = 0usize;
+    let mut chunks = Vec::with_capacity(total_chunks);
     for chunk_query in chunk_queries {
-        let result =
-            ProfileRouting::compute_with_index(data, chunk_query, Arc::clone(&index), progress)?;
+        let mut chunk_progress = ChunkProgress::default();
+        let result = ProfileRouting::compute_with_index(
+            data,
+            chunk_query,
+            Arc::clone(&index),
+            &mut |local_done, local_total| {
+                global_done += chunk_progress.advance(local_done, local_total);
+                progress(global_done, total_units)
+            },
+        )?;
+        global_done += chunk_progress.finish();
         chunks.push(result);
     }
     ControlFlow::Continue(chunks)
@@ -716,11 +760,9 @@ fn compute_profile_chunks_parallel(
                 .par_iter()
                 .map(|query| {
                     check_abort()?;
-                    let mut prev: usize = 0;
-                    let bump = |new_local: usize, prev: &mut usize| {
-                        if new_local > *prev {
-                            let delta = new_local - *prev;
-                            *prev = new_local;
+                    let mut chunk_progress = ChunkProgress::default();
+                    let bump = |delta: usize| {
+                        if delta > 0 {
                             global_done.fetch_add(delta, Ordering::Relaxed);
                             let _ = tx.send(());
                         }
@@ -731,15 +773,11 @@ fn compute_profile_chunks_parallel(
                         Arc::clone(&index),
                         &mut |local_done, local_total| {
                             check_abort()?;
-                            let local = scale_progress(local_done, local_total);
-                            bump(local, &mut prev);
+                            bump(chunk_progress.advance(local_done, local_total));
                             ControlFlow::Continue(())
                         },
                     );
-                    // Top up so the global counter still reaches total_units even
-                    // for chunks where the inner progress closure never fired
-                    // (e.g. zero initial transit entries) or stopped short.
-                    bump(PROGRESS_INCREMENTS, &mut prev);
+                    bump(chunk_progress.finish());
                     result
                 })
                 .collect_into_vec(results);
