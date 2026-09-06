@@ -1,6 +1,6 @@
 use crate::graph::{OsmEdge, OsmNode};
 use crate::gtfs::{Color, ServicePattern, Stop};
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use std::io::Write;
 use std::path::Path;
 
@@ -492,7 +492,15 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
     encoder.write_all(&buf)?;
     let compressed = encoder.finish()?;
 
-    std::fs::write(path, &compressed)?;
+    // Write to `<path>.tmp` and rename: a crash mid-write must not leave a
+    // truncated file that a later run takes for an up-to-date build.
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = std::path::PathBuf::from(tmp);
+    std::fs::write(&tmp, &compressed)
+        .with_context(|| format!("failed to write {}", tmp.display()))?;
+    std::fs::rename(&tmp, path)
+        .with_context(|| format!("failed to move {} to {}", tmp.display(), path.display()))?;
     eprintln!(
         "Binary: {:.2} MB uncompressed, {:.2} MB compressed",
         buf.len() as f64 / 1_048_576.0,

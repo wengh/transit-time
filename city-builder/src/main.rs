@@ -578,7 +578,10 @@ fn cmd_pipeline(
 
     std::fs::create_dir_all(output_dir)?;
 
-    let built: Vec<(String, metadata::CityMetadata)> = cities
+    // Every city runs to completion and the outcomes are collected: the
+    // records of the cities that built are saved before the first error is
+    // returned, so one failing city no longer discards the others' work.
+    let outcomes: Vec<Result<Option<(String, metadata::CityMetadata)>>> = cities
         .par_iter()
         .filter(|c| cities_to_rebuild.contains(&c.id))
         .map(
@@ -691,10 +694,19 @@ fn cmd_pipeline(
                 )))
             },
         )
-        .collect::<Result<Vec<_>>>()?
-        .into_iter()
-        .flatten()
         .collect();
+    let mut built: Vec<(String, metadata::CityMetadata)> = Vec::new();
+    let mut first_error: Option<anyhow::Error> = None;
+    for outcome in outcomes {
+        match outcome {
+            Ok(Some(record)) => built.push(record),
+            Ok(None) => {}
+            Err(e) => {
+                eprintln!("ERROR: {:#}", e);
+                first_error.get_or_insert(e);
+            }
+        }
+    }
 
     // Merge over the prior record so cities that didn't rebuild keep theirs,
     // then drop any city that no longer has a config.
@@ -707,6 +719,9 @@ fn cmd_pipeline(
         "\nRecorded build metadata for {} cities",
         updated.cities.len()
     );
+    if let Some(e) = first_error {
+        return Err(e.context("one or more cities failed to build"));
+    }
 
     // ── Cleanup: Remove orphaned cache files ──
     eprintln!("\n=== Cleanup: Remove orphaned cache files ===");
