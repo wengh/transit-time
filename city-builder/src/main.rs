@@ -247,54 +247,73 @@ fn cmd_pipeline(
     let mut remote_feeds: HashMap<String, metadata::SourceId> = HashMap::new();
     let mut stale_feeds: HashSet<String> = HashSet::new();
 
-    for feed_id in &tl_feeds {
-        let sha1_path = gtfs_sha1_path(feed_id, cache_dir);
-        let local_sha1 = std::fs::read_to_string(&sha1_path).unwrap_or_default();
+    // One shared TLS client and a small pool: 166 sequential probes, each on
+    // a fresh connection, took minutes; the API is happy with a handful of
+    // concurrent requests. Results are collected and merged afterwards.
+    let tl_probes: Vec<(&String, Option<String>, bool)> = {
+        let client = http_cache::client(transitland::API_TIMEOUT)?;
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .context("failed to build probe thread pool")?;
+        pool.install(|| {
+            tl_feeds
+                .par_iter()
+                .map(|feed_id| {
+                    let sha1_path = gtfs_sha1_path(feed_id, cache_dir);
+                    let local_sha1 = std::fs::read_to_string(&sha1_path).unwrap_or_default();
 
-        // The sidecar holds the last sha1 the API reported; inside the
-        // freshness window reuse it rather than re-querying. It is still a
-        // usable probe result — it *is* what upstream last told us.
-        let remote_sha1 = if sha1_recently_checked(&sha1_path) && !local_sha1.is_empty() {
-            eprintln!("  {}: fresh (checked recently)", feed_id);
-            Some(local_sha1.clone())
-        } else {
-            let key = api_key.as_deref().unwrap(); // validated in stage 1
-            match transitland::latest_feed_sha1(key, feed_id) {
-                Ok(Some(remote)) => {
-                    if local_sha1.is_empty() {
-                        eprintln!("  {}: no local sha1 → cache stale", feed_id);
-                        stale_feeds.insert(feed_id.clone());
-                    } else if remote != local_sha1 {
-                        eprintln!("  {}: sha1 changed → cache stale", feed_id);
-                        stale_feeds.insert(feed_id.clone());
-                    } else {
-                        eprintln!("  {}: up to date", feed_id);
-                        // Refresh the sidecar's mtime so the freshness window
-                        // restarts. Only when it matches: the sidecar must
-                        // always describe the zip on disk. Writing the remote
-                        // hash for a *stale* feed made stage 4's fetch take the
-                        // "checked recently" shortcut and keep the old zip,
-                        // which is how cities shipped months-old feeds while
-                        // the build record claimed they were current.
-                        let _ = std::fs::write(&sha1_path, &remote);
+                    // The sidecar holds the last sha1 the API reported; inside the
+                    // freshness window reuse it rather than re-querying. It is still a
+                    // usable probe result — it *is* what upstream last told us.
+                    if sha1_recently_checked(&sha1_path) && !local_sha1.is_empty() {
+                        eprintln!("  {}: fresh (checked recently)", feed_id);
+                        return (feed_id, Some(local_sha1), false);
                     }
-                    Some(remote)
-                }
-                // Unverifiable. Deliberately *not* falling back to `local_sha1`
-                // as the probe result: that would compare equal to whatever
-                // built the .bin and silently pin it forever. Leaving it empty
-                // routes the city to the built_at age rule in stage 3 instead.
-                Ok(None) => {
-                    eprintln!("  {}: no remote sha1 available", feed_id);
-                    None
-                }
-                Err(e) => {
-                    eprintln!("  WARNING: {}: {}", feed_id, e);
-                    None
-                }
-            }
-        };
-
+                    let key = api_key.as_deref().unwrap(); // validated in stage 1
+                    match transitland::latest_feed_sha1(&client, key, feed_id) {
+                        Ok(Some(remote)) => {
+                            let stale = if local_sha1.is_empty() {
+                                eprintln!("  {}: no local sha1 → cache stale", feed_id);
+                                true
+                            } else if remote != local_sha1 {
+                                eprintln!("  {}: sha1 changed → cache stale", feed_id);
+                                true
+                            } else {
+                                eprintln!("  {}: up to date", feed_id);
+                                // Refresh the sidecar's mtime so the freshness window
+                                // restarts. Only when it matches: the sidecar must
+                                // always describe the zip on disk. Writing the remote
+                                // hash for a *stale* feed made stage 4's fetch take the
+                                // "checked recently" shortcut and keep the old zip,
+                                // which is how cities shipped months-old feeds while
+                                // the build record claimed they were current.
+                                let _ = std::fs::write(&sha1_path, &remote);
+                                false
+                            };
+                            (feed_id, Some(remote), stale)
+                        }
+                        // Unverifiable. Deliberately *not* falling back to `local_sha1`
+                        // as the probe result: that would compare equal to whatever
+                        // built the .bin and silently pin it forever. Leaving it empty
+                        // routes the city to the built_at age rule in stage 3 instead.
+                        Ok(None) => {
+                            eprintln!("  {}: no remote sha1 available", feed_id);
+                            (feed_id, None, false)
+                        }
+                        Err(e) => {
+                            eprintln!("  WARNING: {}: {}", feed_id, e);
+                            (feed_id, None, false)
+                        }
+                    }
+                })
+                .collect()
+        })
+    };
+    for (feed_id, remote_sha1, stale) in tl_probes {
+        if stale {
+            stale_feeds.insert(feed_id.clone());
+        }
         remote_feeds.insert(
             feed_id.clone(),
             remote_sha1
@@ -739,10 +758,11 @@ fn cmd_generate(
     // Step 3: Query Transitland
     eprintln!("\n--- Querying Transitland for feeds ---");
     let bbox = (min_lon, min_lat, max_lon, max_lat);
-    let feeds = transitland::query_feeds_in_bbox(&api_key, bbox)?;
+    let client = http_cache::client(transitland::API_TIMEOUT)?;
+    let feeds = transitland::query_feeds_in_bbox(&client, &api_key, bbox)?;
 
     eprintln!("\n--- Querying Transitland for operators ---");
-    let op_map = match transitland::query_operators_in_bbox(&api_key, bbox) {
+    let op_map = match transitland::query_operators_in_bbox(&client, &api_key, bbox) {
         Ok(op_pairs) => transitland::build_feed_operator_map(&op_pairs),
         Err(e) => {
             eprintln!(

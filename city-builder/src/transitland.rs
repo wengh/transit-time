@@ -1,7 +1,9 @@
 //! Transitland API client: feed metadata, SHA1 polling, GTFS-zip downloads.
 
 use anyhow::{Context, Result};
+use reqwest::blocking::Client;
 use std::collections::HashMap;
+use std::time::Duration;
 
 const API_BASE: &str = "https://api.transit.land/api/v2/rest";
 
@@ -73,15 +75,17 @@ pub fn get_api_key() -> Result<String> {
 }
 
 /// Metadata queries are small JSON responses.
-const API_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+pub const API_TIMEOUT: Duration = Duration::from_secs(30);
 
-fn make_client() -> Result<reqwest::blocking::Client> {
-    crate::http_cache::client(API_TIMEOUT)
-}
+/// GTFS zips are small next to OSM extracts; keep the tighter budget.
+pub const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Query the latest feed version SHA1 for a Transitland feed.
-pub fn latest_feed_sha1(api_key: &str, onestop_id: &str) -> Result<Option<String>> {
-    let client = make_client()?;
+pub fn latest_feed_sha1(
+    client: &Client,
+    api_key: &str,
+    onestop_id: &str,
+) -> Result<Option<String>> {
     let url = format!("{}/feeds/{}", API_BASE, onestop_id);
     let resp: FeedsResponse = client
         .get(&url)
@@ -103,12 +107,16 @@ pub fn latest_feed_sha1(api_key: &str, onestop_id: &str) -> Result<Option<String
 
 /// Download the latest GTFS zip for a Transitland feed using header-based
 /// auth, streaming it into `dest`. Returns the byte count.
-pub fn download_feed(api_key: &str, onestop_id: &str, dest: &std::path::Path) -> Result<u64> {
+pub fn download_feed(
+    client: &Client,
+    api_key: &str,
+    onestop_id: &str,
+    dest: &std::path::Path,
+) -> Result<u64> {
     let url = format!(
         "{}/feeds/{}/download_latest_feed_version",
         API_BASE, onestop_id
     );
-    let client = crate::http_cache::client(std::time::Duration::from_secs(300))?;
     let mut resp = client
         .get(&url)
         .header("apikey", api_key)
@@ -126,8 +134,11 @@ pub fn download_feed(api_key: &str, onestop_id: &str, dest: &std::path::Path) ->
     })
 }
 
-pub fn query_feeds_in_bbox(api_key: &str, bbox: (f64, f64, f64, f64)) -> Result<Vec<Feed>> {
-    let client = make_client()?;
+pub fn query_feeds_in_bbox(
+    client: &Client,
+    api_key: &str,
+    bbox: (f64, f64, f64, f64),
+) -> Result<Vec<Feed>> {
     let (min_lon, min_lat, max_lon, max_lat) = bbox;
     let mut all_feeds = Vec::new();
     let mut url = format!(
@@ -189,10 +200,10 @@ pub fn query_feeds_in_bbox(api_key: &str, bbox: (f64, f64, f64, f64)) -> Result<
 }
 
 pub fn query_operators_in_bbox(
+    client: &Client,
     api_key: &str,
     bbox: (f64, f64, f64, f64),
 ) -> Result<Vec<(String, String)>> {
-    let client = make_client()?;
     let (min_lon, min_lat, max_lon, max_lat) = bbox;
     let mut feed_to_operator: Vec<(String, String)> = Vec::new();
     let mut url = format!(

@@ -22,9 +22,6 @@ use crate::transitland;
 /// city build between two pipeline runs.
 const SHA1_CACHE_FRESHNESS: std::time::Duration = std::time::Duration::from_secs(2 * 24 * 3600);
 
-/// GTFS zips are small next to OSM extracts; keep the original tighter budget.
-const GTFS_DOWNLOAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
-
 pub fn is_transitland_id(feed_id: &str) -> bool {
     feed_id.starts_with("f-")
 }
@@ -62,7 +59,8 @@ pub fn fetch_gtfs(feed_id: &str, api_key: Option<&str>, cache_dir: &Path) -> Res
                 return Ok(cache_path);
             }
             let local_sha1 = std::fs::read_to_string(&sha1_path).unwrap_or_default();
-            match transitland::latest_feed_sha1(key, feed_id) {
+            let client = http_cache::client(transitland::API_TIMEOUT)?;
+            match transitland::latest_feed_sha1(&client, key, feed_id) {
                 Ok(Some(remote_sha1)) if !local_sha1.is_empty() && local_sha1 == remote_sha1 => {
                     let _ = std::fs::write(&sha1_path, &remote_sha1);
                     eprintln!("Using cached GTFS (up to date): {:?}", cache_path);
@@ -109,7 +107,8 @@ pub fn fetch_gtfs(feed_id: &str, api_key: Option<&str>, cache_dir: &Path) -> Res
 
         eprintln!("Downloading GTFS from Transitland: {}", feed_id);
         let tmp = http_cache::tmp_path(&cache_path);
-        let bytes = match transitland::download_feed(key, feed_id, &tmp) {
+        let client = http_cache::client(transitland::DOWNLOAD_TIMEOUT)?;
+        let bytes = match transitland::download_feed(&client, key, feed_id, &tmp) {
             Ok(n) => n,
             Err(e) => {
                 let _ = std::fs::remove_file(&tmp);
@@ -145,7 +144,7 @@ pub fn fetch_gtfs(feed_id: &str, api_key: Option<&str>, cache_dir: &Path) -> Res
         }
 
         eprintln!("Downloading GTFS from: {}", feed_id);
-        let client = http_cache::client(GTFS_DOWNLOAD_TIMEOUT)?;
+        let client = http_cache::client(transitland::DOWNLOAD_TIMEOUT)?;
         http_cache::download_or_cached(
             &client,
             feed_id,
