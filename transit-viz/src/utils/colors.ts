@@ -26,9 +26,3 @@ export function routeColorFor(routeIdx: number, routeColors: string[]): string {
   const idx = routeIdx === NO_ROUTE ? 0 : routeIdx;
   return routeColors[idx] || ROUTE_COLORS[idx % ROUTE_COLORS.length];
 }
-
-export function hexToRgb(hex: string): [number, number, number] | null {
-  const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
-  if (!result) return null;
-  return [parseInt(result[1], 16), parseInt(result[2], 16), parseInt(result[3], 16)];
-}

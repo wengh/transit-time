@@ -234,12 +234,6 @@ export default function ControlsBody({
 
   const statusText = deriveStatusText(state);
 
-  function handleCopy() {
-    onCopy();
-    dispatch({ type: 'SHOW_COPIED_MESSAGE' });
-    setTimeout(() => dispatch({ type: 'HIDE_COPIED_MESSAGE' }), 1500);
-  }
-
   function handleMapStyleChange(e: React.ChangeEvent<HTMLSelectElement>) {
     dispatch({ type: 'SET_MAP_STYLE', style: e.target.value });
   }
@@ -374,7 +368,7 @@ export default function ControlsBody({
         {state.pinnedDest !== null && (
           <button
             id="copy-info"
-            onClick={handleCopy}
+            onClick={onCopy}
             className="px-2.5 py-1 text-[12px] rounded border cursor-pointer
               bg-zinc-100 border-zinc-300 text-zinc-600
               dark:bg-zinc-800 dark:border-zinc-700 dark:text-zinc-400

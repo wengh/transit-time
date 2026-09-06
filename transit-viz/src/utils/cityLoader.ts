@@ -3,10 +3,7 @@ import type { Action } from '../state/reducer';
 import type { City } from '../cities';
 import { animationStore } from '../state/animationStore';
 
-export async function loadCity(
-  city: City,
-  dispatch: React.Dispatch<Action>
-): Promise<{ nodeCoords: Float32Array }> {
+export async function loadCity(city: City, dispatch: React.Dispatch<Action>): Promise<void> {
   dispatch({ type: 'START_LOADING', city });
   // A new city means a new graph — discard any timeline state from the old one.
   animationStore.reset();
@@ -24,8 +21,6 @@ export async function loadCity(
       stopCount,
       routeColors,
     });
-
-    return { nodeCoords };
   } catch (e) {
     dispatch({ type: 'LOAD_ERROR' });
     throw e;

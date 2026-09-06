@@ -18,7 +18,6 @@ export default defineConfig({
     format: 'es',
   },
   server: {
-    port: 3000,
     headers: THREADING_HEADERS,
   },
   preview: {

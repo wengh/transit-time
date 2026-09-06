@@ -196,7 +196,6 @@ function handleRunQuery(id: number, params: RunQueryWorkerParams) {
     travelTimes,
     sampleCounts,
     totalSamples: PROFILE_FRACTION_SCALE,
-    departureTime: params.windowStart,
     numThreads: profile.num_threads(),
   };
 }
@@ -247,7 +246,6 @@ function segmentShape(kind: 'walk' | 'transit', routeIndex: number | null, nodeS
 
 function handleGetHoverData(node: number) {
   if (!router || !profile) return { paths: [], representativeIndex: null };
-  if ((profile as any).__wbg_ptr === 0) return { paths: [], representativeIndex: null };
   const json = profile.optimal_paths(router, node);
   const data: { paths: RustPathView[]; representativeIndex: number | null } = JSON.parse(json);
   const paths = data.paths.map((p) => {
@@ -279,7 +277,6 @@ function handleGetHoverData(node: number) {
 // request/response RPC model; would race under any concurrent dispatch.
 function handleTravelTimesAt(departure: number): Uint16Array {
   if (!profile) throw new Error('No profile loaded');
-  if ((profile as any).__wbg_ptr === 0) throw new Error('Profile freed');
   if (!wasmMemory) throw new Error('WASM not initialised');
   profile.travel_times_at_into(departure);
   const ptr = profile.travel_times_buffer_ptr();

@@ -18,7 +18,7 @@ import { numPatternsForDate, runQuery, snapToNode } from './utils/router';
 import { buildHoverData, getMedianPath, flattenDisplayLines } from './utils/hoverInfo';
 import type { RunQueryParams } from './utils/router';
 import { getHashParams, setHashParams } from './utils/urlHash';
-import { ISO_DATE_RE, dateToYYYYMMDD } from './utils/format';
+import { ISO_DATE_RE, dateToYYYYMMDD, formatTime } from './utils/format';
 import { animationStore, FRAME_STEP } from './state/animationStore';
 import './styles.css';
 
@@ -88,7 +88,7 @@ function AppInner() {
       try {
         await loadCity(city, dispatch);
       } catch (e) {
-        dispatch({ type: 'LOAD_ERROR' });
+        // loadCity already dispatched LOAD_ERROR.
         history.replaceState(null, '', import.meta.env.BASE_URL);
         alert(`Failed to load ${city.name}: ${String(e)}`);
       }
@@ -131,7 +131,7 @@ function AppInner() {
         dest: { node, latLng, hoverData },
       });
     })();
-  }, [state.computeStatus, state.pendingDest, dispatch]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [state.computeStatus, state.pendingDest, dispatch]);
 
   // Service-pattern count for the selected date. One owner for this value:
   // it used to be fetched for today-in-UTC during load (regardless of a
@@ -282,12 +282,7 @@ function AppInner() {
 
     lines.push('');
     lines.push(`Date: ${s.date}`);
-    const fmtT = (sec: number) => {
-      const h = Math.floor(sec / 3600);
-      const m = Math.floor((sec % 3600) / 60);
-      return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
-    };
-    lines.push(`Departure window: ${fmtT(s.windowStart)} – ${fmtT(s.windowEnd)}`);
+    lines.push(`Departure window: ${formatTime(s.windowStart)} – ${formatTime(s.windowEnd)}`);
     lines.push(`Max time: ${s.maxTimeMin} min`);
     lines.push(`Transfer slack: ${s.transferSlack}s`);
 
@@ -326,13 +321,9 @@ function AppInner() {
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
       if (e.key !== 'c' || e.ctrlKey || e.metaKey || e.altKey) return;
-      const target = e.target as HTMLElement;
-      if (
-        target.tagName === 'INPUT' ||
-        target.tagName === 'SELECT' ||
-        target.tagName === 'TEXTAREA'
-      )
-        return;
+      // Same deference rule as the playback transport below.
+      const target = e.target as HTMLElement | null;
+      if (target?.closest?.(TRANSPORT_KEY_EXEMPT)) return;
       if (copyInfo()) e.preventDefault();
     }
 
@@ -381,6 +372,9 @@ function AppInner() {
 
   const isMobile = useIsMobile();
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // Stable identity: MobileSettingsSheet re-registers its Escape listener
+  // whenever onClose changes.
+  const closeSettings = useCallback(() => setSettingsOpen(false), []);
   const handleCopy = () => {
     if (stateRef.current) copyInfo();
   };
@@ -394,9 +388,7 @@ function AppInner() {
         <>
           <MobileTopBar onOpenSettings={() => setSettingsOpen(true)} mapViewRef={mapViewRef} />
           <MobileBottomSheet />
-          {settingsOpen && (
-            <MobileSettingsSheet onClose={() => setSettingsOpen(false)} onCopy={handleCopy} />
-          )}
+          {settingsOpen && <MobileSettingsSheet onClose={closeSettings} onCopy={handleCopy} />}
         </>
       ) : (
         <>

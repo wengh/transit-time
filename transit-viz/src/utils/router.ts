@@ -27,7 +27,6 @@ export interface QueryResult {
   travelTimes: Float32Array;
   sampleCounts: Uint32Array;
   totalSamples: number;
-  departureTime: number; // windowStart, kept for downstream consumers
   numThreads: number;
 }
 

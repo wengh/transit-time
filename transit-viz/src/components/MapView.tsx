@@ -66,17 +66,22 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
   >(null);
   const setDestinationRef = useRef<((lat: number, lng: number) => Promise<void>) | null>(null);
 
-  useImperativeHandle(ref, () => ({
-    setSource: (lat, lng, opts) => setSourceRef.current?.(lat, lng, opts) ?? Promise.resolve(false),
-    setDestination: (lat, lng) => setDestinationRef.current?.(lat, lng) ?? Promise.resolve(),
-    flyTo: (lat, lng) => {
-      const map = mapRef.current;
-      if (!map) return;
-      map.flyTo({ center: [lng, lat], zoom: Math.max(map.getZoom(), slippyToMapZoom(14)) });
-    },
-    zoomIn: () => mapRef.current?.zoomIn(),
-    zoomOut: () => mapRef.current?.zoomOut(),
-  }));
+  useImperativeHandle(
+    ref,
+    () => ({
+      setSource: (lat, lng, opts) =>
+        setSourceRef.current?.(lat, lng, opts) ?? Promise.resolve(false),
+      setDestination: (lat, lng) => setDestinationRef.current?.(lat, lng) ?? Promise.resolve(),
+      flyTo: (lat, lng) => {
+        const map = mapRef.current;
+        if (!map) return;
+        map.flyTo({ center: [lng, lat], zoom: Math.max(map.getZoom(), slippyToMapZoom(14)) });
+      },
+      zoomIn: () => mapRef.current?.zoomIn(),
+      zoomOut: () => mapRef.current?.zoomOut(),
+    }),
+    []
+  );
 
   const stateRef = useRef(state);
   stateRef.current = state;
@@ -230,7 +235,8 @@ const MapView = forwardRef<MapViewHandle>(function MapView(_props, ref): React.R
           // Add a dot at the end of transit segments to mark transfers
           if (seg.edgeType === 1) {
             const s = stateRef.current;
-            if (s.nodeCoords && seg.endNodeIdx !== undefined) {
+            // -1 marks a segment with no node sequence.
+            if (s.nodeCoords && seg.endNodeIdx >= 0) {
               const tKey = `${seg.routeIdx}|${seg.endNodeIdx}`;
               if (!seenTransfers.has(tKey)) {
                 seenTransfers.add(tKey);
