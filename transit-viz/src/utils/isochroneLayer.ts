@@ -167,9 +167,18 @@ function compileProgram(gl: WebGL2RenderingContext, vert: string, frag: string):
   }
   const program = gl.createProgram();
   if (!program) throw new Error('Failed to create program');
-  gl.attachShader(program, compile(gl.VERTEX_SHADER, vert));
-  gl.attachShader(program, compile(gl.FRAGMENT_SHADER, frag));
+  const vs = compile(gl.VERTEX_SHADER, vert);
+  const fs = compile(gl.FRAGMENT_SHADER, frag);
+  gl.attachShader(program, vs);
+  gl.attachShader(program, fs);
   gl.linkProgram(program);
+  // The linked program owns its binaries; the shader objects are only kept
+  // alive by the attachment. Release them here or every style swap (which
+  // recreates the GL resources) leaks four.
+  gl.detachShader(program, vs);
+  gl.detachShader(program, fs);
+  gl.deleteShader(vs);
+  gl.deleteShader(fs);
   if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
     throw new Error('Program link failed: ' + gl.getProgramInfoLog(program));
   }

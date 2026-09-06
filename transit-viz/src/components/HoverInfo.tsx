@@ -117,9 +117,14 @@ function drawChart(
   // the drawing context, so 1px in our coords maps to 1 CSS px (= dpr device
   // pixels). Without this, lines and text are bilinearly upscaled by the
   // browser on retina displays — the classic "blurry canvas" look.
+  // Assigning width/height reallocates the backing store (and this runs at
+  // ~30 Hz during playback), so only touch them when the size changed; the
+  // background fill below covers the whole surface either way.
   const dpr = window.devicePixelRatio || 1;
-  canvas.width = Math.round(size * dpr);
-  canvas.height = Math.round(height * dpr);
+  const w = Math.round(size * dpr);
+  const h = Math.round(height * dpr);
+  if (canvas.width !== w) canvas.width = w;
+  if (canvas.height !== h) canvas.height = h;
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
