@@ -217,14 +217,21 @@ impl<T> std::ops::Index<u32> for JaggedArray<T> {
 }
 
 impl<T> JaggedArray<T> {
+    /// Number of buckets (rows).
     pub fn len(&self) -> u32 {
         (self.offsets.len() - 1) as u32
     }
 
+    /// `true` when there are no buckets. Note this is about rows, not items:
+    /// use `data.is_empty()` to ask whether the array holds any items.
     pub fn is_empty(&self) -> bool {
-        self.data.is_empty()
+        self.len() == 0
     }
+}
 
+impl<T: Copy + Default> JaggedArray<T> {
+    /// Bucket `items` by `key_fn` into `len` rows (counting sort; items keep
+    /// their input order within a row).
     pub fn build(items: Vec<T>, key_fn: impl Fn(&T) -> u32, len: u32) -> Self {
         let n = len as usize;
         // Count items per bucket
@@ -247,21 +254,15 @@ impl<T> JaggedArray<T> {
             acc += prev;
         }
         let offsets = counts;
-        // Scatter items into a MaybeUninit buffer, then transmute once all slots are filled.
+        // Scatter into a default-filled buffer; every slot is overwritten
+        // exactly once since the cursors start at the bucket offsets.
         let mut cursors = offsets[..n].to_vec();
-        let mut data: Vec<std::mem::MaybeUninit<T>> = (0..acc as usize)
-            .map(|_| std::mem::MaybeUninit::uninit())
-            .collect();
+        let mut data = vec![T::default(); acc as usize];
         for item in items {
             let bucket = key_fn(&item) as usize;
-            data[cursors[bucket] as usize].write(item);
+            data[cursors[bucket] as usize] = item;
             cursors[bucket] += 1;
         }
-        // Safety: every slot 0..acc has been written exactly once above.
-        let data = unsafe {
-            let mut md = std::mem::ManuallyDrop::new(data);
-            Vec::from_raw_parts(md.as_mut_ptr() as *mut T, md.len(), md.capacity())
-        };
 
         Self { offsets, data }
     }
