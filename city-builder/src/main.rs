@@ -126,6 +126,21 @@ fn load_city_config(city_file: &Path) -> Result<CityConfig> {
         .with_context(|| format!("Failed to parse city file: {:?}", city_file))
 }
 
+/// Identity of the GTFS zip currently in the cache for `feed_id`: the sha1
+/// sidecar for Transitland feeds, the ETag sidecar for direct URLs.
+fn on_disk_feed_identity(feed_id: &str, cache_dir: &Path) -> metadata::SourceId {
+    if is_transitland_id(feed_id) {
+        std::fs::read_to_string(gtfs_sha1_path(feed_id, cache_dir))
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .map(metadata::SourceId::from_sha1)
+            .unwrap_or_default()
+    } else {
+        metadata::SourceId::from(&http_cache::load(&gtfs_cache_path(feed_id, cache_dir)))
+    }
+}
+
 /// A city config as loaded by the pipeline, with the hash of its file bytes
 /// that the build record compares against.
 struct City {
@@ -157,7 +172,7 @@ fn cmd_prep(city_file: &Path, output: &Path, cache_dir: &Path) -> Result<()> {
     let gtfs_paths: Vec<PathBuf> = city
         .feed_ids
         .iter()
-        .map(|fid| fetch_gtfs(fid, api_key.as_deref(), cache_dir))
+        .map(|fid| fetch_gtfs(fid, api_key.as_deref(), cache_dir, false).map(|f| f.path))
         .collect::<Result<Vec<_>>>()?;
 
     let osm_path = osm_fetch::fetch_osm(
@@ -167,7 +182,9 @@ fn cmd_prep(city_file: &Path, output: &Path, cache_dir: &Path) -> Result<()> {
         city.interline_extract.as_deref(),
         city.bbbike_name.as_deref(),
         city.osm_url.as_deref(),
-    )?;
+        false,
+    )?
+    .path;
 
     transit_prep::prepare(
         &city.id,
@@ -535,19 +552,26 @@ fn cmd_pipeline(
             .collect()
     };
 
-    feeds_to_download
+    // Feeds whose fetch fell back to an unverified cached copy. A city built
+    // from one keeps its prior build record so the next run tries again.
+    let fallback_feeds: HashSet<&String> = feeds_to_download
         .par_iter()
-        .try_for_each(|feed_id| -> Result<()> {
-            // Stage 2 already decided this feed is stale. Drop the sidecar so
-            // `fetch_gtfs` cannot take its "checked recently" shortcut on a
-            // sidecar refreshed within the freshness window and hand back
-            // the old zip; the download rewrites it from the bytes received.
-            if stale_feeds.contains(*feed_id) {
-                let _ = std::fs::remove_file(gtfs_sha1_path(feed_id, cache_dir));
-            }
-            fetch_gtfs(feed_id, api_key.as_deref(), cache_dir)?;
-            Ok(())
-        })?;
+        .map(|feed_id| -> Result<Option<&String>> {
+            // Stage 2 already decided whether this feed is stale, so skip the
+            // re-probe: a sidecar refreshed within the freshness window would
+            // otherwise make `fetch_gtfs` hand back the old zip.
+            let fetched = fetch_gtfs(
+                feed_id,
+                api_key.as_deref(),
+                cache_dir,
+                stale_feeds.contains(*feed_id),
+            )?;
+            Ok(fetched.fell_back.then_some(*feed_id))
+        })
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .flatten()
+        .collect();
 
     // ── Stage 5: Build city .bin files (downloads OSM on demand) ──
     eprintln!("\n=== Stage 5: Build city .bin files ===");
@@ -564,16 +588,48 @@ fn cmd_pipeline(
                  config_hash,
                  ..
              }|
-             -> Result<(String, metadata::CityMetadata)> {
+             -> Result<Option<(String, metadata::CityMetadata)>> {
                 let bbox = parse_bbox(&config.bbox)?;
 
-                let osm_path = osm_fetch::fetch_osm(
+                // Stage 3 compared the recorded OSM identity against the
+                // origin; if either that or the local sidecar disagrees with
+                // the origin, the cached extract is behind and `fetch_osm`
+                // must not take its 30-day no-network shortcut. Otherwise a
+                // rebuild triggered by a new ETag would build from the old
+                // extract and then record the new identity, pinning the city
+                // to stale data until the sidecar aged out.
+                let remote = remote_osm.get(id.as_str()).cloned().unwrap_or_default();
+                let osm_cache_path = osm_fetch::pick_source_url(
+                    config.interline_extract.as_deref(),
+                    config.bbbike_name.as_deref(),
+                    config.osm_url.as_deref(),
+                )
+                .map(|url| {
+                    osm_fetch::pbf_cache_path(
+                        cache_dir,
+                        id,
+                        &url,
+                        osm_fetch::source_ext(config.osm_url.as_deref()),
+                    )
+                });
+                let osm_changed = recorded
+                    .cities
+                    .get(id)
+                    .and_then(|p| p.osm.as_ref())
+                    .is_some_and(|then| then.same_as(&remote) == Some(false))
+                    || osm_cache_path.as_deref().is_some_and(|path| {
+                        metadata::SourceId::from(&http_cache::load(path)).same_as(&remote)
+                            == Some(false)
+                    });
+
+                let osm = osm_fetch::fetch_osm(
                     bbox,
                     cache_dir,
                     id,
                     config.interline_extract.as_deref(),
                     config.bbbike_name.as_deref(),
                     config.osm_url.as_deref(),
+                    osm_changed,
                 )?;
 
                 let gtfs_paths: Vec<PathBuf> = config
@@ -587,41 +643,58 @@ fn cmd_pipeline(
                 transit_prep::prepare(
                     id,
                     &gtfs_paths,
-                    &osm_path,
+                    &osm.path,
                     bbox,
                     &bin_path,
                     config.allow_stale,
                 )?;
 
-                // Record the identities stage 2/3 probed, not a re-probe: these are
-                // the versions this .bin was actually built from. Stamped only on
+                // A fetch that fell back to an unverified cached copy may have
+                // built from stale data. Keep the prior record (or none) so
+                // stage 3 rebuilds the city next run instead of pinning it.
+                let stale_inputs: Vec<&str> = config
+                    .feed_ids
+                    .iter()
+                    .filter(|fid| fallback_feeds.contains(fid))
+                    .map(String::as_str)
+                    .chain(osm.fell_back.then_some("OSM extract"))
+                    .collect();
+                if !stale_inputs.is_empty() {
+                    eprintln!(
+                        "  {}: built from unverified cached input(s) ({}); keeping the prior build record",
+                        id,
+                        stale_inputs.join(", ")
+                    );
+                    return Ok(None);
+                }
+
+                // Record the identity of what is on disk — the files this .bin
+                // was actually built from — not what stage 2/3 probed: the two
+                // differ whenever a fetch kept a cached copy. Stamped only on
                 // success, so a failed build leaves the old record in place.
-                Ok((
+                let feeds = config
+                    .feed_ids
+                    .iter()
+                    .map(|fid| (fid.clone(), on_disk_feed_identity(fid, cache_dir)))
+                    .collect();
+                let osm_id = metadata::SourceId::from(&http_cache::load(&osm.path));
+                Ok(Some((
                     id.clone(),
                     metadata::CityMetadata {
                         built_at: chrono::Utc::now()
                             .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-                        feeds: config
-                            .feed_ids
-                            .iter()
-                            .map(|fid| {
-                                (
-                                    fid.clone(),
-                                    remote_feeds.get(fid).cloned().unwrap_or_default(),
-                                )
-                            })
-                            .collect(),
-                        osm: remote_osm
-                            .get(id.as_str())
-                            .cloned()
-                            .filter(|s| !s.is_empty()),
+                        feeds,
+                        osm: Some(osm_id).filter(|s| !s.is_empty()),
                         config_hash: config_hash.clone(),
                         code_fingerprint: metadata::CODE_FINGERPRINT.to_string(),
                     },
-                ))
+                )))
             },
         )
-        .collect::<Result<Vec<_>>>()?;
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .flatten()
+        .collect();
 
     // Merge over the prior record so cities that didn't rebuild keep theirs,
     // then drop any city that no longer has a config.
@@ -762,7 +835,9 @@ fn cmd_generate(
         interline_extract,
         bbbike_name,
         osm_url,
-    )?;
+        false,
+    )?
+    .path;
 
     // Step 2: Extract bbox from PBF header
     eprintln!("\n--- Extracting bounding box from PBF ---");

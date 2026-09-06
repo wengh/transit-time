@@ -11,7 +11,7 @@ use anyhow::{Result, bail};
 use std::path::{Path, PathBuf};
 
 use crate::cache;
-use crate::http_cache;
+use crate::http_cache::{self, Fetched};
 
 // Try multiple Overpass servers
 const OVERPASS_URLS: &[&str] = &[
@@ -114,17 +114,27 @@ pub fn osm_request_url(
 /// Reuse-or-refetch an OSM extract from an HTTP source.
 ///
 /// Within [`cache::OSM_MAX_STALENESS`] of the last confirmation this doesn't
-/// touch the network at all; past that it compares validators and downloads
-/// only on an actual change.
-fn fetch_http_osm(cache_path: &Path, url: &str, display_url: &str, label: &str) -> Result<PathBuf> {
-    if cache_path.exists() && http_cache::checked_within(cache_path, cache::OSM_MAX_STALENESS) {
+/// touch the network at all — unless `force_check` is set, which the
+/// pipeline passes when its own probe already saw the origin change; past
+/// that it compares validators and downloads only on an actual change.
+fn fetch_http_osm(
+    cache_path: &Path,
+    url: &str,
+    display_url: &str,
+    label: &str,
+    force_check: bool,
+) -> Result<Fetched> {
+    if cache_path.exists()
+        && !force_check
+        && http_cache::checked_within(cache_path, cache::OSM_MAX_STALENESS)
+    {
         eprintln!(
             "Using cached {}: {:?} (verified {} day(s) ago)",
             label,
             cache_path,
             http_cache::checked_days_ago(cache_path)
         );
-        return Ok(cache_path.to_path_buf());
+        return Ok(Fetched::current(cache_path));
     }
 
     let client = http_cache::client(http_cache::CHECK_TIMEOUT)?;
@@ -136,7 +146,7 @@ fn fetch_http_osm(cache_path: &Path, url: &str, display_url: &str, label: &str) 
         &format!("{} {:?}", label, cache_path),
     ) == http_cache::CacheState::Current
     {
-        return Ok(cache_path.to_path_buf());
+        return Ok(Fetched::current(cache_path));
     }
 
     eprintln!("Downloading {} from: {}", label, display_url);
@@ -155,7 +165,8 @@ fn fetch_http_osm(cache_path: &Path, url: &str, display_url: &str, label: &str) 
 ///
 /// Exactly one of `interline_extract`, `bbbike_name`, or `osm_url` may be set;
 /// providing more than one is a configuration error. If none is set, falls back
-/// to an Overpass query over `bbox`.
+/// to an Overpass query over `bbox`. `force_check` skips the
+/// [`cache::OSM_MAX_STALENESS`] no-network shortcut for HTTP sources.
 pub fn fetch_osm(
     bbox: (f64, f64, f64, f64),
     cache_dir: &Path,
@@ -163,7 +174,8 @@ pub fn fetch_osm(
     interline_extract: Option<&str>,
     bbbike_name: Option<&str>,
     osm_url: Option<&str>,
-) -> Result<PathBuf> {
+    force_check: bool,
+) -> Result<Fetched> {
     let configured = interline_extract.is_some() as usize
         + bbbike_name.is_some() as usize
         + osm_url.is_some() as usize;
@@ -190,7 +202,13 @@ pub fn fetch_osm(
         } else {
             source_url
         };
-        return fetch_http_osm(&cache_path, &request_url, &display, "OSM extract");
+        return fetch_http_osm(
+            &cache_path,
+            &request_url,
+            &display,
+            "OSM extract",
+            force_check,
+        );
     }
 
     // No source configured — use Overpass for the bbox. Overpass is a POST
@@ -198,9 +216,10 @@ pub fn fetch_osm(
     let xml_cache = overpass_cache_path(cache_dir, bbox);
     if xml_cache.exists() && cache::is_fresh(&xml_cache, cache::OSM_MAX_STALENESS) {
         eprintln!("Using cached OSM XML: {:?}", xml_cache);
-        return Ok(xml_cache);
+        return Ok(Fetched::current(&xml_cache));
     }
-    fetch_overpass(bbox, &xml_cache)
+    fetch_overpass(bbox, &xml_cache)?;
+    Ok(Fetched::current(&xml_cache))
 }
 
 /// Interline download URL including the API token — never log this directly.
@@ -213,7 +232,7 @@ fn interline_download_url(extract_id: &str, api_key: &str) -> String {
     )
 }
 
-fn fetch_overpass(bbox: (f64, f64, f64, f64), cache_path: &Path) -> Result<PathBuf> {
+fn fetch_overpass(bbox: (f64, f64, f64, f64), cache_path: &Path) -> Result<()> {
     let (min_lon, min_lat, max_lon, max_lat) = bbox;
 
     let query = format!(
@@ -243,7 +262,7 @@ out body;"#,
                     let text = resp.text()?;
                     http_cache::write_atomic(cache_path, text.as_bytes())?;
                     eprintln!("OSM data: {} bytes", text.len());
-                    return Ok(cache_path.to_path_buf());
+                    return Ok(());
                 }
                 eprintln!("Server {} returned {}", url, resp.status());
             }

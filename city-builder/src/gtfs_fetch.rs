@@ -13,7 +13,7 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
 use crate::cache;
-use crate::http_cache;
+use crate::http_cache::{self, Fetched};
 use crate::osm_fetch::url_hash;
 use crate::transitland;
 
@@ -45,7 +45,17 @@ pub fn gtfs_sha1_path(feed_id: &str, cache_dir: &Path) -> PathBuf {
 }
 
 /// Download a GTFS feed (Transitland or direct URL) into the cache directory.
-pub fn fetch_gtfs(feed_id: &str, api_key: Option<&str>, cache_dir: &Path) -> Result<PathBuf> {
+///
+/// `force_download` skips every freshness check and downloads outright; the
+/// pipeline passes it for feeds its own probe already found stale, so a
+/// sidecar refreshed inside the freshness window cannot hand back the old
+/// zip through the "checked recently" shortcut.
+pub fn fetch_gtfs(
+    feed_id: &str,
+    api_key: Option<&str>,
+    cache_dir: &Path,
+    force_download: bool,
+) -> Result<Fetched> {
     let cache_path = gtfs_cache_path(feed_id, cache_dir);
     let sha1_path = gtfs_sha1_path(feed_id, cache_dir);
 
@@ -53,10 +63,10 @@ pub fn fetch_gtfs(feed_id: &str, api_key: Option<&str>, cache_dir: &Path) -> Res
         let key =
             api_key.with_context(|| format!("Feed '{}' requires TRANSITLAND_API_KEY", feed_id))?;
 
-        if cache_path.exists() {
+        if cache_path.exists() && !force_download {
             if sha1_recently_checked(&sha1_path) {
                 eprintln!("Using cached GTFS (checked recently): {:?}", cache_path);
-                return Ok(cache_path);
+                return Ok(Fetched::current(&cache_path));
             }
             let local_sha1 = std::fs::read_to_string(&sha1_path).unwrap_or_default();
             let client = http_cache::client(transitland::API_TIMEOUT)?;
@@ -64,7 +74,7 @@ pub fn fetch_gtfs(feed_id: &str, api_key: Option<&str>, cache_dir: &Path) -> Res
                 Ok(Some(remote_sha1)) if !local_sha1.is_empty() && local_sha1 == remote_sha1 => {
                     let _ = std::fs::write(&sha1_path, &remote_sha1);
                     eprintln!("Using cached GTFS (up to date): {:?}", cache_path);
-                    return Ok(cache_path);
+                    return Ok(Fetched::current(&cache_path));
                 }
                 Ok(Some(remote_sha1)) => {
                     eprintln!(
@@ -80,7 +90,7 @@ pub fn fetch_gtfs(feed_id: &str, api_key: Option<&str>, cache_dir: &Path) -> Res
                         "Using cached GTFS (no remote sha1 to compare): {:?}",
                         cache_path
                     );
-                    return Ok(cache_path);
+                    return Ok(Fetched::current(&cache_path));
                 }
                 Ok(None) => {
                     eprintln!(
@@ -92,7 +102,11 @@ pub fn fetch_gtfs(feed_id: &str, api_key: Option<&str>, cache_dir: &Path) -> Res
                 Err(e) if cache::is_usable(&cache_path) => {
                     eprintln!("WARNING: could not check Transitland for updates: {}", e);
                     eprintln!("Using cached GTFS: {:?}", cache_path);
-                    return Ok(cache_path);
+                    // Unverified: the zip may be behind upstream.
+                    return Ok(Fetched {
+                        path: cache_path,
+                        fell_back: true,
+                    });
                 }
                 Err(e) => {
                     eprintln!("WARNING: could not check Transitland for updates: {}", e);
@@ -126,21 +140,22 @@ pub fn fetch_gtfs(feed_id: &str, api_key: Option<&str>, cache_dir: &Path) -> Res
             .with_context(|| format!("failed to move {:?} to {:?}", tmp, cache_path))?;
         let _ = std::fs::write(&sha1_path, sha1);
 
-        Ok(cache_path)
+        Ok(Fetched::current(&cache_path))
     } else {
         // Direct URL: validated against the origin's ETag on every run, so the
         // age rule only decides things when validators are unavailable.
         let client = http_cache::client(http_cache::CHECK_TIMEOUT)?;
-        if http_cache::check(
-            &client,
-            feed_id,
-            &cache_path,
-            cache::MAX_CACHE_AGE,
-            &format!("Feed '{}'", feed_id),
-        ) == http_cache::CacheState::Current
+        if !force_download
+            && http_cache::check(
+                &client,
+                feed_id,
+                &cache_path,
+                cache::MAX_CACHE_AGE,
+                &format!("Feed '{}'", feed_id),
+            ) == http_cache::CacheState::Current
         {
             eprintln!("Using cached GTFS: {:?}", cache_path);
-            return Ok(cache_path);
+            return Ok(Fetched::current(&cache_path));
         }
 
         eprintln!("Downloading GTFS from: {}", feed_id);
@@ -209,7 +224,7 @@ mod tests {
         let url =
             "https://api.gtfs-data.jp/v2/organizations/arakawacity/feeds/sakura/files/feed.zip";
 
-        let path = super::fetch_gtfs(url, None, &dir).unwrap();
+        let path = super::fetch_gtfs(url, None, &dir, false).unwrap().path;
         let downloaded = std::fs::metadata(&path).unwrap().modified().unwrap();
         assert!(std::fs::metadata(&path).unwrap().len() > 0);
         assert!(
@@ -217,9 +232,10 @@ mod tests {
             "download must record the origin's validators"
         );
 
-        let again = super::fetch_gtfs(url, None, &dir).unwrap();
+        let again = super::fetch_gtfs(url, None, &dir, false).unwrap();
+        assert!(!again.fell_back);
         assert_eq!(
-            std::fs::metadata(&again).unwrap().modified().unwrap(),
+            std::fs::metadata(&again.path).unwrap().modified().unwrap(),
             downloaded,
             "unchanged feed must not be re-downloaded"
         );

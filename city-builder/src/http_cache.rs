@@ -217,13 +217,13 @@ pub fn download_or_cached(
     cache_path: &Path,
     max_age: Duration,
     label: &str,
-) -> Result<PathBuf> {
+) -> Result<Fetched> {
     let tmp = tmp_path(cache_path);
     let err = match download(client, url, &tmp) {
         Ok((bytes, validators)) => {
             eprintln!("Downloaded {}: {:.1} MB", label, bytes as f64 / 1_048_576.0);
             save(cache_path, &tmp, &validators)?;
-            return Ok(cache_path.to_path_buf());
+            return Ok(Fetched::current(cache_path));
         }
         Err(e) => {
             let _ = std::fs::remove_file(&tmp);
@@ -240,7 +240,10 @@ pub fn download_or_cached(
             cache_path,
             checked_days_ago(cache_path)
         );
-        return Ok(cache_path.to_path_buf());
+        return Ok(Fetched {
+            path: cache_path.to_path_buf(),
+            fell_back: true,
+        });
     }
     if cache_path.exists() {
         return Err(err.context(format!(
@@ -252,6 +255,25 @@ pub fn download_or_cached(
         )));
     }
     Err(err)
+}
+
+/// A cache file that a fetch resolved to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Fetched {
+    pub path: PathBuf,
+    /// The download failed and a previously confirmed cached copy was used
+    /// instead. The file may be behind upstream, so a build made from it
+    /// must not be recorded as current.
+    pub fell_back: bool,
+}
+
+impl Fetched {
+    pub fn current(path: &Path) -> Self {
+        Self {
+            path: path.to_path_buf(),
+            fell_back: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -491,7 +513,8 @@ mod tests {
         backdate(&cache_path, 40);
         backdate(&sidecar_path(&cache_path), 7);
         let got = download_or_cached(&client, url, url, &cache_path, month, "PBF").unwrap();
-        assert_eq!(got, cache_path);
+        assert_eq!(got.path, cache_path);
+        assert!(got.fell_back, "must report that the cached copy was used");
 
         // Not confirmed in over a month → refuse.
         backdate(&sidecar_path(&cache_path), 31);
