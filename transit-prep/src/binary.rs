@@ -1,6 +1,6 @@
 use crate::graph::{OsmEdge, OsmNode};
 use crate::gtfs::{Color, ServicePattern, Stop};
-use anyhow::Result;
+use anyhow::{Result, ensure};
 use std::io::Write;
 use std::path::Path;
 
@@ -144,10 +144,10 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
     let num_stops = data.stops.len();
     let mut old_node_to_old_stop: Vec<u32> = vec![u32::MAX; num_nodes];
     for &(si, ni) in &data.stop_to_node {
-        debug_assert_eq!(
-            old_node_to_old_stop[ni as usize],
-            u32::MAX,
-            "node {ni} already mapped to a stop"
+        ensure!(
+            old_node_to_old_stop[ni as usize] == u32::MAX,
+            "node {ni} carries stops {} and {si}; the format needs one stop per node",
+            old_node_to_old_stop[ni as usize]
         );
         old_node_to_old_stop[ni as usize] = si;
     }
@@ -176,13 +176,15 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
     let mut old_to_new_stop: Vec<u32> = vec![u32::MAX; num_stops];
     for &(si, old_ni) in &data.stop_to_node {
         let new_ni = old_to_new[old_ni as usize];
-        debug_assert!(
+        ensure!(
             (new_ni as usize) < num_stops,
             "stop-bearing node landed at {new_ni} outside [0, {num_stops})"
         );
         old_to_new_stop[si as usize] = new_ni;
     }
-    debug_assert!(
+    // In release this used to be a debug_assert, and a stop without a node
+    // then panicked as `stops[u32::MAX]` further down.
+    ensure!(
         old_to_new_stop.iter().all(|&s| (s as usize) < num_stops),
         "every stop must map to a slot in [0, num_stops)"
     );

@@ -554,26 +554,24 @@ pub fn snap_stops_to_nodes(stops: &[Stop], graph: &mut OsmGraph) -> Vec<(u32, u3
                 }
             };
 
-            // Create stop node at the original stop position and connect it.
-            // If snap.dist is 0 the stop is exactly on the edge; reuse conn_node
-            // directly so we don't create an isolated zero-distance duplicate,
-            // unless the conn_node is an existing node.
-            if snap.dist > 0.0 || conn_node == orig_u || conn_node == orig_v {
-                let stop_node = graph.nodes.len() as u32;
-                graph.nodes.push(OsmNode {
-                    lat: stops[snap.stop_index as usize].lat,
-                    lon: stops[snap.stop_index as usize].lon,
-                    index: stop_node,
-                });
-                graph.edges.push(OsmEdge {
-                    u: stop_node,
-                    v: conn_node,
-                    distance_meters: snap.dist as f32,
-                });
-                mapping.push((snap.stop_index, stop_node));
-            } else {
-                mapping.push((snap.stop_index, conn_node));
-            }
+            // Create a stop node at the original stop position and connect
+            // it. Always a fresh node, even when the stop lies exactly on the
+            // edge: reusing `conn_node` for a zero-distance snap let two stops
+            // share one node whenever the second snap landed on the first's
+            // projection node, and the binary format requires exactly one
+            // stop per node. The 0 m edge costs the 1 s walk-time floor.
+            let stop_node = graph.nodes.len() as u32;
+            graph.nodes.push(OsmNode {
+                lat: stops[snap.stop_index as usize].lat,
+                lon: stops[snap.stop_index as usize].lon,
+                index: stop_node,
+            });
+            graph.edges.push(OsmEdge {
+                u: stop_node,
+                v: conn_node,
+                distance_meters: snap.dist as f32,
+            });
+            mapping.push((snap.stop_index, stop_node));
         }
 
         // Final segment from last split point to original endpoint v
