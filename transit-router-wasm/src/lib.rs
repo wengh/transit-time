@@ -10,7 +10,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ops::ControlFlow;
 
-use chrono::{Duration, NaiveDate};
+use chrono::Duration;
 use serde::Serialize;
 use transit_data::PreparedData;
 use transit_router::path_display;
@@ -282,9 +282,13 @@ impl TransitRouter {
         self.inner.data().patterns[idx as usize].day_mask
     }
 
+    /// Number of patterns active on `date` (YYYYMMDD). `0` when `date` is
+    /// not a valid calendar date.
     pub fn num_patterns_for_date(&self, date: u32) -> u32 {
-        let nd = decode_yyyymmdd(date);
-        self.inner.patterns_for_date(nd) as u32
+        match transit_data::yyyymmdd_to_naive_date_opt(date) {
+            Some(nd) => self.inner.patterns_for_date(nd) as u32,
+            None => 0,
+        }
     }
 
     pub fn snap_to_node(&self, lat: f64, lon: f64) -> Option<u32> {
@@ -296,7 +300,10 @@ impl TransitRouter {
     /// internal Pareto frontier (for subsequent `optimal_paths` queries).
     ///
     /// `progress_cb`: called with `(done, total)` from the transit phase;
-    /// returning truthy from JS cancels and produces `None`.
+    /// returning truthy from JS cancels and produces `None`. Invalid input
+    /// (an invalid `date`, a `max_time` of zero or ≥ 65535 s, …) also
+    /// yields `None` rather than trapping: a wasm-bindgen panic would kill
+    /// the worker.
     pub fn compute_profile(
         &self,
         source_node: u32,
@@ -308,9 +315,10 @@ impl TransitRouter {
         progress_cb: Option<js_sys::Function>,
         is_warmup: bool,
     ) -> Option<WasmProfileRouting> {
+        let date = transit_data::yyyymmdd_to_naive_date_opt(date)?;
         let params = IsochroneParams {
             source: NodeId(source_node),
-            date: decode_yyyymmdd(date),
+            date,
             window: TimeWindow {
                 start: SinceMidnight::from_seconds(window_start),
                 end: SinceMidnight::from_seconds(window_end),
@@ -354,9 +362,4 @@ impl TransitRouter {
         };
         path_display::segment_shape(self.inner.data(), ri, &nodes)
     }
-}
-
-fn decode_yyyymmdd(date: u32) -> NaiveDate {
-    transit_data::yyyymmdd_to_naive_date_opt(date)
-        .unwrap_or_else(|| panic!("invalid YYYYMMDD from JS boundary: {date}"))
 }

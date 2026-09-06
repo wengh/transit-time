@@ -146,7 +146,7 @@ impl Default for IsochroneParams {
                 start: SinceMidnight::ZERO,
                 end: SinceMidnight::ZERO,
             },
-            max_time: Duration::zero(),
+            max_time: Duration::minutes(45),
             transfer_slack: Duration::zero(),
             max_parallelism: None,
         }
@@ -262,13 +262,41 @@ impl Router {
         if params.window.end < params.window.start {
             return Err(RouterError::InvalidParams("window.end < window.start"));
         }
+        // The engine stores times as u16 deltas from the window start and uses
+        // `u16::MAX` as its walk-unreachable sentinel, so `max_time` must be
+        // strictly positive and below that sentinel. Checking here turns what
+        // would be an engine `assert!` (a WASM trap that kills the worker)
+        // into an ordinary error.
+        let max_time = params.max_time.num_seconds();
+        if max_time <= 0 {
+            return Err(RouterError::InvalidParams("max_time must be positive"));
+        }
+        if max_time >= u16::MAX as i64 {
+            return Err(RouterError::InvalidParams(
+                "max_time must be below 65535 seconds",
+            ));
+        }
+        let max_time = max_time as u32;
+        let transfer_slack = u32::try_from(params.transfer_slack.num_seconds().max(0))
+            .map_err(|_| RouterError::InvalidParams("transfer_slack does not fit in u32"))?;
+        if params
+            .window
+            .end
+            .as_seconds()
+            .checked_add(max_time)
+            .is_none()
+        {
+            return Err(RouterError::InvalidParams(
+                "window.end + max_time overflows u32",
+            ));
+        }
         let query = ProfileQuery {
             source_node: params.source.get(),
             window_start: params.window.start.as_seconds(),
             window_end: params.window.end.as_seconds(),
             date: params.date,
-            transfer_slack: params.transfer_slack.num_seconds().max(0) as u32,
-            max_time: params.max_time.num_seconds().max(0) as u32,
+            transfer_slack,
+            max_time,
             is_warmup,
             max_parallelism: params.max_parallelism,
         };
