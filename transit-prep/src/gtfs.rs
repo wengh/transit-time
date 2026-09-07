@@ -219,15 +219,6 @@ struct TripRecord {
 }
 
 #[derive(Deserialize)]
-struct StopTimeRecord {
-    trip_id: String,
-    stop_id: String,
-    arrival_time: Option<String>,
-    departure_time: Option<String>,
-    stop_sequence: String,
-}
-
-#[derive(Deserialize)]
 struct CalendarRecord {
     service_id: String,
     monday: String,
@@ -254,14 +245,6 @@ struct FrequencyRecord {
     start_time: String,
     end_time: String,
     headway_secs: String,
-}
-
-#[derive(Deserialize)]
-struct ShapeRecord {
-    shape_id: String,
-    shape_pt_lat: String,
-    shape_pt_lon: String,
-    shape_pt_sequence: String,
 }
 
 /// Parse a numeric CSV field, naming the feed, file, data row (1-based,
@@ -599,18 +582,35 @@ pub fn parse_gtfs(path: &Path, bbox: (f64, f64, f64, f64)) -> Result<GtfsData> {
             .flexible(true)
             .trim(csv::Trim::All)
             .from_reader(entry);
-        for result in rdr.deserialize::<ShapeRecord>() {
-            if let Ok(record) = result
-                && let (Ok(lat), Ok(lon), Ok(seq)) = (
-                    record.shape_pt_lat.parse::<f64>(),
-                    record.shape_pt_lon.parse::<f64>(),
-                    record.shape_pt_sequence.parse::<u32>(),
-                )
-            {
-                shapes
-                    .entry(record.shape_id)
-                    .or_default()
-                    .push((lat, lon, seq));
+        // Reused byte record; the shape id is only copied when first seen.
+        // Malformed rows are skipped, as before.
+        let headers = rdr.byte_headers()?.clone();
+        let col = |name: &str| headers.iter().position(|h| h == name.as_bytes());
+        if let (Some(c_id), Some(c_lat), Some(c_lon), Some(c_seq)) = (
+            col("shape_id"),
+            col("shape_pt_lat"),
+            col("shape_pt_lon"),
+            col("shape_pt_sequence"),
+        ) {
+            let mut record = csv::ByteRecord::new();
+            while rdr.read_byte_record(&mut record)? {
+                let parsed = (|| {
+                    let id = std::str::from_utf8(record.get(c_id)?).ok()?;
+                    let num = |i: usize| std::str::from_utf8(record.get(i)?).ok();
+                    let lat: f64 = num(c_lat)?.parse().ok()?;
+                    let lon: f64 = num(c_lon)?.parse().ok()?;
+                    let seq: u32 = num(c_seq)?.parse().ok()?;
+                    Some((id, lat, lon, seq))
+                })();
+                let Some((id, lat, lon, seq)) = parsed else {
+                    continue;
+                };
+                match shapes.get_mut(id) {
+                    Some(pts) => pts.push((lat, lon, seq)),
+                    None => {
+                        shapes.insert(id.to_string(), vec![(lat, lon, seq)]);
+                    }
+                }
             }
         }
     }
@@ -677,26 +677,43 @@ fn for_each_stop_time_row(
         .flexible(true)
         .trim(csv::Trim::All)
         .from_reader(entry);
-    for (row, result) in rdr.deserialize::<StopTimeRecord>().enumerate() {
-        let record = result?;
-        let Some(&trip_index) = trip_id_to_index.get(&record.trip_id) else {
+    // One reused byte record instead of five owned Strings per row: this is
+    // the largest file in a feed (NYC: 7.8 million rows), and the per-row
+    // allocations were most of the GTFS phase's time and heap churn.
+    let headers = rdr.byte_headers()?.clone();
+    let col = |name: &str| headers.iter().position(|h| h == name.as_bytes());
+    let (Some(c_trip), Some(c_stop), Some(c_seq)) =
+        (col("trip_id"), col("stop_id"), col("stop_sequence"))
+    else {
+        anyhow::bail!("{feed}: stop_times.txt lacks trip_id, stop_id or stop_sequence");
+    };
+    let (c_arr, c_dep) = (col("arrival_time"), col("departure_time"));
+    let mut record = csv::ByteRecord::new();
+    let mut row = 0usize;
+    while rdr.read_byte_record(&mut record)? {
+        row += 1;
+        let text = |i: usize| -> Result<&str> {
+            std::str::from_utf8(record.get(i).unwrap_or(b""))
+                .with_context(|| format!("{feed}: stop_times.txt row {row}: invalid UTF-8"))
+        };
+        let Some(&trip_index) = trip_id_to_index.get(text(c_trip)?) else {
             continue;
         };
-        let Some(&stop_index) = stop_id_to_index.get(&record.stop_id) else {
+        let Some(&stop_index) = stop_id_to_index.get(text(c_stop)?) else {
             continue;
+        };
+        let time = |c: Option<usize>| -> Result<Option<u32>> {
+            Ok(match c {
+                Some(i) => parse_time(text(i)?),
+                None => None,
+            })
         };
         let raw = RawStopTime {
             trip_index,
             stop_index,
-            arrival: record.arrival_time.as_deref().and_then(parse_time),
-            departure: record.departure_time.as_deref().and_then(parse_time),
-            stop_sequence: parse_field(
-                &record.stop_sequence,
-                feed,
-                "stop_times.txt",
-                row + 1,
-                "stop_sequence",
-            )?,
+            arrival: time(c_arr)?,
+            departure: time(c_dep)?,
+            stop_sequence: parse_field(text(c_seq)?, feed, "stop_times.txt", row, "stop_sequence")?,
         };
         if !on_row(raw) {
             break;

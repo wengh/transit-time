@@ -8,7 +8,7 @@ use anyhow::Result;
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
-use crate::shape_match::match_stops_to_shape;
+use crate::shape_match::{ShapeMatch, match_stops_to_shape};
 use crate::stale::{apply_stale_policy, unix_days_now, warn_if_expired};
 use crate::{binary, graph, gtfs};
 
@@ -356,33 +356,14 @@ fn build_leg_shapes(
     let center_lat = (min_lat + max_lat) / 2.0;
     let cos_lat = center_lat.to_radians().cos();
 
-    type LegEntry = (f64, Vec<(f64, f64)>);
-    type LegMap = HashMap<(u32, u32, u32), LegEntry>;
-    type KeyedLegs = Vec<((u32, u32, u32), LegEntry)>;
-
-    /// Keep the better-quality (lower max projection distance) leg per key.
-    fn insert_best(map: &mut LegMap, key: (u32, u32, u32), entry: LegEntry) {
-        use std::collections::hash_map::Entry;
-        match map.entry(key) {
-            Entry::Occupied(mut o) => {
-                // Strictly better quality wins; on a tie the lexicographically
-                // smaller polyline does, so the parallel fold/reduce order
-                // cannot change the output.
-                let cur = o.get();
-                if entry.0 < cur.0 || (entry.0 == cur.0 && entry.1 < cur.1) {
-                    o.insert(entry);
-                }
-            }
-            Entry::Vacant(v) => {
-                v.insert(entry);
-            }
-        }
-    }
-
-    // (trips matched, legs) per group
-    let group_results: Vec<(usize, KeyedLegs)> = groups
+    // Phase 1: match every group once and keep only the projections. The
+    // polylines are built in phase 2 for the winning leg per key alone;
+    // building them for every group first (and deduplicating afterwards)
+    // held hundreds of MB of polylines that were then thrown away, and was
+    // NYC's peak.
+    let matched: Vec<Option<Vec<ShapeMatch>>> = groups
         .par_iter()
-        .map(|((shape_id, stops), group)| {
+        .map(|((shape_id, stops), _)| {
             let shape = &gtfs_data.shapes[*shape_id];
             let stop_coords: Vec<(f64, f64)> = stops
                 .iter()
@@ -391,80 +372,89 @@ fn build_leg_shapes(
                     (stop.lat, stop.lon)
                 })
                 .collect();
-            let Some(shape_matches) = match_stops_to_shape(&stop_coords, shape, cos_lat) else {
-                return (0, Vec::new());
-            };
-
-            let mut legs: Vec<((u32, u32), LegEntry)> = Vec::with_capacity(stops.len() - 1);
-            for w in 0..stops.len() - 1 {
-                let (from_stop, to_stop) = (stops[w], stops[w + 1]);
-                if from_stop == to_stop {
-                    continue;
-                }
-                let mf = shape_matches[w];
-                let mt = shape_matches[w + 1];
-                let quality = mf.dist_sq.max(mt.dist_sq);
-
-                let forward = (mf.seg_idx, mf.t) <= (mt.seg_idx, mt.t);
-                let span = mf.seg_idx.abs_diff(mt.seg_idx);
-                let mut leg_points = Vec::with_capacity(span + 2);
-                leg_points.push(mf.proj);
-                if forward {
-                    if mf.seg_idx < mt.seg_idx {
-                        leg_points.extend_from_slice(&shape[mf.seg_idx + 1..=mt.seg_idx]);
-                    }
-                } else if mt.seg_idx < mf.seg_idx {
-                    leg_points.extend(shape[mt.seg_idx + 1..=mf.seg_idx].iter().rev().copied());
-                }
-                leg_points.push(mt.proj);
-                legs.push(((from_stop, to_stop), (quality, leg_points)));
-            }
-
-            // Expand to every route that uses this key; only the last route
-            // takes the points by move.
-            let mut out = Vec::with_capacity(legs.len() * group.routes.len());
-            let last = group.routes.len().saturating_sub(1);
-            for (ri, &route) in group.routes.iter().enumerate() {
-                if ri == last {
-                    out.extend(legs.drain(..).map(|((f, t), e)| ((route, f, t), e)));
-                } else {
-                    out.extend(legs.iter().map(|((f, t), e)| ((route, *f, *t), e.clone())));
-                }
-            }
-            (group.trips, out)
+            match_stops_to_shape(&stop_coords, shape, cos_lat)
         })
         .collect();
 
-    let trips_matched: usize = group_results.iter().map(|(n, _)| n).sum();
+    // Best quality (lowest max projection distance) per key, keeping every
+    // candidate that ties so phase 2 can break the tie the same way as
+    // before: by the lexicographically smaller polyline.
+    /// Best quality so far and the `(group, leg)` candidates that share it.
+    type Best = (f64, Vec<(u32, u32)>);
+    let mut best: HashMap<(u32, u32, u32), Best> = HashMap::new();
+    let mut trips_matched = 0usize;
+    for (gi, ((_, stops), group)) in groups.iter().enumerate() {
+        let Some(matches) = &matched[gi] else {
+            continue;
+        };
+        trips_matched += group.trips;
+        for w in 0..stops.len() - 1 {
+            let (from_stop, to_stop) = (stops[w], stops[w + 1]);
+            if from_stop == to_stop {
+                continue;
+            }
+            let quality = matches[w].dist_sq.max(matches[w + 1].dist_sq);
+            for &route in &group.routes {
+                let cand = (gi as u32, w as u32);
+                match best.entry((route, from_stop, to_stop)) {
+                    std::collections::hash_map::Entry::Vacant(v) => {
+                        v.insert((quality, vec![cand]));
+                    }
+                    std::collections::hash_map::Entry::Occupied(mut o) => {
+                        let cur = o.get_mut();
+                        if quality < cur.0 {
+                            *cur = (quality, vec![cand]);
+                        } else if quality == cur.0 {
+                            cur.1.push(cand);
+                        }
+                    }
+                }
+            }
+        }
+    }
 
-    let best_legs: LegMap = group_results
+    let polyline = |gi: u32, w: u32| -> Vec<(f64, f64)> {
+        let ((shape_id, _), _) = &groups[gi as usize];
+        let shape = &gtfs_data.shapes[*shape_id];
+        let matches = matched[gi as usize]
+            .as_ref()
+            .expect("candidate group matched");
+        let (mf, mt) = (matches[w as usize], matches[w as usize + 1]);
+        let forward = (mf.seg_idx, mf.t) <= (mt.seg_idx, mt.t);
+        let span = mf.seg_idx.abs_diff(mt.seg_idx);
+        let mut leg_points = Vec::with_capacity(span + 2);
+        leg_points.push(mf.proj);
+        if forward {
+            if mf.seg_idx < mt.seg_idx {
+                leg_points.extend_from_slice(&shape[mf.seg_idx + 1..=mt.seg_idx]);
+            }
+        } else if mt.seg_idx < mf.seg_idx {
+            leg_points.extend(shape[mt.seg_idx + 1..=mf.seg_idx].iter().rev().copied());
+        }
+        leg_points.push(mt.proj);
+        leg_points
+    };
+
+    // Phase 2: polylines for the winners only.
+    let mut leg_shapes: Vec<binary::LegShape> = best
         .into_par_iter()
-        .map(|(_, legs)| legs)
-        .fold(LegMap::new, |mut acc, legs| {
-            for (key, entry) in legs {
-                insert_best(&mut acc, key, entry);
-            }
-            acc
+        .map(|(key, (_, cands))| {
+            let pts = cands
+                .iter()
+                .map(|&(gi, w)| polyline(gi, w))
+                .min_by(|a, b| a.partial_cmp(b).expect("finite coordinates"))
+                .expect("at least one candidate");
+            (key, pts)
         })
-        .reduce(LegMap::new, |mut a, b| {
-            for (key, entry) in b {
-                insert_best(&mut a, key, entry);
-            }
-            a
-        });
+        .collect();
+    leg_shapes.sort_by_key(|&(k, _)| k);
 
     eprintln!(
         "  {} trips with shapes, {} matched successfully ({} distinct shape/stop sequences), {} leg shapes",
         trips_with_shape,
         trips_matched,
         groups.len(),
-        best_legs.len()
+        leg_shapes.len()
     );
-
-    let mut leg_shapes: Vec<binary::LegShape> = best_legs
-        .into_iter()
-        .map(|(k, (_, pts))| (k, pts))
-        .collect();
-    leg_shapes.sort_by_key(|&(k, _)| k);
     leg_shapes
 }
