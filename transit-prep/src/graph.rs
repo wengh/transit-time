@@ -303,12 +303,14 @@ fn build_graph_from_raw(raw: RawOsmData) -> Result<OsmGraph> {
         }
     }
 
-    // Graph nodes: intersections + endpoints
-    let graph_node_ids: HashSet<u64> = node_usage_count
+    // Graph nodes: intersections + endpoints, in OSM id order so node
+    // numbering (and everything downstream of it) is reproducible.
+    let mut graph_node_ids: Vec<u64> = node_usage_count
         .iter()
         .filter(|&(_, &count)| count >= 2)
         .map(|(&id, _)| id)
         .collect();
+    graph_node_ids.sort_unstable();
 
     // Create indexed node list
     let mut node_id_to_index: HashMap<u64, u32> = HashMap::new();
@@ -496,8 +498,11 @@ pub fn snap_stops_to_nodes(stops: &[Stop], graph: &mut OsmGraph) -> Vec<(u32, u3
 
     let skipped = stops.len() - snap_results.len();
 
-    // Pass 2: Group snaps by edge, sort by t, mutate graph
-    let mut snaps_by_edge: HashMap<usize, Vec<usize>> = HashMap::new();
+    // Pass 2: Group snaps by edge, sort by t, mutate graph. Ordered by edge
+    // index: the iteration order decides the numbering of the new nodes,
+    // and a HashMap made it vary from run to run.
+    let mut snaps_by_edge: std::collections::BTreeMap<usize, Vec<usize>> =
+        std::collections::BTreeMap::new();
     for (i, snap) in snap_results.iter().enumerate() {
         snaps_by_edge.entry(snap.edge_index).or_default().push(i);
     }
@@ -905,6 +910,9 @@ pub fn collapse_degree2_nodes(
                 distance_meters: d,
             })
             .collect();
+        // HashMap order is not reproducible; edge order decides adjacency
+        // order, so fix it.
+        graph.edges.sort_unstable_by_key(|e| (e.u, e.v));
         let remap = retain_nodes(graph, &keep);
         stop_to_node = stop_to_node
             .into_iter()

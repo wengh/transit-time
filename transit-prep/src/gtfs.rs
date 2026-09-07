@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use rayon::prelude::*;
 use serde::Deserialize;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io::Read;
 use std::path::Path;
 
@@ -632,7 +632,14 @@ pub fn parse_gtfs(path: &Path, bbox: (f64, f64, f64, f64)) -> Result<GtfsData> {
         routes,
         trips,
         stop_times,
-        services: services.into_values().collect(),
+        services: {
+            // HashMap order would make service indices — and with them trip
+            // order inside a pattern and event tie order at a stop — vary
+            // from run to run.
+            let mut v: Vec<Service> = services.into_values().collect();
+            v.sort_by(|a, b| a.id.cmp(&b.id));
+            v
+        },
         frequencies,
         shapes,
         feed_start_date,
@@ -1014,7 +1021,9 @@ pub fn build_service_patterns(data: &GtfsData) -> Vec<ServicePattern> {
                 added_dates: adds,
                 removed_dates: removes,
             } = key;
-            let service_ids: HashSet<&str> = services.iter().map(|s| s.id.as_str()).collect();
+            // Ordered set: iteration order is what makes the pattern's event
+            // order reproducible (a HashSet varied it from run to run).
+            let service_ids: BTreeSet<&str> = services.iter().map(|s| s.id.as_str()).collect();
 
             // Find min/max departure times for trips in this pattern
             let mut min_time = u32::MAX;

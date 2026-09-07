@@ -340,7 +340,11 @@ fn build_leg_shapes(
         use std::collections::hash_map::Entry;
         match map.entry(key) {
             Entry::Occupied(mut o) => {
-                if entry.0 < o.get().0 {
+                // Strictly better quality wins; on a tie the lexicographically
+                // smaller polyline does, so the parallel fold/reduce order
+                // cannot change the output.
+                let cur = o.get();
+                if entry.0 < cur.0 || (entry.0 == cur.0 && entry.1 < cur.1) {
                     o.insert(entry);
                 }
             }
