@@ -12,6 +12,20 @@ use crate::shape_match::match_stops_to_shape;
 use crate::stale::{apply_stale_policy, unix_days_now, warn_if_expired};
 use crate::{binary, graph, gtfs};
 
+/// Hand freed heap memory back to the OS. glibc keeps what a thread freed
+/// in that thread's arena, so after the parallel phases (per-feed GTFS
+/// parsing, the blob-parallel PBF decode) the process sat 150-250 MB above
+/// its live data for the rest of the build, and that showed up as the
+/// build's peak. Called at phase boundaries; a no-op elsewhere.
+fn release_freed_memory() {
+    #[cfg(target_os = "linux")]
+    // SAFETY: malloc_trim only releases memory the allocator already
+    // considers free; it has no preconditions.
+    unsafe {
+        libc::malloc_trim(0);
+    }
+}
+
 fn build_remap(used: &BTreeSet<u32>) -> HashMap<u32, u32> {
     used.iter()
         .enumerate()
@@ -72,6 +86,7 @@ pub fn prepare(
     for (ordinal, data) in parsed {
         gtfs_data.merge(data, ordinal);
     }
+    release_freed_memory();
 
     eprintln!("\n--- GTFS summary ---");
     eprintln!(
@@ -114,6 +129,8 @@ pub fn prepare(
         osm_graph.nodes.len(),
         osm_graph.edges.len(),
     );
+
+    release_freed_memory();
 
     eprintln!("\n--- Snapping stops to OSM edges ---");
     let stop_to_node = graph::snap_stops_to_nodes(&gtfs_data.stops, &mut osm_graph);
@@ -248,11 +265,19 @@ pub fn prepare(
     eprintln!("\n--- Building leg shapes ---");
     let leg_shapes = build_leg_shapes(&gtfs_data, &route_remap, (min_lat, max_lat));
 
+    // Only the stops are still needed. Dropping the rest of the GTFS tables
+    // (stop_times alone is 20 bytes per row) before serialisation, which
+    // makes its own per-pattern copies, takes ~200 MB off the build's peak
+    // for schedule-heavy cities.
+    let stops = std::mem::take(&mut gtfs_data.stops);
+    drop(gtfs_data);
+    release_freed_memory();
+
     eprintln!("\n--- Writing binary output ---");
     let prepared = binary::PreparedData {
         nodes: osm_graph.nodes,
         edges: osm_graph.edges,
-        stops: gtfs_data.stops,
+        stops,
         stop_to_node,
         patterns,
         route_names,

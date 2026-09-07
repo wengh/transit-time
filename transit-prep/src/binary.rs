@@ -1,6 +1,7 @@
 use crate::graph::{OsmEdge, OsmNode};
 use crate::gtfs::{Color, ServicePattern, Stop};
 use anyhow::{Context, Result, ensure};
+use rayon::prelude::*;
 use std::io::Write;
 use std::path::Path;
 
@@ -382,6 +383,8 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
             }
         }
 
+        drop(flat_events);
+
         // Compute next_event_index within each trip (indices into with_sentinels)
         let total = with_sentinels.len();
         let mut next_event_index = vec![u32::MAX; total];
@@ -405,9 +408,14 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
             inv[old_pos as usize] = new_pos as u32;
         }
 
-        // Apply permutation and remap next_event_index
-        let sorted_events: Vec<FlatEvent> =
-            order.iter().map(|&i| with_sentinels[i as usize]).collect();
+        // Columns in sorted order, read through the permutation: no sorted
+        // copy of the event list is materialised.
+        let sorted = |f: &dyn Fn(&FlatEvent) -> u32| -> Vec<u32> {
+            order
+                .iter()
+                .map(|&i| f(&with_sentinels[i as usize]))
+                .collect()
+        };
         let remapped_nei: Vec<u32> = order
             .iter()
             .map(|&i| {
@@ -419,6 +427,9 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
                 }
             })
             .collect();
+        drop(inv);
+        drop(next_event_index);
+        let stop_col = sorted(&|e| e.stop_index);
 
         // Frequency rows sorted by stop so each stop's departures are one
         // contiguous slice; `next_freq_index` follows the permutation.
@@ -439,10 +450,10 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
             let mut ranges: std::collections::BTreeMap<u32, [u32; 4]> =
                 std::collections::BTreeMap::new();
             let mut i = 0;
-            while i < sorted_events.len() {
-                let stop = sorted_events[i].stop_index;
+            while i < stop_col.len() {
+                let stop = stop_col[i];
                 let start = i;
-                while i < sorted_events.len() && sorted_events[i].stop_index == stop {
+                while i < stop_col.len() && stop_col[i] == stop {
                     i += 1;
                 }
                 ensure!(stop < num_stops_u32, "event stop index {stop} out of range");
@@ -476,24 +487,21 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
         }
 
         // Serialize: num_events, 4 PCO columns (no route_index), sentinel_routes
-        // route_index will be reconstructed from sentinels at query time
-        write_u32(&mut buf, sorted_events.len() as u32);
-        let cols: [Vec<u32>; 4] = [
-            sorted_events.iter().map(|e| e.time_offset).collect(),
-            sorted_events.iter().map(|e| e.stop_index).collect(),
-            sorted_events.iter().map(|e| e.travel_time).collect(),
+        // (route_index for sentinels, i.e. travel_time == 0, else 0; the
+        // route is reconstructed from the sentinel at query time). The five
+        // columns are compressed in parallel.
+        write_u32(&mut buf, total as u32);
+        let cols: [Vec<u32>; 5] = [
+            sorted(&|e| e.time_offset),
+            stop_col,
+            sorted(&|e| e.travel_time),
             remapped_nei,
+            sorted(&|e| if e.travel_time == 0 { e.route_index } else { 0 }),
         ];
-        for col in &cols {
-            write_pco(&mut buf, col);
+        drop(with_sentinels);
+        for compressed in cols.par_iter().map(|c| pco_bytes(c)).collect::<Vec<_>>() {
+            write_pco_bytes(&mut buf, &compressed);
         }
-
-        // Sentinel routes: for each event, if it's a sentinel (travel_time == 0), store its route_index
-        let sentinel_routes: Vec<u32> = sorted_events
-            .iter()
-            .map(|e| if e.travel_time == 0 { e.route_index } else { 0 })
-            .collect();
-        write_pco(&mut buf, &sentinel_routes);
 
         // Frequency rows as PCO columns in stop order (raw rows in chain
         // order used to gzip well only because `next_freq_index` was `i+1`).
@@ -631,13 +639,20 @@ fn write_f64(buf: &mut Vec<u8>, v: f64) {
 /// Write one PCO column: `len: u32` followed by the compressed bytes. An
 /// empty column is written as `len = 0` with no payload, which the reader
 /// treats as an empty Vec.
-fn write_pco<T: pco::data_types::Number>(buf: &mut Vec<u8>, data: &[T]) {
-    let compressed = if data.is_empty() {
+fn pco_bytes<T: pco::data_types::Number>(data: &[T]) -> Vec<u8> {
+    if data.is_empty() {
         Vec::new()
     } else {
         pco::standalone::simple_compress(data, &pco::ChunkConfig::default())
             .expect("pco compress failed")
-    };
+    }
+}
+
+fn write_pco_bytes(buf: &mut Vec<u8>, compressed: &[u8]) {
     write_u32(buf, compressed.len() as u32);
-    buf.extend_from_slice(&compressed);
+    buf.extend_from_slice(compressed);
+}
+
+fn write_pco<T: pco::data_types::Number>(buf: &mut Vec<u8>, data: &[T]) {
+    write_pco_bytes(buf, &pco_bytes(data));
 }
