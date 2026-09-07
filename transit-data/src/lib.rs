@@ -5,7 +5,7 @@ use chrono::NaiveDate;
 
 /// Version of the `.bin` format this crate reads; `transit-prep` writes the
 /// same constant so writer and reader cannot drift apart silently.
-pub const FORMAT_VERSION: u32 = 12;
+pub const FORMAT_VERSION: u32 = 13;
 
 /// Spatial-grid cell size (degrees) shared by the node snapping index here,
 /// the stop-to-street snapping in `transit-prep`, and the query-time snap in
@@ -302,9 +302,22 @@ impl<T: Copy + Default> JaggedArray<T> {
     }
 }
 
-pub struct PatternStopIndex {
-    pub freq_by_stop: JaggedArray<u32>,
-    pub events_by_stop: JaggedArray<EventData>,
+/// One row of the sparse stop index: the slice of one pattern's `events`
+/// and `frequency_routes` that sits at one stop. Rows live in
+/// [`PreparedData::stop_patterns`], bucketed by stop, so the router can walk
+/// exactly the patterns serving a stop without a per-pattern array over
+/// every stop in the city (which cost 8 bytes × patterns × stops).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct StopPatternEntry {
+    pub pattern: u32,
+    /// `pattern.events[event_start..event_end]` are this stop's events,
+    /// ascending by `time_offset`. Empty for a stop the pattern only ever
+    /// arrives at by a frequency trip's final leg.
+    pub event_start: u32,
+    pub event_end: u32,
+    /// `pattern.frequency_routes[freq_start..freq_end]` depart this stop.
+    pub freq_start: u32,
+    pub freq_end: u32,
 }
 
 /// Backward chains for a pattern, mirroring the forward `next_event_index` /
@@ -312,7 +325,7 @@ pub struct PatternStopIndex {
 /// most once per pattern (see [`PatternData::pattern_reverse`]) and only
 /// consumed during path reconstruction.
 pub struct PatternReverse {
-    /// Same length as `stop_index.events_by_stop.data`. For event index `i`,
+    /// Same length as `events`. For event index `i`,
     /// holds the index of the event whose `next_event_index == i`, or
     /// `u32::MAX` if `i` is the first event of its trip (no predecessor).
     pub event_prev: Vec<u32>,
@@ -324,7 +337,7 @@ pub struct PatternReverse {
 
 impl PatternReverse {
     fn build(pat: &PatternData) -> Self {
-        let events = &pat.stop_index.events_by_stop.data;
+        let events = &pat.events;
         let mut event_prev = vec![u32::MAX; events.len()];
         for (i, e) in events.iter().enumerate() {
             if e.next_event_index != u32::MAX {
@@ -354,9 +367,11 @@ pub struct PatternData {
     pub date_exceptions_add: Vec<NaiveDate>,
     pub date_exceptions_remove: Vec<NaiveDate>,
     pub min_time: u32,
-    pub max_time: u32,
+    /// Sorted by `(stop_index, time_offset)`. Frequency rows are likewise
+    /// sorted by `stop_index`, so the ranges in [`StopPatternEntry`] are
+    /// contiguous slices of these two vectors.
     pub frequency_routes: Vec<FreqData>,
-    pub stop_index: PatternStopIndex,
+    pub events: Vec<EventData>,
     /// Maps flat event index to route_index for trip-end sentinel events
     /// (see `EventData::is_trip_end`).
     pub sentinel_routes: std::collections::HashMap<u32, u32>,
@@ -385,6 +400,10 @@ pub struct PreparedData {
     /// So `stop_to_node(s) = s` and `node_to_stop(n) = (n < num_stops).then_some(n)`.
     pub num_stops: usize,
     pub adj: JaggedArray<(u32, u16)>,
+    /// Sparse stop index (v13): row `s` lists every pattern with events or
+    /// frequency departures at stop `s` (plus patterns whose frequency trips
+    /// end there), ascending by pattern index.
+    pub stop_patterns: JaggedArray<StopPatternEntry>,
     /// Per-leg point-count prefix sum (length = num_legs + 1). Slice
     /// `leg_shapes_lat[offsets[i]..offsets[i+1]]` to get leg `i`'s lats.
     pub leg_shape_offsets: Vec<u32>,
@@ -568,7 +587,6 @@ pub fn load_with_stats(buf: &[u8]) -> Result<(PreparedData, LoadStats), String> 
     let mut total_freq = 0usize;
     let mut patterns = Vec::with_capacity(num_patterns);
     for pat_idx in 0..num_patterns {
-        let _pattern_id = r.u32()?;
         let day_mask = r.u8()?;
         let start_date = days_bound_to_naive_date(r.u32()? as i32)?;
         let end_date = days_bound_to_naive_date(r.u32()? as i32)?;
@@ -583,10 +601,9 @@ pub fn load_with_stats(buf: &[u8]) -> Result<(PreparedData, LoadStats), String> 
             date_exceptions_remove.push(days_to_naive_date(r.u32()? as i32)?);
         }
         let min_time = r.u32()?;
-        let max_time = r.u32()?;
 
-        // v3: events pre-sorted with sentinels and next_event_index precomputed
-        // 4 columns + sentinel_routes
+        // Events pre-sorted by (stop, time) with sentinels and
+        // next_event_index precomputed: 4 columns + sentinel_routes.
         let num_events = r.u32()? as usize;
         total_events += num_events;
 
@@ -594,7 +611,6 @@ pub fn load_with_stats(buf: &[u8]) -> Result<(PreparedData, LoadStats), String> 
         let stop_indices: Vec<u32> = r.pco()?;
         let travel_times: Vec<u32> = r.pco()?;
         let next_event_indices: Vec<u32> = r.pco()?;
-        let stop_offsets: Vec<u32> = r.pco()?;
         let sentinel_route_indices: Vec<u32> = r.pco()?;
 
         check_len("pattern event time_offsets", time_offsets.len(), num_events)?;
@@ -605,21 +621,11 @@ pub fn load_with_stats(buf: &[u8]) -> Result<(PreparedData, LoadStats), String> 
             next_event_indices.len(),
             num_events,
         )?;
-        check_len("pattern stop_offsets", stop_offsets.len(), num_stops + 1)?;
         check_len(
             "pattern sentinel_routes",
             sentinel_route_indices.len(),
             num_events,
         )?;
-        if stop_offsets.windows(2).any(|w| w[0] > w[1])
-            || stop_offsets
-                .last()
-                .is_some_and(|&last| last as usize != num_events)
-        {
-            return Err(format!(
-                "pattern {pat_idx}: stop_offsets are not a monotone prefix sum ending at {num_events}"
-            ));
-        }
 
         let mut data_vec: Vec<EventData> = Vec::with_capacity(num_events);
         for i in 0..num_events {
@@ -638,23 +644,53 @@ pub fn load_with_stats(buf: &[u8]) -> Result<(PreparedData, LoadStats), String> 
             });
         }
 
-        let events_by_stop = JaggedArray {
-            offsets: stop_offsets,
-            data: data_vec,
-        };
+        if data_vec
+            .windows(2)
+            .any(|w| (w[0].stop_index, w[0].time_offset) > (w[1].stop_index, w[1].time_offset))
+        {
+            return Err(format!(
+                "pattern {pat_idx}: events are not sorted by (stop_index, time_offset)"
+            ));
+        }
 
         let num_freq = r.u32()? as usize;
         total_freq += num_freq;
-        let mut freq_entries = Vec::with_capacity(num_freq.min(1 << 16));
-        for _ in 0..num_freq {
-            let route_index = r.u32()?;
-            let stop_index = r.u32()?;
-            let start_time = r.u32()?;
-            let end_time = r.u32()?;
-            let headway_secs = r.u32()?;
-            let next_stop_index = r.u32()?;
-            let travel_time = r.u32()?;
-            let next_freq_index = r.u32()?;
+        let fcols: [Vec<u32>; 8] = [
+            r.pco()?,
+            r.pco()?,
+            r.pco()?,
+            r.pco()?,
+            r.pco()?,
+            r.pco()?,
+            r.pco()?,
+            r.pco()?,
+        ];
+        for (name, c) in [
+            "route_index",
+            "stop_index",
+            "start_time",
+            "end_time",
+            "headway_secs",
+            "next_stop_index",
+            "travel_time",
+            "next_freq_index",
+        ]
+        .iter()
+        .zip(&fcols)
+        {
+            check_len(&format!("pattern freq {name}"), c.len(), num_freq)?;
+        }
+        let mut freq_entries = Vec::with_capacity(num_freq);
+        #[allow(clippy::needless_range_loop)] // eight parallel columns
+        for i in 0..num_freq {
+            let route_index = fcols[0][i];
+            let stop_index = fcols[1][i];
+            let start_time = fcols[2][i];
+            let end_time = fcols[3][i];
+            let headway_secs = fcols[4][i];
+            let next_stop_index = fcols[5][i];
+            let travel_time = fcols[6][i];
+            let next_freq_index = fcols[7][i];
             check_index("freq route_index", route_index, num_route_names, false)?;
             check_index("freq stop_index", stop_index, num_stops, false)?;
             check_index("freq next_stop_index", next_stop_index, num_stops, false)?;
@@ -670,13 +706,14 @@ pub fn load_with_stats(buf: &[u8]) -> Result<(PreparedData, LoadStats), String> 
                 next_freq_index,
             });
         }
-        let freq_indices: Vec<u32> = (0..num_freq as u32).collect();
-
-        let freq_by_stop = JaggedArray::build(
-            freq_indices,
-            |&i| freq_entries[i as usize].stop_index,
-            num_stops as u32,
-        );
+        if freq_entries
+            .windows(2)
+            .any(|w| w[0].stop_index > w[1].stop_index)
+        {
+            return Err(format!(
+                "pattern {pat_idx}: frequency rows are not sorted by stop_index"
+            ));
+        }
 
         // Build sentinel_routes for this pattern.
         //
@@ -701,18 +738,70 @@ pub fn load_with_stats(buf: &[u8]) -> Result<(PreparedData, LoadStats), String> 
             date_exceptions_add,
             date_exceptions_remove,
             min_time,
-            max_time,
             frequency_routes: freq_entries,
-            stop_index: PatternStopIndex {
-                freq_by_stop,
-                events_by_stop,
-            },
+            events: data_vec,
             sentinel_routes: pattern_sentinel_routes,
             reverse: std::sync::OnceLock::new(),
         });
     }
     binary_sections.push(("patterns", r.pos() - pos_before));
-    timings.push(("parse+index patterns", t0_patterns.elapsed()));
+    timings.push(("parse patterns", t0_patterns.elapsed()));
+
+    // Sparse stop index (v13): six columns, one row per (pattern, stop) pair
+    // in pattern-major order on disk; bucketed by stop here. The counting
+    // sort keeps input order within a bucket, so each stop's rows come out
+    // ascending by pattern.
+    let t0 = Instant::now();
+    let pos_before = r.pos();
+    let stop_patterns = {
+        let n = r.u32()? as usize;
+        let pattern: Vec<u32> = r.pco()?;
+        let stop: Vec<u32> = r.pco()?;
+        let event_start: Vec<u32> = r.pco()?;
+        let event_count: Vec<u32> = r.pco()?;
+        let freq_start: Vec<u32> = r.pco()?;
+        let freq_count: Vec<u32> = r.pco()?;
+        check_len("stop index pattern", pattern.len(), n)?;
+        check_len("stop index stop", stop.len(), n)?;
+        check_len("stop index event_start", event_start.len(), n)?;
+        check_len("stop index event_count", event_count.len(), n)?;
+        check_len("stop index freq_start", freq_start.len(), n)?;
+        check_len("stop index freq_count", freq_count.len(), n)?;
+        let mut rows = Vec::with_capacity(n);
+        for i in 0..n {
+            check_index("stop index pattern", pattern[i], num_patterns, false)?;
+            check_index("stop index stop", stop[i], num_stops, false)?;
+            let pat = &patterns[pattern[i] as usize];
+            let (es, ec, fs, fc) = (event_start[i], event_count[i], freq_start[i], freq_count[i]);
+            let ee = es
+                .checked_add(ec)
+                .ok_or("stop index event range overflow")?;
+            let fe = fs.checked_add(fc).ok_or("stop index freq range overflow")?;
+            if ee as usize > pat.events.len() || fe as usize > pat.frequency_routes.len() {
+                return Err(format!(
+                    "stop index row {i}: ranges {es}..{ee} / {fs}..{fe} exceed pattern {}",
+                    pattern[i]
+                ));
+            }
+            rows.push((
+                stop[i],
+                StopPatternEntry {
+                    pattern: pattern[i],
+                    event_start: es,
+                    event_end: ee,
+                    freq_start: fs,
+                    freq_end: fe,
+                },
+            ));
+        }
+        let bucketed = JaggedArray::build(rows, |&(stop, _)| stop, num_stops as u32);
+        JaggedArray {
+            offsets: bucketed.offsets,
+            data: bucketed.data.into_iter().map(|(_, e)| e).collect(),
+        }
+    };
+    binary_sections.push(("stop_index", r.pos() - pos_before));
+    timings.push(("parse stop_index", t0.elapsed()));
 
     // Leg shapes (v9): six global PCO columns. Decompress once at load time
     // into flat Vecs so per-hover lookups are a zero-allocation slice.
@@ -832,22 +921,23 @@ pub fn load_with_stats(buf: &[u8]) -> Result<(PreparedData, LoadStats), String> 
         route_colors.capacity() * std::mem::size_of::<Option<Color>>(),
     ));
 
-    // patterns: events_by_stop data + offsets + freq data + freq offsets + freq_entries
+    // patterns: flat events + frequency rows; the stop index is global
     let mut pat_events_mem = 0usize;
     let mut pat_freq_mem = 0usize;
     let mut pat_other_mem = 0usize;
     for p in &patterns {
-        pat_events_mem += p.stop_index.events_by_stop.data.capacity()
-            * std::mem::size_of::<EventData>()
-            + p.stop_index.events_by_stop.offsets.capacity() * 4;
-        pat_freq_mem += p.stop_index.freq_by_stop.data.capacity() * 4
-            + p.stop_index.freq_by_stop.offsets.capacity() * 4
-            + p.frequency_routes.capacity() * std::mem::size_of::<FreqData>();
+        pat_events_mem += p.events.capacity() * std::mem::size_of::<EventData>();
+        pat_freq_mem += p.frequency_routes.capacity() * std::mem::size_of::<FreqData>();
         pat_other_mem +=
             p.date_exceptions_add.capacity() * 4 + p.date_exceptions_remove.capacity() * 4;
     }
     memory_sections.push(("patterns/events", pat_events_mem));
     memory_sections.push(("patterns/freq", pat_freq_mem));
+    memory_sections.push((
+        "stop_index",
+        stop_patterns.offsets.capacity() * 4
+            + stop_patterns.data.capacity() * std::mem::size_of::<StopPatternEntry>(),
+    ));
     memory_sections.push(("patterns/other", pat_other_mem));
 
     // adj list: JaggedArray<(u32, u16)> — offsets + flat data
@@ -904,6 +994,7 @@ pub fn load_with_stats(buf: &[u8]) -> Result<(PreparedData, LoadStats), String> 
         num_edges,
         num_stops,
         adj,
+        stop_patterns,
         leg_shape_offsets,
         leg_shapes_lat,
         leg_shapes_lon,

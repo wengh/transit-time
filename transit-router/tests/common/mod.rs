@@ -20,7 +20,11 @@ fn fixture_path() -> &'static str {
     static ONCE: OnceLock<String> = OnceLock::new();
     ONCE.get_or_init(|| {
         let city = std::env::var("ROUTER_TEST_CITY").unwrap_or_else(|_| "chicago".to_string());
-        format!("../transit-viz/public/data/{city}.bin")
+        // ROUTER_TEST_DATA_DIR points the fixture lookup at another directory,
+        // e.g. freshly built files that should not replace the shipped ones.
+        let dir = std::env::var("ROUTER_TEST_DATA_DIR")
+            .unwrap_or_else(|_| "../transit-viz/public/data".to_string());
+        format!("{dir}/{city}.bin")
     })
     .as_str()
 }
@@ -169,8 +173,7 @@ pub fn stop_event_weights(
     let mut weights = vec![0u32; data.stops.len()];
     for &p_idx in patterns_for_date(data, date).iter() {
         let pat = &data.patterns[p_idx];
-        let events = &pat.stop_index.events_by_stop;
-        for e in &events.data {
+        for e in &pat.events {
             if e.time_offset >= window_start && e.time_offset <= window_end {
                 weights[e.stop_index as usize] += 1;
             }

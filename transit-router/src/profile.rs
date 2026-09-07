@@ -28,7 +28,7 @@ use radix_heap::RadixHeapMap;
 use rayon::prelude::*;
 
 use crate::{
-    data::{Instant, PreparedData},
+    data::{Instant, JaggedArray, PreparedData, StopPatternEntry},
     maybe_par_collect, maybe_par_unzip,
 };
 use serde::Serialize;
@@ -387,11 +387,11 @@ struct DestinationTotals {
 }
 
 struct Index {
-    /// Inverted index: per global stop_idx, the active patterns that actually
-    /// serve that stop (have ≥1 scheduled event or ≥1 frequency entry there).
-    /// Replaces the per-pop `O(active_patterns)` scan in `expand_transit_legs`
-    /// with `O(patterns_serving_this_stop)`. Populated once per query in `new`.
-    patterns_at_stop: Vec<Vec<u32>>,
+    /// `PreparedData::stop_patterns` restricted to the patterns active on the
+    /// query date: per stop, the (pattern, event range, frequency range) rows
+    /// `expand_transit_legs` and `recover_transit_leg` walk. Built once per
+    /// query in O(rows) from the persistent sparse index.
+    stop_patterns: JaggedArray<StopPatternEntry>,
     /// Walk-only travel time from the source to each node. `WALK_UNREACHABLE`
     /// means not reachable within `query.max_time`.
     walk_only_time: Vec<u16>,
@@ -1229,7 +1229,7 @@ impl ProfileRouting {
                         .expect("curr_node is a stop");
                     let route_index = match leg.transit_ref {
                         TransitRef::Scheduled { event_idx } => {
-                            let events = &pat.stop_index.events_by_stop.data;
+                            let events = &pat.events;
                             let mut curr_event_idx = event_idx;
                             let mut reached_end_stop = false;
                             let route_index = loop {
@@ -1367,33 +1367,28 @@ impl Index {
         );
         assert!(query.max_time >= 1, "max_time must be at least 1 second");
         let active_patterns = crate::router::patterns_for_date(data, query.date);
-        let num_stops = data.stops.len();
-        let mut patterns_at_stop: Vec<Vec<u32>> = vec![Vec::new(); num_stops];
+        let mut active = vec![false; data.patterns.len()];
         for &pat_idx in &active_patterns {
-            let pat = &data.patterns[pat_idx];
-            let evt_off = &pat.stop_index.events_by_stop.offsets;
-            let freq_off = &pat.stop_index.freq_by_stop.offsets;
-            for s in 0..num_stops {
-                if evt_off[s + 1] > evt_off[s] || freq_off[s + 1] > freq_off[s] {
-                    patterns_at_stop[s].push(pat_idx as u32);
-                }
-            }
-            // Frequency chains have no terminal-arrival sentinel like scheduled trips
-            // do (binary.rs trip-final sentinel), so the chain's last `next_stop_index`
-            // isn't indexed by `freq_by_stop`. Add it so recovery can find chains
-            // arriving here.
-            for f in &pat.frequency_routes {
-                if f.is_last_leg() {
-                    let s = f.next_stop_index as usize;
-                    if patterns_at_stop[s].last() != Some(&(pat_idx as u32)) {
-                        patterns_at_stop[s].push(pat_idx as u32);
-                    }
-                }
-            }
+            active[pat_idx] = true;
+        }
+        // Keep only the active patterns' rows so the per-pop loops below
+        // touch nothing else. Rows for a pattern's frequency-trip arrival
+        // stops are already present (prep emits them with empty ranges), so
+        // recovery can find chains ending at a stop without a special case.
+        let all = &data.stop_patterns;
+        let mut offsets = Vec::with_capacity(all.offsets.len());
+        let mut rows = Vec::with_capacity(all.data.len());
+        offsets.push(0u32);
+        for stop in 0..all.len() {
+            rows.extend(all[stop].iter().filter(|e| active[e.pattern as usize]));
+            offsets.push(rows.len() as u32);
         }
         let walk_only_time = compute_walk_only_times(data, query);
         Self {
-            patterns_at_stop,
+            stop_patterns: JaggedArray {
+                offsets,
+                data: rows,
+            },
             walk_only_time,
         }
     }
@@ -1537,12 +1532,13 @@ impl<'a> ProfileQueryContext<'a> {
             return;
         };
 
-        for &pat_idx in &self.index.patterns_at_stop[stop_idx as usize] {
+        for row in &self.index.stop_patterns[stop_idx] {
+            let pat_idx = row.pattern;
             let pat = &self.data.patterns[pat_idx as usize];
 
             // ── Scheduled ────────────────────────────────────────────────────
-            let stop_events = &pat.stop_index.events_by_stop[stop_idx];
-            let base = pat.stop_index.events_by_stop.offsets[stop_idx as usize] as usize;
+            let base = row.event_start as usize;
+            let stop_events = &pat.events[base..row.event_end as usize];
             let start = stop_events.partition_point(|e| e.time_offset < min_departure);
 
             for (j, event) in stop_events[start..].iter().enumerate() {
@@ -1557,7 +1553,7 @@ impl<'a> ProfileQueryContext<'a> {
                 let mut flat_idx = board_event_idx as usize;
 
                 loop {
-                    let cur = &pat.stop_index.events_by_stop.data[flat_idx];
+                    let cur = &pat.events[flat_idx];
                     if cur.is_trip_end() {
                         break;
                     }
@@ -1565,7 +1561,7 @@ impl<'a> ProfileQueryContext<'a> {
                     if arrival > max_arrival {
                         break;
                     }
-                    let next = &pat.stop_index.events_by_stop.data[cur.next_event_index as usize];
+                    let next = &pat.events[cur.next_event_index as usize];
                     visit(TransitLeg {
                         node_id: self.data.stop_to_node(next.stop_index),
                         board_delta,
@@ -1580,7 +1576,7 @@ impl<'a> ProfileQueryContext<'a> {
             }
 
             // ── Frequency-based ───────────────────────────────────────────────
-            for &fi in &pat.stop_index.freq_by_stop[stop_idx] {
+            for fi in row.freq_start..row.freq_end {
                 let freq = &pat.frequency_routes[fi as usize];
                 // A malformed feed can carry `headway_secs == 0`; skip the row
                 // rather than divide by zero below.
@@ -1762,13 +1758,12 @@ impl<'a> ProfileQueryContext<'a> {
         };
 
         // ── Scheduled events ───────────────────────────────────────────────
-        for &pat_idx in &index.patterns_at_stop[curr_stop as usize] {
+        for row in &index.stop_patterns[curr_stop] {
+            let pat_idx = row.pattern;
             let pat = &data.patterns[pat_idx as usize];
             let pat_rev = pat.pattern_reverse();
-            let events_data = &pat.stop_index.events_by_stop.data;
-            let off_lo = pat.stop_index.events_by_stop.offsets[curr_stop as usize] as usize;
-            let off_hi = pat.stop_index.events_by_stop.offsets[curr_stop as usize + 1] as usize;
-            for arr_idx in off_lo..off_hi {
+            let events_data = &pat.events;
+            for arr_idx in row.event_start as usize..row.event_end as usize {
                 let prev_idx = pat_rev.event_prev[arr_idx];
                 if prev_idx == u32::MAX {
                     continue; // Trip starts here — not an arrival.
@@ -1819,7 +1814,8 @@ impl<'a> ProfileQueryContext<'a> {
         }
 
         // ── Frequency-based legs ───────────────────────────────────────────
-        for &pat_idx in &index.patterns_at_stop[curr_stop as usize] {
+        for row in &index.stop_patterns[curr_stop] {
+            let pat_idx = row.pattern;
             let pat = &data.patterns[pat_idx as usize];
             let pat_rev = pat.pattern_reverse();
             let freqs = &pat.frequency_routes;

@@ -4,6 +4,10 @@ use anyhow::{Context, Result, ensure};
 use std::io::Write;
 use std::path::Path;
 
+/// One sparse-stop-index row before serialisation: `(stop, pattern,
+/// [event_start, event_end, freq_start, freq_end])`.
+type StopRow = (u32, u32, [u32; 4]);
+
 /// A transit leg's key `(route, from_stop, to_stop)` and its polyline `[(lat, lon)]`.
 pub type LegShape = ((u32, u32, u32), Vec<(f64, f64)>);
 
@@ -20,10 +24,10 @@ pub struct PreparedData {
     pub leg_shapes: Vec<LegShape>,
 }
 
-// Binary format v12 (all integers little-endian):
+// Binary format v13 (all integers little-endian):
 // Header:
 //   magic: [u8; 4] = "TRNS"
-//   version: u32 = transit_data::FORMAT_VERSION (12)
+//   version: u32 = transit_data::FORMAT_VERSION (13)
 //   num_nodes: u32
 //   num_edges: u32
 //   num_stops: u32
@@ -58,18 +62,33 @@ pub struct PreparedData {
 // Route colors: per route: has_color: u8, [r: u8, g: u8, b: u8 if has_color]
 //
 // Patterns section: for each pattern:
-//   pattern_id: u32, day_mask: u8, start_date: i32, end_date: i32
+//   day_mask: u8, start_date: i32, end_date: i32
 //   num_date_add: u32, dates_add: [i32; n]
 //   num_date_remove: u32, dates_remove: [i32; n]
-//   min_time: u32, max_time: u32
+//   min_time: u32
 //   Dates are days from the Common Era (chrono `num_days_from_ce`);
 //   start/end use i32::MIN for "unbounded" (v12; v11 wrote YYYYMMDD u32).
 //   num_events: u32
 //   [PCO columns: time_offsets, stop_indices, travel_times, next_event_indices]
-//   [PCO stop_offsets, PCO sentinel_routes]
-//   num_freq: u32, freq_entries: [FreqEntry; num_freq]
-//     FreqEntry: route_index, stop_index, start_time, end_time, headway_secs,
-//                next_stop_index, travel_time, next_freq_index (all u32)
+//   [PCO sentinel_routes]
+//   Events are sorted by (stop_index, time_offset).
+//   num_freq: u32, then eight PCO u32 columns of num_freq rows, sorted by
+//   stop_index: route_index, stop_index, start_time, end_time, headway_secs,
+//               next_stop_index, travel_time, next_freq_index
+//
+// Stop index section (v13): one row per (pattern, stop) pair for which the
+// pattern has events or frequency departures at the stop, or whose
+// frequency trips end there. Replaces the per-pattern `stop_offsets` array
+// over every stop (8 bytes × patterns × stops in memory). Rows are written
+// in (pattern, stop) order so `event_start` is monotone within a pattern
+// and the columns compress well; the reader re-buckets them by stop.
+//   num_rows: u32
+//   PCO u32: pattern     (len = num_rows, ascending)
+//   PCO u32: stop        (ascending within a pattern)
+//   PCO u32: event_start (index into the pattern's events)
+//   PCO u32: event_count
+//   PCO u32: freq_start  (index into the pattern's freq_entries)
+//   PCO u32: freq_count
 //
 // Leg shapes section (sorted by key for binary search):
 //   Six global PCO columns — keys, per-leg point counts, and the fully
@@ -297,9 +316,12 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
         }
     }
 
-    // Patterns
-    for pattern in &data.patterns {
-        write_u32(&mut buf, pattern.pattern_id);
+    // Patterns. Each pattern's per-stop ranges are collected into `stop_rows`
+    // and written as one global sparse index after the loop.
+    let num_stops_u32 = data.stops.len() as u32;
+    let mut stop_rows: Vec<StopRow> = Vec::new();
+    for (pat_idx, pattern) in data.patterns.iter().enumerate() {
+        let pat_idx = pat_idx as u32;
         buf.push(pattern.day_mask);
         write_i32(&mut buf, yyyymmdd_bound_to_days(pattern.start_date));
         write_i32(&mut buf, yyyymmdd_bound_to_days(pattern.end_date));
@@ -312,7 +334,6 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
             write_i32(&mut buf, yyyymmdd_to_days(d));
         }
         write_u32(&mut buf, pattern.min_time);
-        write_u32(&mut buf, pattern.max_time);
 
         // Convert (dep_time, Event) pairs into flat events with time_offset.
         #[derive(Clone, Copy)]
@@ -399,19 +420,62 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
             })
             .collect();
 
-        // Compute stop offsets for JaggedArray
-        let num_stops = data.stops.len() as u32;
-        let mut stop_offsets: Vec<u32> = vec![0; num_stops as usize + 1];
-        for e in &sorted_events {
-            if e.stop_index < num_stops {
-                stop_offsets[e.stop_index as usize + 1] += 1;
-            }
-        }
-        for i in 1..stop_offsets.len() {
-            stop_offsets[i] += stop_offsets[i - 1];
+        // Frequency rows sorted by stop so each stop's departures are one
+        // contiguous slice; `next_freq_index` follows the permutation.
+        let freqs = &pattern.frequency_routes;
+        let mut freq_order: Vec<u32> = (0..freqs.len() as u32).collect();
+        freq_order.sort_by_key(|&i| {
+            let f = &freqs[i as usize];
+            (remap_stop(f.stop_index), f.start_time)
+        });
+        let mut freq_inv = vec![0u32; freqs.len()];
+        for (new_pos, &old_pos) in freq_order.iter().enumerate() {
+            freq_inv[old_pos as usize] = new_pos as u32;
         }
 
-        // Serialize: num_events, 4 PCO columns (no route_index), stop_offsets, sentinel_routes
+        // Per-stop ranges for the sparse stop index. Events and frequency
+        // rows are both sorted by stop, so every stop's slice is a run.
+        {
+            let mut ranges: std::collections::BTreeMap<u32, [u32; 4]> =
+                std::collections::BTreeMap::new();
+            let mut i = 0;
+            while i < sorted_events.len() {
+                let stop = sorted_events[i].stop_index;
+                let start = i;
+                while i < sorted_events.len() && sorted_events[i].stop_index == stop {
+                    i += 1;
+                }
+                ensure!(stop < num_stops_u32, "event stop index {stop} out of range");
+                let r = ranges.entry(stop).or_default();
+                r[0] = start as u32;
+                r[1] = i as u32;
+            }
+            let mut i = 0;
+            while i < freq_order.len() {
+                let stop = remap_stop(freqs[freq_order[i] as usize].stop_index);
+                let start = i;
+                while i < freq_order.len()
+                    && remap_stop(freqs[freq_order[i] as usize].stop_index) == stop
+                {
+                    i += 1;
+                }
+                let r = ranges.entry(stop).or_default();
+                r[2] = start as u32;
+                r[3] = i as u32;
+            }
+            // Frequency chains have no terminal-arrival sentinel like
+            // scheduled trips do, so list the pattern at each chain's final
+            // stop too (with empty ranges) — path recovery looks the pattern
+            // up by the stop a leg *arrives* at.
+            for f in freqs {
+                if f.next_freq_index == u32::MAX {
+                    ranges.entry(remap_stop(f.next_stop_index)).or_default();
+                }
+            }
+            stop_rows.extend(ranges.into_iter().map(|(stop, r)| (stop, pat_idx, r)));
+        }
+
+        // Serialize: num_events, 4 PCO columns (no route_index), sentinel_routes
         // route_index will be reconstructed from sentinels at query time
         write_u32(&mut buf, sorted_events.len() as u32);
         let cols: [Vec<u32>; 4] = [
@@ -424,9 +488,6 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
             write_pco(&mut buf, col);
         }
 
-        // Stop offsets (num_stops + 1 entries)
-        write_pco(&mut buf, &stop_offsets);
-
         // Sentinel routes: for each event, if it's a sentinel (travel_time == 0), store its route_index
         let sentinel_routes: Vec<u32> = sorted_events
             .iter()
@@ -434,17 +495,43 @@ pub fn write_binary(data: &PreparedData, path: &Path) -> Result<()> {
             .collect();
         write_pco(&mut buf, &sentinel_routes);
 
-        write_u32(&mut buf, pattern.frequency_routes.len() as u32);
-        for freq in &pattern.frequency_routes {
-            write_u32(&mut buf, freq.route_index);
-            write_u32(&mut buf, remap_stop(freq.stop_index));
-            write_u32(&mut buf, freq.start_time);
-            write_u32(&mut buf, freq.end_time);
-            write_u32(&mut buf, freq.headway_secs);
-            write_u32(&mut buf, remap_stop(freq.next_stop_index));
-            write_u32(&mut buf, freq.travel_time);
-            write_u32(&mut buf, freq.next_freq_index);
-        }
+        // Frequency rows as PCO columns in stop order (raw rows in chain
+        // order used to gzip well only because `next_freq_index` was `i+1`).
+        write_u32(&mut buf, freqs.len() as u32);
+        let fcol = |f: &dyn Fn(&crate::gtfs::FrequencyEntry) -> u32| -> Vec<u32> {
+            freq_order.iter().map(|&i| f(&freqs[i as usize])).collect()
+        };
+        write_pco(&mut buf, &fcol(&|f| f.route_index));
+        write_pco(&mut buf, &fcol(&|f| remap_stop(f.stop_index)));
+        write_pco(&mut buf, &fcol(&|f| f.start_time));
+        write_pco(&mut buf, &fcol(&|f| f.end_time));
+        write_pco(&mut buf, &fcol(&|f| f.headway_secs));
+        write_pco(&mut buf, &fcol(&|f| remap_stop(f.next_stop_index)));
+        write_pco(&mut buf, &fcol(&|f| f.travel_time));
+        write_pco(
+            &mut buf,
+            &fcol(&|f| {
+                let nfi = f.next_freq_index;
+                if nfi == u32::MAX {
+                    u32::MAX
+                } else {
+                    freq_inv[nfi as usize]
+                }
+            }),
+        );
+    }
+
+    // Sparse stop index, written pattern-major (see the format comment).
+    {
+        stop_rows.sort_unstable_by_key(|&(stop, pat, _)| (pat, stop));
+        write_u32(&mut buf, stop_rows.len() as u32);
+        let col = |f: &dyn Fn(&StopRow) -> u32| -> Vec<u32> { stop_rows.iter().map(f).collect() };
+        write_pco(&mut buf, &col(&|r| r.1));
+        write_pco(&mut buf, &col(&|r| r.0));
+        write_pco(&mut buf, &col(&|r| r.2[0]));
+        write_pco(&mut buf, &col(&|r| r.2[1] - r.2[0]));
+        write_pco(&mut buf, &col(&|r| r.2[2]));
+        write_pco(&mut buf, &col(&|r| r.2[3] - r.2[2]));
     }
 
     // Leg shapes (v9): six global PCO columns. Concatenating across legs avoids

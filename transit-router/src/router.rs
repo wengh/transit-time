@@ -43,7 +43,7 @@ pub fn patterns_for_date(data: &PreparedData, date: NaiveDate) -> Vec<usize> {
         .iter()
         .enumerate()
         .filter(|(_, p)| {
-            if p.stop_index.events_by_stop.data.is_empty() && p.frequency_routes.is_empty() {
+            if p.events.is_empty() && p.frequency_routes.is_empty() {
                 return false;
             }
             if p.date_exceptions_remove.contains(&date) {
