@@ -109,7 +109,22 @@ routing math. Findings are at the boundaries and in per-query redundant work.
 | C11 | refactor | `main.rs` | `Check` subcommand is unreferenced and gives a different answer than `pipeline --check-only`. | fixed — removed |
 | C12 | refactor | `main.rs`, `osm_fetch.rs`, `transitland.rs`, `gtfs_fetch.rs` | `feed_to_cities` values never read; three near-identical `fetch_osm` branches; HTTP client built three ways; `starts_with("f-")` duplicates `is_transitland_id`. | fixed |
 | C13 | nit | comments, `Makefile` | Stale comments (`make wasm-pgo`, weekly cron, cache restore ordering); orphan patterns miss `.tmp`/`.lock`; `.json` configs accepted by the builder but invisible to the frontend; `$(PROFDATA)` lacks the `chicago.bin` prerequisite. | fixed |
-| C14 | perf/risk | `main.rs` stage 5 | City-level `par_iter` on top of transit-prep's internal rayon parallelism multiplies peak memory. | skipped — no observed OOM; would need measurement on the CI runner |
+| C14 | perf/risk | `main.rs` stage 5 | City-level `par_iter` on top of transit-prep's internal rayon parallelism multiplies peak memory. | fixed — stage 5 admits cities against a memory budget (weighted semaphore over per-city estimates, largest first); 8 heavy cities on 12 threads: 2.8 GB unconstrained, 1.7 GB with a 2.5 GB budget, same wall time |
+| C15 | bug-high | `main.rs` cleanup | The orphan cleanup deletes every cache file not referenced by a config in `--cities-dir`, so any run over a subset directory wipes the other cities' downloads (it did: two measurement runs during this review deleted 386 cached files, since re-downloaded on demand). | fixed — cleanup is opt-in (`--cleanup`), passed by `make data-all` |
+
+## 5. Build memory and parallelism (2026-09-07 follow-up)
+
+Measured per city with `/usr/bin/time -v` and a 0.25 s RSS sampler per
+phase; pipeline peaks over the 8 heaviest cities with `RAYON_NUM_THREADS=12`.
+
+| # | Sev | Where | Finding | Status |
+|---|-----|-------|---------|--------|
+| M1 | perf-high | `graph.rs` `parse_pbf` | Two single-threaded passes kept every node of every pedestrian way in the whole extract in a hash map: Jakarta 24.5 M entries, 1.5 GB resident and 165 s of a 171 s build for 589 K graph nodes. | fixed — three blob-parallel passes keeping only the bbox's nodes, then the ways touching them, then exactly the referenced coordinates in a sorted nanodegree table; Jakarta 413 MB and 22 s, byte-identical output |
+| M2 | perf | `prepare.rs` | glibc arena retention after each parallel phase kept RSS 150–250 MB above live data; mimalloc made it worse. | fixed — `malloc_trim` at phase boundaries (NYC 1,264 → 1,083 MB) |
+| M3 | perf | `prepare.rs`, `binary.rs` | GTFS tables stayed alive through serialisation, which made per-pattern copies; the write phase was the peak for schedule-heavy cities. | fixed — tables dropped before writing, columns read through the permutation, compressed in parallel (NYC write phase 1,008 → 679 MB) |
+| M4 | perf | `gtfs.rs`, `prepare.rs` | Five owned Strings per stop_times row; every group's leg polylines built before deduplication. | fixed — reused byte records; two-phase leg build (qualities, then polylines for winners only) |
+| M5 | measured | pipeline | Single-city peaks now: NYC 1.05 GB, Berlin 0.9, Jakarta 0.41, Hong Kong 0.38; the floor is the live schedule, graph and GTFS data needed simultaneously by the pattern and leg-shape builders. Full-build CPU use on 12 threads is 1,000 % (was 220 %); Jakarta's three PBF decodes are now the largest single CPU item. | — |
+| M6 | open | `graph.rs` | Merging PBF passes 1 and 3 (keep in-bbox coordinates in pass 1, truncate ways at a margin outside the bbox) would cut a third of Jakarta's CPU, but changes the graph at the bbox edge. | open |
 
 ## 4. Preprocessing (`transit-prep`)
 

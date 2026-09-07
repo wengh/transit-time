@@ -138,7 +138,7 @@ make wasm
 make data-all
 ```
 
-This runs the pipeline which: extracts feed IDs from all city configs, checks Transitland for updated feed versions (via SHA1 comparison, skipping feeds checked within the last 2 days), downloads only stale or missing GTFS/OSM data in parallel, and rebuilds only affected city `.bin` files in parallel. Orphaned cache files from removed cities/feeds are cleaned up automatically.
+This runs the pipeline which: extracts feed IDs from all city configs, checks Transitland for updated feed versions (via SHA1 comparison, skipping feeds checked within the last 2 days), downloads only stale or missing GTFS/OSM data in parallel, and rebuilds only affected city `.bin` files in parallel. Cities are admitted to the build against a memory budget (`--memory-budget-gb`, default half of physical memory) from an estimate of each city's peak, largest first, so many cities can run at once without their peaks stacking; a single city peaks at roughly 0.4–1.1 GB. `make data-all` passes `--cleanup`, which removes cache files and outputs that no city config references; a run over a subset of configs (a different `--cities-dir`) must not pass it, or it deletes everything else's downloads.
 
 Individual cities can be built with:
 ```

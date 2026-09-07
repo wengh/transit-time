@@ -61,6 +61,15 @@ enum Commands {
         /// is needed, 0 otherwise. No downloads, no builds.
         #[arg(long)]
         check_only: bool,
+        /// Cap on the estimated resident memory of the cities being built
+        /// at the same time, in GB. Defaults to half of physical memory.
+        #[arg(long)]
+        memory_budget_gb: Option<f64>,
+        /// Delete cache files and outputs that no config in --cities-dir
+        /// references. Only meaningful when --cities-dir holds every city;
+        /// a run over a subset would otherwise delete everything else.
+        #[arg(long)]
+        cleanup: bool,
     },
     /// Generate a city config by querying Transitland for feeds in a geographic area.
     Generate {
@@ -94,8 +103,20 @@ fn main() -> Result<()> {
             output_dir,
             cache_dir,
             check_only,
+            memory_budget_gb,
+            cleanup,
         } => {
-            let needs_rebuild = cmd_pipeline(&cities_dir, &output_dir, &cache_dir, check_only)?;
+            let memory_budget = memory_budget_gb
+                .map(|gb| (gb * (1u64 << 30) as f64) as u64)
+                .unwrap_or_else(default_memory_budget);
+            let needs_rebuild = cmd_pipeline(
+                &cities_dir,
+                &output_dir,
+                &cache_dir,
+                check_only,
+                memory_budget,
+                cleanup,
+            )?;
             if check_only && needs_rebuild {
                 std::process::exit(1);
             }
@@ -203,6 +224,8 @@ fn cmd_pipeline(
     output_dir: &Path,
     cache_dir: &Path,
     check_only: bool,
+    memory_budget: u64,
+    cleanup: bool,
 ) -> Result<bool> {
     use rayon::prelude::*;
 
@@ -561,6 +584,7 @@ fn cmd_pipeline(
             api_key.as_deref(),
             cache_dir,
             output_dir,
+            memory_budget,
         )?
     } else {
         (Vec::new(), None)
@@ -577,6 +601,12 @@ fn cmd_pipeline(
         "\nRecorded build metadata for {} cities",
         updated.cities.len()
     );
+
+    if !cleanup {
+        eprintln!("\n=== Cleanup skipped (pass --cleanup when --cities-dir holds every city) ===");
+        eprintln!("\n=== Pipeline complete ===");
+        return Ok(needs_rebuild);
+    }
 
     // ── Cleanup: Remove orphaned cache files ──
     eprintln!("\n=== Cleanup: Remove orphaned cache files ===");
@@ -688,6 +718,113 @@ fn cmd_pipeline(
 
 /// Build records of the cities that succeeded, and the first error if any.
 type BuildOutcome = (Vec<(String, metadata::CityMetadata)>, Option<anyhow::Error>);
+/// Result of building one city: its build record, `None` when it was built
+/// from unverified cached inputs and keeps its prior record.
+type CityOutcome = Result<Option<(String, metadata::CityMetadata)>>;
+
+/// Half of physical memory, or 8 GB when it cannot be read.
+fn default_memory_budget() -> u64 {
+    let total = std::fs::read_to_string("/proc/meminfo").ok().and_then(|s| {
+        s.lines()
+            .find(|l| l.starts_with("MemTotal:"))
+            .and_then(|l| l.split_whitespace().nth(1))
+            .and_then(|kb| kb.parse::<u64>().ok())
+            .map(|kb| kb * 1024)
+    });
+    total.map(|t| t / 2).unwrap_or(8 << 30)
+}
+
+/// Estimated peak resident memory of building one city from its input
+/// sizes. A deliberately generous fit on measured builds (NYC 1.05 GB from
+/// a 153 MB extract and 126 MB of feed zips, Berlin 0.91 GB from 182 + 83,
+/// Jakarta 0.41 GB from 896 + 3, Hong Kong 0.38 GB from 38 + 19): the feeds
+/// dominate, the extract matters little since the bbox-first parser. An
+/// extract that is not downloaded yet counts as a mid-sized one.
+fn estimated_peak_bytes(city: &City, cache_dir: &Path) -> u64 {
+    let size = |p: PathBuf| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+    let zips: u64 = city
+        .config
+        .feed_ids
+        .iter()
+        .map(|fid| size(gtfs_cache_path(fid, cache_dir)))
+        .sum();
+    let pbf = osm_fetch::pick_source_url(
+        city.config.interline_extract.as_deref(),
+        city.config.bbbike_name.as_deref(),
+        city.config.osm_url.as_deref(),
+    )
+    .map(|url| {
+        size(osm_fetch::pbf_cache_path(
+            cache_dir,
+            &city.id,
+            &url,
+            osm_fetch::source_ext(city.config.osm_url.as_deref()),
+        ))
+    })
+    .filter(|&b| b > 0)
+    .unwrap_or(300 << 20);
+    (200 << 20) + pbf * 35 / 100 + zips * 9
+}
+
+/// Weighted semaphore over the memory budget: hands out cities from a
+/// queue sorted by estimated peak while their estimates fit in what is
+/// left of the budget. A city larger than the whole budget still runs, but
+/// alone.
+struct MemoryGate {
+    state: std::sync::Mutex<GateState>,
+    cv: std::sync::Condvar,
+}
+
+struct GateState {
+    available: i64,
+    running: usize,
+    /// `(city index, estimated bytes)`, largest first.
+    queue: Vec<(usize, u64)>,
+}
+
+impl MemoryGate {
+    fn new(budget: u64, queue: Vec<(usize, u64)>) -> Self {
+        Self {
+            state: std::sync::Mutex::new(GateState {
+                available: budget as i64,
+                running: 0,
+                queue,
+            }),
+            cv: std::sync::Condvar::new(),
+        }
+    }
+
+    /// The next city whose estimate fits, blocking until one does; `None`
+    /// once the queue is empty.
+    fn next(&self) -> Option<(usize, u64)> {
+        let mut st = self.state.lock().unwrap();
+        loop {
+            if st.queue.is_empty() {
+                return None;
+            }
+            let pos = st
+                .queue
+                .iter()
+                .position(|&(_, est)| est as i64 <= st.available || st.running == 0);
+            match pos {
+                Some(p) => {
+                    let (i, est) = st.queue.remove(p);
+                    st.available -= est as i64;
+                    st.running += 1;
+                    return Some((i, est));
+                }
+                None => st = self.cv.wait(st).unwrap(),
+            }
+        }
+    }
+
+    fn release(&self, est: u64) {
+        let mut st = self.state.lock().unwrap();
+        st.available += est as i64;
+        st.running -= 1;
+        self.cv.notify_all();
+    }
+}
 
 /// Stages 4 and 5: download the stale feeds of the cities to rebuild, then
 /// build them. Returns the build records of the cities that succeeded and
@@ -702,6 +839,7 @@ fn build_stale_cities(
     api_key: Option<&str>,
     cache_dir: &Path,
     output_dir: &Path,
+    memory_budget: u64,
 ) -> Result<BuildOutcome> {
     use rayon::prelude::*;
 
@@ -744,120 +882,158 @@ fn build_stale_cities(
     // Every city runs to completion and the outcomes are collected: the
     // records of the cities that built are saved before the first error is
     // returned, so one failing city no longer discards the others' work.
-    let outcomes: Vec<Result<Option<(String, metadata::CityMetadata)>>> = cities
-        .par_iter()
-        .filter(|c| cities_to_rebuild.contains(&c.id))
-        .map(
-            |City {
-                 id,
-                 config,
-                 config_hash,
-                 ..
-             }|
-             -> Result<Option<(String, metadata::CityMetadata)>> {
-                let bbox = parse_bbox(&config.bbox)?;
+    let build_one = |City {
+                         id,
+                         config,
+                         config_hash,
+                         ..
+                     }: &City|
+     -> Result<Option<(String, metadata::CityMetadata)>> {
+        let bbox = parse_bbox(&config.bbox)?;
 
-                // Stage 3 compared the recorded OSM identity against the
-                // origin; if either that or the local sidecar disagrees with
-                // the origin, the cached extract is behind and `fetch_osm`
-                // must not take its 30-day no-network shortcut. Otherwise a
-                // rebuild triggered by a new ETag would build from the old
-                // extract and then record the new identity, pinning the city
-                // to stale data until the sidecar aged out.
-                let remote = remote_osm.get(id.as_str()).cloned().unwrap_or_default();
-                let osm_cache_path = osm_fetch::pick_source_url(
-                    config.interline_extract.as_deref(),
-                    config.bbbike_name.as_deref(),
-                    config.osm_url.as_deref(),
-                )
-                .map(|url| {
-                    osm_fetch::pbf_cache_path(
-                        cache_dir,
-                        id,
-                        &url,
-                        osm_fetch::source_ext(config.osm_url.as_deref()),
-                    )
-                });
-                let osm_changed = recorded
-                    .cities
-                    .get(id)
-                    .and_then(|p| p.osm.as_ref())
-                    .is_some_and(|then| then.same_as(&remote) == Some(false))
-                    || osm_cache_path.as_deref().is_some_and(|path| {
-                        metadata::SourceId::from(&http_cache::load(path)).same_as(&remote)
-                            == Some(false)
-                    });
-
-                let osm = osm_fetch::fetch_osm(
-                    bbox,
-                    cache_dir,
-                    id,
-                    config.interline_extract.as_deref(),
-                    config.bbbike_name.as_deref(),
-                    config.osm_url.as_deref(),
-                    osm_changed,
-                )?;
-
-                let gtfs_paths: Vec<PathBuf> = config
-                    .feed_ids
-                    .iter()
-                    .map(|fid| gtfs_cache_path(fid, cache_dir))
-                    .collect();
-                let bin_path = output_dir.join(format!("{}.bin", id));
-
-                eprintln!("\n--- Building {} ---", id);
-                transit_prep::prepare(
-                    id,
-                    &gtfs_paths,
-                    &osm.path,
-                    bbox,
-                    &bin_path,
-                    config.allow_stale,
-                )?;
-
-                // A fetch that fell back to an unverified cached copy may have
-                // built from stale data. Keep the prior record (or none) so
-                // stage 3 rebuilds the city next run instead of pinning it.
-                let stale_inputs: Vec<&str> = config
-                    .feed_ids
-                    .iter()
-                    .filter(|fid| fallback_feeds.contains(fid))
-                    .map(String::as_str)
-                    .chain(osm.fell_back.then_some("OSM extract"))
-                    .collect();
-                if !stale_inputs.is_empty() {
-                    eprintln!(
-                        "  {}: built from unverified cached input(s) ({}); keeping the prior build record",
-                        id,
-                        stale_inputs.join(", ")
-                    );
-                    return Ok(None);
-                }
-
-                // Record the identity of what is on disk — the files this .bin
-                // was actually built from — not what stage 2/3 probed: the two
-                // differ whenever a fetch kept a cached copy. Stamped only on
-                // success, so a failed build leaves the old record in place.
-                let feeds = config
-                    .feed_ids
-                    .iter()
-                    .map(|fid| (fid.clone(), on_disk_feed_identity(fid, cache_dir)))
-                    .collect();
-                let osm_id = metadata::SourceId::from(&http_cache::load(&osm.path));
-                Ok(Some((
-                    id.clone(),
-                    metadata::CityMetadata {
-                        built_at: chrono::Utc::now()
-                            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-                        feeds,
-                        osm: Some(osm_id).filter(|s| !s.is_empty()),
-                        config_hash: config_hash.clone(),
-                        code_fingerprint: metadata::CODE_FINGERPRINT.to_string(),
-                    },
-                )))
-            },
+        // Stage 3 compared the recorded OSM identity against the
+        // origin; if either that or the local sidecar disagrees with
+        // the origin, the cached extract is behind and `fetch_osm`
+        // must not take its 30-day no-network shortcut. Otherwise a
+        // rebuild triggered by a new ETag would build from the old
+        // extract and then record the new identity, pinning the city
+        // to stale data until the sidecar aged out.
+        let remote = remote_osm.get(id.as_str()).cloned().unwrap_or_default();
+        let osm_cache_path = osm_fetch::pick_source_url(
+            config.interline_extract.as_deref(),
+            config.bbbike_name.as_deref(),
+            config.osm_url.as_deref(),
         )
+        .map(|url| {
+            osm_fetch::pbf_cache_path(
+                cache_dir,
+                id,
+                &url,
+                osm_fetch::source_ext(config.osm_url.as_deref()),
+            )
+        });
+        let osm_changed = recorded
+            .cities
+            .get(id)
+            .and_then(|p| p.osm.as_ref())
+            .is_some_and(|then| then.same_as(&remote) == Some(false))
+            || osm_cache_path.as_deref().is_some_and(|path| {
+                metadata::SourceId::from(&http_cache::load(path)).same_as(&remote) == Some(false)
+            });
+
+        let osm = osm_fetch::fetch_osm(
+            bbox,
+            cache_dir,
+            id,
+            config.interline_extract.as_deref(),
+            config.bbbike_name.as_deref(),
+            config.osm_url.as_deref(),
+            osm_changed,
+        )?;
+
+        let gtfs_paths: Vec<PathBuf> = config
+            .feed_ids
+            .iter()
+            .map(|fid| gtfs_cache_path(fid, cache_dir))
+            .collect();
+        let bin_path = output_dir.join(format!("{}.bin", id));
+
+        eprintln!("\n--- Building {} ---", id);
+        transit_prep::prepare(
+            id,
+            &gtfs_paths,
+            &osm.path,
+            bbox,
+            &bin_path,
+            config.allow_stale,
+        )?;
+
+        // A fetch that fell back to an unverified cached copy may have
+        // built from stale data. Keep the prior record (or none) so
+        // stage 3 rebuilds the city next run instead of pinning it.
+        let stale_inputs: Vec<&str> = config
+            .feed_ids
+            .iter()
+            .filter(|fid| fallback_feeds.contains(fid))
+            .map(String::as_str)
+            .chain(osm.fell_back.then_some("OSM extract"))
+            .collect();
+        if !stale_inputs.is_empty() {
+            eprintln!(
+                "  {}: built from unverified cached input(s) ({}); keeping the prior build record",
+                id,
+                stale_inputs.join(", ")
+            );
+            return Ok(None);
+        }
+
+        // Record the identity of what is on disk — the files this .bin
+        // was actually built from — not what stage 2/3 probed: the two
+        // differ whenever a fetch kept a cached copy. Stamped only on
+        // success, so a failed build leaves the old record in place.
+        let feeds = config
+            .feed_ids
+            .iter()
+            .map(|fid| (fid.clone(), on_disk_feed_identity(fid, cache_dir)))
+            .collect();
+        let osm_id = metadata::SourceId::from(&http_cache::load(&osm.path));
+        Ok(Some((
+            id.clone(),
+            metadata::CityMetadata {
+                built_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                feeds,
+                osm: Some(osm_id).filter(|s| !s.is_empty()),
+                config_hash: config_hash.clone(),
+                code_fingerprint: metadata::CODE_FINGERPRINT.to_string(),
+            },
+        )))
+    };
+
+    // Which cities to build, largest estimated peak first so the big ones
+    // cannot all land at the end, admitted by the memory gate below.
+    let mut queue: Vec<(usize, u64)> = cities
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| cities_to_rebuild.contains(&c.id))
+        .map(|(i, c)| (i, estimated_peak_bytes(c, cache_dir)))
         .collect();
+    queue.sort_by_key(|&(i, est)| (std::cmp::Reverse(est), cities[i].id.clone()));
+    let total_est: u64 = queue.iter().map(|&(_, e)| e).sum();
+    eprintln!(
+        "  memory budget {:.1} GB; {} cities to build, estimated peaks sum to {:.1} GB (largest: {})",
+        memory_budget as f64 / (1u64 << 30) as f64,
+        queue.len(),
+        total_est as f64 / (1u64 << 30) as f64,
+        queue
+            .iter()
+            .take(3)
+            .map(|&(i, e)| format!("{} {:.2} GB", cities[i].id, e as f64 / (1u64 << 30) as f64))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+
+    // One OS thread per concurrently building city (at most one per core).
+    // They are not rayon workers, so a thread parked at the gate does not
+    // starve the per-city parallelism inside transit-prep, which still
+    // spreads over the whole rayon pool.
+    let gate = MemoryGate::new(memory_budget, queue);
+    let outcomes_mutex: std::sync::Mutex<Vec<(usize, CityOutcome)>> =
+        std::sync::Mutex::new(Vec::new());
+    let workers = rayon::current_num_threads().clamp(1, cities_to_rebuild.len().max(1));
+    std::thread::scope(|s| {
+        for _ in 0..workers {
+            s.spawn(|| {
+                while let Some((i, est)) = gate.next() {
+                    let outcome = build_one(&cities[i]);
+                    outcomes_mutex.lock().unwrap().push((i, outcome));
+                    gate.release(est);
+                }
+            });
+        }
+    });
+    let mut outcomes: Vec<(usize, CityOutcome)> = outcomes_mutex.into_inner().unwrap();
+    outcomes.sort_by_key(|(i, _)| *i);
+    let outcomes: Vec<CityOutcome> = outcomes.into_iter().map(|(_, o)| o).collect();
     let mut built: Vec<(String, metadata::CityMetadata)> = Vec::new();
     let mut first_error: Option<anyhow::Error> = None;
     for outcome in outcomes {

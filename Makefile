@@ -33,7 +33,8 @@ data-all:
 	cargo run --release -p city-builder -- pipeline \
 		--cities-dir cities/ \
 		--output-dir transit-viz/public/data/ \
-		--cache-dir cache
+		--cache-dir cache \
+		--cleanup
 
 # Build data for one city, e.g. `make data city=montreal`
 data:
