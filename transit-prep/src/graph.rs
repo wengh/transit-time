@@ -73,10 +73,72 @@ pub fn haversine(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
     r * c
 }
 
-/// Raw parsed data before graph construction
+/// Raw parsed data before graph construction: a node table sorted by OSM
+/// id, with coordinates in nanodegrees exactly as the PBF stores them, and
+/// every kept way as indices into that table. Only nodes that a kept way
+/// references are in the table.
 struct RawOsmData {
-    all_nodes: HashMap<u64, (f64, f64)>,
-    ways: Vec<Vec<u64>>,
+    nano_lat: Vec<i64>,
+    nano_lon: Vec<i64>,
+    ways: Vec<Vec<u32>>,
+}
+
+/// Degrees from nanodegrees, the same expression osmpbf uses for `lat()`.
+#[inline]
+fn nano_to_deg(v: i64) -> f64 {
+    1e-9 * v as f64
+}
+
+fn deg_to_nano(v: f64) -> i64 {
+    (v * 1e9).round() as i64
+}
+
+fn way_is_pedestrian(way: &osmpbf::Way) -> bool {
+    way.tags()
+        .any(|(key, value)| key == "highway" && PEDESTRIAN_HIGHWAYS.contains(&value))
+}
+
+impl RawOsmData {
+    /// Build the table from `nodes` (`(id, nano_lat, nano_lon)`, any order,
+    /// may include nodes no way uses) and `ways` (OSM node ids). References
+    /// to nodes absent from `nodes` are dropped, as the former hash-map
+    /// lookup skipped them; nodes no way references are dropped too.
+    fn assemble(mut nodes: Vec<(i64, i64, i64)>, ways: Vec<Vec<i64>>) -> Self {
+        nodes.sort_unstable_by_key(|n| n.0);
+        nodes.dedup_by_key(|n| n.0);
+        let mut used = vec![false; nodes.len()];
+        let ways_idx: Vec<Vec<u32>> = ways
+            .into_iter()
+            .map(|way| {
+                way.iter()
+                    .filter_map(|id| nodes.binary_search_by_key(id, |n| n.0).ok())
+                    .map(|i| {
+                        used[i] = true;
+                        i as u32
+                    })
+                    .collect()
+            })
+            .collect();
+        let mut remap = vec![u32::MAX; nodes.len()];
+        let mut nano_lat = Vec::new();
+        let mut nano_lon = Vec::new();
+        for (i, &(_, lat, lon)) in nodes.iter().enumerate() {
+            if used[i] {
+                remap[i] = nano_lat.len() as u32;
+                nano_lat.push(lat);
+                nano_lon.push(lon);
+            }
+        }
+        let ways = ways_idx
+            .into_iter()
+            .map(|way| way.into_iter().map(|i| remap[i as usize]).collect())
+            .collect();
+        Self {
+            nano_lat,
+            nano_lon,
+            ways,
+        }
+    }
 }
 
 pub fn build_graph(osm_path: &Path, bbox: (f64, f64, f64, f64)) -> Result<OsmGraph> {
@@ -125,10 +187,12 @@ fn parse_xml(osm_path: &Path, bbox: (f64, f64, f64, f64)) -> Result<RawOsmData> 
         Ok(None)
     }
 
-    let mut all_nodes: HashMap<u64, (f64, f64)> = HashMap::new();
-    let mut ways: Vec<Vec<u64>> = Vec::new();
+    let mut nodes: Vec<(i64, i64, i64)> = Vec::new();
+    // Node ids inside the bbox, for the way filter below.
+    let mut bbox_ids: Vec<i64> = Vec::new();
+    let mut ways: Vec<Vec<i64>> = Vec::new();
 
-    let mut current_way_nodes: Vec<u64> = Vec::new();
+    let mut current_way_nodes: Vec<i64> = Vec::new();
     let mut in_way = false;
     let mut way_is_pedestrian = false;
 
@@ -140,14 +204,7 @@ fn parse_xml(osm_path: &Path, bbox: (f64, f64, f64, f64)) -> Result<RawOsmData> 
             Event::End(ref e) => {
                 if e.name().as_ref() == b"way" {
                     if in_way && way_is_pedestrian && current_way_nodes.len() >= 2 {
-                        let has_bbox_node = current_way_nodes.iter().any(|r| {
-                            all_nodes.get(r).is_some_and(|&(lat, lon)| {
-                                lat >= min_lat && lat <= max_lat && lon >= min_lon && lon <= max_lon
-                            })
-                        });
-                        if has_bbox_node {
-                            ways.push(std::mem::take(&mut current_way_nodes));
-                        }
+                        ways.push(std::mem::take(&mut current_way_nodes));
                     }
                     in_way = false;
                 }
@@ -158,11 +215,14 @@ fn parse_xml(osm_path: &Path, bbox: (f64, f64, f64, f64)) -> Result<RawOsmData> 
         };
         match e.name().as_ref() {
             b"node" => {
-                let id: Option<u64> = attr(e, b"id")?;
+                let id: Option<i64> = attr(e, b"id")?;
                 let lat: Option<f64> = attr(e, b"lat")?;
                 let lon: Option<f64> = attr(e, b"lon")?;
                 if let (Some(id), Some(lat), Some(lon)) = (id, lat, lon) {
-                    all_nodes.insert(id, (lat, lon));
+                    nodes.push((id, deg_to_nano(lat), deg_to_nano(lon)));
+                    if lat >= min_lat && lat <= max_lat && lon >= min_lon && lon <= max_lon {
+                        bbox_ids.push(id);
+                    }
                 }
             }
             // A self-closing <way/> has no nodes and no matching end tag.
@@ -172,7 +232,7 @@ fn parse_xml(osm_path: &Path, bbox: (f64, f64, f64, f64)) -> Result<RawOsmData> 
                 current_way_nodes.clear();
             }
             b"nd" if in_way => {
-                if let Some(node_ref) = attr::<u64>(e, b"ref")? {
+                if let Some(node_ref) = attr::<i64>(e, b"ref")? {
                     current_way_nodes.push(node_ref);
                 }
             }
@@ -190,138 +250,128 @@ fn parse_xml(osm_path: &Path, bbox: (f64, f64, f64, f64)) -> Result<RawOsmData> 
         }
     }
 
-    eprintln!("XML: {} nodes, {} ways", all_nodes.len(), ways.len());
-    Ok(RawOsmData { all_nodes, ways })
+    bbox_ids.sort_unstable();
+    ways.retain(|way| way.iter().any(|r| bbox_ids.binary_search(r).is_ok()));
+    eprintln!("XML: {} nodes, {} ways", nodes.len(), ways.len());
+    Ok(RawOsmData::assemble(nodes, ways))
 }
 
+/// Decode every blob of `path` in parallel, collecting what `f` pushes for
+/// each element, in file order (the blobs are decoded out of order and put
+/// back in sequence, so the output is the same as a sequential scan).
+fn scan_pbf<T, F>(path: &Path, f: F) -> Result<Vec<T>>
+where
+    T: Send,
+    F: for<'a> Fn(osmpbf::Element<'a>, &mut Vec<T>) + Sync,
+{
+    use osmpbf::blob::{BlobDecode, BlobReader};
+    let mut parts: Vec<(usize, Vec<T>)> = BlobReader::from_path(path)?
+        .enumerate()
+        .par_bridge()
+        .map(|(seq, blob)| -> Result<(usize, Vec<T>)> {
+            let blob = blob?;
+            let mut out = Vec::new();
+            if let BlobDecode::OsmData(block) = blob.decode()? {
+                for element in block.elements() {
+                    f(element, &mut out);
+                }
+            }
+            Ok((seq, out))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    parts.sort_unstable_by_key(|(seq, _)| *seq);
+    Ok(parts.into_iter().flat_map(|(_, v)| v).collect())
+}
+
+/// Three parallel passes over the extract, each keeping only what the next
+/// needs: the ids of nodes inside the bbox, then the pedestrian ways that
+/// touch one of them, then the coordinates of exactly the nodes those ways
+/// reference. The former two-pass version kept every node of every
+/// pedestrian way in the whole extract in a hash map (24 million entries,
+/// 1.5 GB for Jakarta's 855 MB extract, to end up with 589 K graph nodes)
+/// and decoded the file on one thread.
 fn parse_pbf(osm_path: &Path, bbox: (f64, f64, f64, f64)) -> Result<RawOsmData> {
-    use osmpbf::{Element, ElementReader};
+    use osmpbf::Element;
 
     let (min_lon, min_lat, max_lon, max_lat) = bbox;
-    let reader = ElementReader::from_path(osm_path)?;
+    let in_bbox =
+        |lat: f64, lon: f64| lat >= min_lat && lat <= max_lat && lon >= min_lon && lon <= max_lon;
 
-    let mut all_nodes: HashMap<u64, (f64, f64)> = HashMap::new();
-    let mut ways: Vec<Vec<u64>> = Vec::new();
+    eprintln!("PBF pass 1: nodes inside the bbox...");
+    let mut bbox_ids: Vec<i64> = scan_pbf(osm_path, |element, out| match element {
+        Element::Node(n) if in_bbox(n.lat(), n.lon()) => out.push(n.id()),
+        Element::DenseNode(n) if in_bbox(n.lat(), n.lon()) => out.push(n.id()),
+        _ => {}
+    })?;
+    bbox_ids.sort_unstable();
+    bbox_ids.dedup();
 
-    // Collect all way node references to know which nodes to keep
-    let mut way_node_refs: HashSet<i64> = HashSet::new();
-
-    // First pass: collect ways within bbox and their node references
-    eprintln!("PBF pass 1: collecting ways...");
-    let reader1 = ElementReader::from_path(osm_path)?;
-    reader1.for_each(|element| {
-        if let Element::Way(way) = element {
-            // Check if this way has a pedestrian highway tag
-            let mut is_pedestrian = false;
-            for (key, value) in way.tags() {
-                if key == "highway" && PEDESTRIAN_HIGHWAYS.contains(&value) {
-                    is_pedestrian = true;
-                    break;
-                }
-            }
-            if !is_pedestrian {
-                return;
-            }
+    eprintln!("PBF pass 2: pedestrian ways touching the bbox...");
+    let ways: Vec<Vec<i64>> = scan_pbf(osm_path, |element, out| {
+        if let Element::Way(way) = element
+            && way_is_pedestrian(&way)
+        {
             let refs: Vec<i64> = way.refs().collect();
-            for &r in &refs {
-                way_node_refs.insert(r);
+            if refs.len() >= 2 && refs.iter().any(|r| bbox_ids.binary_search(r).is_ok()) {
+                out.push(refs);
             }
         }
     })?;
+    drop(bbox_ids);
 
-    eprintln!("PBF pass 1: {} way node refs", way_node_refs.len());
+    let mut needed: Vec<i64> = ways.iter().flatten().copied().collect();
+    needed.sort_unstable();
+    needed.dedup();
 
-    // Second pass: collect nodes and re-collect ways
-    eprintln!("PBF pass 2: collecting nodes and building ways...");
-    reader.for_each(|element| {
-        match element {
-            Element::Node(node) => {
-                let id = node.id();
-                let lat = node.lat();
-                let lon = node.lon();
-
-                if way_node_refs.contains(&id) {
-                    all_nodes.insert(id as u64, (lat, lon));
-                }
-            }
-            Element::DenseNode(node) => {
-                let id = node.id();
-                let lat = node.lat();
-                let lon = node.lon();
-
-                if way_node_refs.contains(&id) {
-                    all_nodes.insert(id as u64, (lat, lon));
-                }
-            }
-            Element::Way(way) => {
-                let mut is_pedestrian = false;
-                for (key, value) in way.tags() {
-                    if key == "highway" && PEDESTRIAN_HIGHWAYS.contains(&value) {
-                        is_pedestrian = true;
-                        break;
-                    }
-                }
-                if !is_pedestrian {
-                    return;
-                }
-
-                let refs: Vec<u64> = way.refs().map(|r| r as u64).collect();
-
-                // Only include ways that have at least one node in bbox
-                let has_bbox_node = refs.iter().any(|&r| {
-                    all_nodes.get(&r).is_some_and(|&(lat, lon)| {
-                        lat >= min_lat && lat <= max_lat && lon >= min_lon && lon <= max_lon
-                    })
-                });
-
-                if has_bbox_node && refs.len() >= 2 {
-                    ways.push(refs);
-                }
-            }
-            _ => {}
+    eprintln!(
+        "PBF pass 3: coordinates of {} referenced nodes...",
+        needed.len()
+    );
+    let nodes: Vec<(i64, i64, i64)> = scan_pbf(osm_path, |element, out| match element {
+        Element::Node(n) if needed.binary_search(&n.id()).is_ok() => {
+            out.push((n.id(), n.nano_lat(), n.nano_lon()))
         }
+        Element::DenseNode(n) if needed.binary_search(&n.id()).is_ok() => {
+            out.push((n.id(), n.nano_lat(), n.nano_lon()))
+        }
+        _ => {}
     })?;
+    drop(needed);
 
-    eprintln!("PBF: {} nodes, {} ways", all_nodes.len(), ways.len());
-
-    Ok(RawOsmData { all_nodes, ways })
+    eprintln!("PBF: {} nodes, {} ways", nodes.len(), ways.len());
+    Ok(RawOsmData::assemble(nodes, ways))
 }
 
 fn build_graph_from_raw(raw: RawOsmData) -> Result<OsmGraph> {
-    let RawOsmData { all_nodes, ways } = raw;
+    let RawOsmData {
+        nano_lat,
+        nano_lon,
+        ways,
+    } = raw;
+    let n = nano_lat.len();
 
-    // Find intersection/endpoint nodes
-    let mut node_usage_count: HashMap<u64, u32> = HashMap::new();
+    // Intersections and endpoints become graph nodes, numbered in OSM id
+    // order (the table is sorted by id) so the output is reproducible.
+    let mut usage = vec![0u32; n];
     for way in &ways {
-        for (i, &node_id) in way.iter().enumerate() {
-            let count = node_usage_count.entry(node_id).or_insert(0);
-            if i == 0 || i == way.len() - 1 {
-                *count += 2;
-            } else {
-                *count += 1;
-            }
+        for (i, &ni) in way.iter().enumerate() {
+            usage[ni as usize] += if i == 0 || i == way.len() - 1 { 2 } else { 1 };
         }
     }
-
-    // Graph nodes: intersections + endpoints, in OSM id order so node
-    // numbering (and everything downstream of it) is reproducible.
-    let mut graph_node_ids: Vec<u64> = node_usage_count
-        .iter()
-        .filter(|&(_, &count)| count >= 2)
-        .map(|(&id, _)| id)
-        .collect();
-    graph_node_ids.sort_unstable();
-
-    // Create indexed node list
-    let mut node_id_to_index: HashMap<u64, u32> = HashMap::new();
+    let mut graph_index = vec![u32::MAX; n];
     let mut nodes: Vec<OsmNode> = Vec::new();
-    for &node_id in &graph_node_ids {
-        if let Some(&(lat, lon)) = all_nodes.get(&node_id) {
+    for (i, &count) in usage.iter().enumerate() {
+        if count >= 2 {
             let index = nodes.len() as u32;
-            node_id_to_index.insert(node_id, index);
-            nodes.push(OsmNode { lat, lon, index });
+            graph_index[i] = index;
+            nodes.push(OsmNode {
+                lat: nano_to_deg(nano_lat[i]),
+                lon: nano_to_deg(nano_lon[i]),
+                index,
+            });
         }
     }
+    drop(usage);
 
     // Build edges by tracing ways between graph nodes
     let mut edge_set: HashSet<(u32, u32)> = HashSet::new();
@@ -332,35 +382,39 @@ fn build_graph_from_raw(raw: RawOsmData) -> Result<OsmGraph> {
         let mut seg_distance = 0.0f64;
         let mut prev_coords: Option<(f64, f64)> = None;
 
-        for &node_id in way {
-            if let Some(&(lat, lon)) = all_nodes.get(&node_id) {
-                if let Some((plat, plon)) = prev_coords {
-                    seg_distance += haversine(plat, plon, lat, lon);
-                }
-                prev_coords = Some((lat, lon));
+        for &ni in way {
+            let (lat, lon) = (
+                nano_to_deg(nano_lat[ni as usize]),
+                nano_to_deg(nano_lon[ni as usize]),
+            );
+            if let Some((plat, plon)) = prev_coords {
+                seg_distance += haversine(plat, plon, lat, lon);
+            }
+            prev_coords = Some((lat, lon));
 
-                if let Some(&node_idx) = node_id_to_index.get(&node_id) {
-                    if let Some(start_idx) = seg_start_idx
-                        && start_idx != node_idx
-                        && seg_distance > 0.0
-                    {
-                        let (u, v) = if start_idx < node_idx {
-                            (start_idx, node_idx)
-                        } else {
-                            (node_idx, start_idx)
-                        };
-                        if edge_set.insert((u, v)) {
-                            edges.push(OsmEdge {
-                                u: start_idx,
-                                v: node_idx,
-                                distance_meters: seg_distance as f32,
-                            });
-                        }
-                    }
-                    seg_start_idx = Some(node_idx);
-                    seg_distance = 0.0;
+            let node_idx = graph_index[ni as usize];
+            if node_idx == u32::MAX {
+                continue;
+            }
+            if let Some(start_idx) = seg_start_idx
+                && start_idx != node_idx
+                && seg_distance > 0.0
+            {
+                let (u, v) = if start_idx < node_idx {
+                    (start_idx, node_idx)
+                } else {
+                    (node_idx, start_idx)
+                };
+                if edge_set.insert((u, v)) {
+                    edges.push(OsmEdge {
+                        u: start_idx,
+                        v: node_idx,
+                        distance_meters: seg_distance as f32,
+                    });
                 }
             }
+            seg_start_idx = Some(node_idx);
+            seg_distance = 0.0;
         }
     }
 
@@ -1032,10 +1086,13 @@ mod tests {
         std::fs::write(&path, xml).unwrap();
 
         let raw = parse_xml(&path, (-88.0, 41.5, -87.0, 42.5)).unwrap();
-        assert_eq!(raw.all_nodes.len(), 5);
         // Only way 10 is walkable and inside the bbox: 11 is a motorway,
-        // 12 lies outside the bbox, 13 has no highway tag, 14 is empty.
-        assert_eq!(raw.ways, vec![vec![1, 2]]);
+        // 12 lies outside the bbox, 13 has no highway tag, 14 is empty. The
+        // table keeps just the nodes that way references (ids 1 and 2, in
+        // id order), and the way refers to them by table index.
+        assert_eq!(raw.nano_lat.len(), 2);
+        assert_eq!(raw.nano_lat, vec![41_900_000_000, 41_910_000_000]);
+        assert_eq!(raw.ways, vec![vec![0, 1]]);
     }
 
     #[test]
