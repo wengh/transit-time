@@ -6,6 +6,8 @@ CITIES ?= $(cities)
 
 # Source files for change detection
 ROUTER_SRC := $(shell find transit-router/src transit-router-wasm/src transit-data/src -name '*.rs')
+# Anything that changes what a city .bin contains (format, preprocessing).
+PREP_SRC := $(shell find transit-prep/src transit-data/src city-builder/src -name '*.rs')
 WASM_OUT := transit-viz/pkg/transit_router_bg.wasm
 PROFDATA := target/pgo-data/merged.profdata
 
@@ -55,7 +57,10 @@ data-some:
 	done
 
 # Dev setup: build city=..., cities='...', or everything by default
-dev: $(WASM_OUT)
+# Data first: the WASM step's PGO training run loads chicago.bin, so a
+# format change must rebuild the city files before the router is trained
+# against them.
+dev:
 	@if [ -n "$(CITY)" ]; then \
 		$(MAKE) data CITY="$(CITY)"; \
 	elif [ -n "$(CITIES)" ]; then \
@@ -63,6 +68,7 @@ dev: $(WASM_OUT)
 	else \
 		$(MAKE) data-all; \
 	fi
+	$(MAKE) $(WASM_OUT)
 	cd transit-viz && npm install --silent && npm run dev -- --port 5173
 
 # CPU flamegraph of profile routing (override via env: OUT, CITY, LAT, LON, RUNS, NO_PGO, etc.)
@@ -101,7 +107,10 @@ test-all:
 	$(MAKE) test TEST_CITY=paris
 
 # Pattern rule: build any city's bin file on demand by delegating to `make data`.
-transit-viz/public/data/%.bin:
+# A city file is also stale when the format or the preprocessing changed
+# (the pipeline tracks this through metadata.json; make needs it spelled
+# out for the fixtures `make wasm` and `make test` load directly).
+transit-viz/public/data/%.bin: $(PREP_SRC)
 	$(MAKE) data CITY=$*
 
 clean:
