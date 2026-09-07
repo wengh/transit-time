@@ -27,5 +27,5 @@
     // No feed_info dates, so the auto stale policy would extend the ~900 services that ended in
     // 2025/2026 and revive discontinued routes. Active services run to 2030-12-31, so honor dates.
     "allow_stale": false,
-    "disabled": true
+    "enabled": false
 }
